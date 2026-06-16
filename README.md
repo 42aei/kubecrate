@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logos/kubecrate-logo.svg" alt="KubeCrate logo" width="600">
+</p>
+
 # Kubecrate
 
 Kubecrate is a minimal cloud-native platform in a box.
