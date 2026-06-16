@@ -1,7 +1,7 @@
 ---
 task_id: "0002"
 title: "Define install flow"
-status: "proposed"
+status: "in_progress"
 depends_on: ["0001"]
 ---
 
