@@ -2,7 +2,7 @@
 
 Kubecrate's current docs define a two-axis model: lifecycle phase (`bootstrap installation` or `GitOps-managed operation`) and workload category (`platform services` or `application services`). They also state the target experience as `point at a cluster and install`, with a kind-first local path that preserves the long-term goal of cluster-provider agnostic operation.
 
-The missing piece is the install-flow contract. Without it, later implementation work can accidentally collapse cluster creation, bootstrap installation, GitOps setup, platform services, and application services into one vague installer. This change keeps those boundaries explicit before any manifests or scripts are added.
+The missing piece is the bootstrap installation contract document. Without it, later implementation work can accidentally collapse cluster creation, bootstrap installation, GitOps setup, platform services, and application services into one vague installer. This change keeps those boundaries explicit before any manifests or scripts are added.
 
 ## Goals / Non-Goals
 
@@ -34,7 +34,7 @@ This keeps cluster creation outside the Kubecrate bootstrap boundary. The kind-f
 
 Alternatives considered:
 
-- Include kind cluster creation in the install-flow contract. Rejected because it would make the first local path look like the product boundary.
+- Include kind cluster creation in the bootstrap installation contract document. Rejected because it would make the first local path look like the product boundary.
 - Define separate flows for Terraform, Cluster API, Crossplane, and Ansible. Rejected for this change because it would over-design integrations before the core bootstrap contract exists.
 
 ### Bootstrap ends at GitOps control, not at a complete platform
@@ -61,18 +61,18 @@ Alternatives considered:
 
 ### Prefer widely consumable bootstrap packaging
 
-The install flow should prefer bootstrap packaging that common Kubernetes automation tools can consume without Kubecrate-specific interfaces. Helm is the preferred candidate because it is widely supported by local workflows, Terraform, Ansible, GitOps controllers, and other Kubernetes automation paths.
+The bootstrap installation contract should prefer packaging that common Kubernetes automation tools can consume without Kubecrate-specific interfaces. Helm is the current preferred candidate because it is widely supported by local workflows, Terraform, Ansible, GitOps controllers, and other Kubernetes automation paths.
 
 This is a working assumption and compatibility criterion, not a chart implementation in this change. A later proposal can validate or replace the packaging choice with concrete evidence.
 
 Alternatives considered:
 
 - Create a bespoke Kubecrate installer interface. Rejected because it would be harder for future tooling to adopt.
-- Decide all packaging and rendering mechanics now. Rejected because this change is defining the install-flow contract, not building the package.
+- Decide all packaging and rendering mechanics now. Rejected because this change is defining the bootstrap installation contract document, not building the package.
 
 ## Risks / Trade-offs
 
-- [Risk] The proposal remains too abstract to guide implementation. → Mitigation: include an illustrative install-flow document with concrete lifecycle stages and GitOps structure roles.
+- [Risk] The proposal remains too abstract to guide implementation. → Mitigation: include an illustrative bootstrap installation contract document with concrete lifecycle stages and GitOps structure roles.
 - [Risk] Helm as preferred candidate is mistaken for a final implementation commitment. → Mitigation: describe it as a working assumption and compatibility criterion to be validated later.
 - [Risk] kind-first work later expands the product boundary to include cluster creation. → Mitigation: explicitly state that Kubecrate begins at a reachable Kubernetes API and kind is a reference path.
 - [Risk] GitOps structure roles become final paths by implication. → Mitigation: label any example repository shape as illustrative and non-final.

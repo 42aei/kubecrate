@@ -43,7 +43,7 @@ It defines the project model, vocabulary, roadmap, and backlog. It does not yet 
 
 - `docs/README.md` for the docs map
 - `docs/architecture.md` for the operating model
-- `docs/install-flow.md` for the install-flow contract and GitOps handoff
+- `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
 
