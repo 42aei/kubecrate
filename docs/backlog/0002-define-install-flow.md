@@ -14,3 +14,5 @@ Describe what point at a cluster and install should mean for Kubecrate from the 
 Identify the expected inputs, the bootstrap installation boundary, and the conditions that mark the handoff into GitOps-managed operation.
 
 Keep it implementation-facing, but do not tie it to a specific script shape yet.
+
+Preserve a future install-flow diagram that shows: operator points at cluster and install, bootstrap installation starts, minimum platform services installed, GitOps controller running, handoff to GitOps-managed operation, and ongoing management through GitOps.

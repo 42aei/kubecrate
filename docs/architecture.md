@@ -40,6 +40,18 @@ Bootstrap is not a separate workload category.
 
 Some platform services have to be installed before GitOps exists. That is a lifecycle constraint, not a different class of service.
 
+```mermaid
+stateDiagram-v2
+    [*] --> bootstrap_installation
+    bootstrap_installation: bootstrap installation
+    bootstrap_installation --> minimum_platform_services_installed
+    minimum_platform_services_installed: minimum platform services installed
+    minimum_platform_services_installed --> gitops_controller_available
+    gitops_controller_available: GitOps controller available
+    gitops_controller_available --> gitops_managed_operation
+    gitops_managed_operation: GitOps-managed operation
+```
+
 Once GitOps is available, those same services should move to GitOps-managed operation unless a later proposal explicitly documents why a bootstrap-managed exception is still necessary.
 
 This keeps the long-term handling of platform services and application services aligned and reduces special-case operational paths.
