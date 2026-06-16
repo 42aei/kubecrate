@@ -8,7 +8,7 @@ Kubecrate needs a clear bootstrap installation contract document before adding i
 - Define the bootstrap installation start and end boundaries.
 - Define the GitOps-managed operation handoff condition.
 - Define conceptual GitOps source structure roles for platform services and application services after handoff.
-- Document the kind-first local path as the first reference path, not the product boundary.
+- Preserve a cluster-provider agnostic bootstrap boundary while allowing the kind-first local path to remain a separate reference validation path.
 - Document bootstrap packaging criteria that favor widely consumable Kubernetes tooling, with Helm as the preferred candidate unless a later proposal identifies a concrete incompatibility.
 - Add a docs-only bootstrap installation contract document with an illustrative, non-runnable example flow.
 - Do not add Kubernetes manifests, installation scripts, or final component selections in this change.

@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Define bootstrap installation boundary
-Kubecrate SHALL define bootstrap installation as starting after a conforming Kubernetes API is reachable and the operator or calling tool can provide credentials to apply bootstrap resources.
+Kubecrate SHALL define bootstrap installation as starting after a Kubernetes API is reachable, the operator or calling tool can provide credentials and permissions to apply bootstrap resources, and any pre-existing resources that bootstrap installation will own do not conflict with those bootstrap-owned resources.
 
 #### Scenario: Cluster creation remains outside bootstrap boundary
 - **WHEN** the install flow describes the beginning of bootstrap installation
-- **THEN** it identifies a reachable Kubernetes API and usable credentials as prerequisites instead of describing cluster creation as part of Kubecrate bootstrap installation
+- **THEN** it identifies a reachable Kubernetes API, usable permissions, and non-conflicting bootstrap-owned resources as prerequisites instead of describing cluster creation as part of Kubecrate bootstrap installation
 
 ### Requirement: Define GitOps handoff condition
 Kubecrate SHALL define bootstrap installation as complete only when a GitOps controller is running, bound to a Git source, and able to reconcile an established structure for platform services and application services.
@@ -36,11 +36,11 @@ Kubecrate SHALL define the roles that the GitOps source structure must support f
 - **THEN** it distinguishes the GitOps entrypoint, platform services, application services, and cluster or environment binding without mandating final repository paths
 
 ### Requirement: Preserve kind-first as reference path
-Kubecrate SHALL describe the kind-first local path as the first reference path for proving the install flow, not as the product interface or cluster-provider boundary.
+Kubecrate SHALL preserve a cluster-provider agnostic bootstrap boundary and, when it references the kind-first local path, describe it as a separate reference validation path rather than the product interface or cluster-provider boundary.
 
 #### Scenario: Kind does not define the contract
 - **WHEN** the install flow references kind
-- **THEN** it explains kind as a local reference path while preserving a cluster-provider agnostic bootstrap boundary
+- **THEN** it explains kind as a separate local reference validation path while preserving a cluster-provider agnostic bootstrap boundary
 
 ### Requirement: Prefer compatible bootstrap packaging
 Kubecrate SHALL define bootstrap packaging criteria that prefer widely consumable Kubernetes tooling and avoid bespoke interfaces without clear operational reason.

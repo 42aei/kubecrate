@@ -1,6 +1,6 @@
 ## Context
 
-Kubecrate's current docs define a two-axis model: lifecycle phase (`bootstrap installation` or `GitOps-managed operation`) and workload category (`platform services` or `application services`). They also state the target experience as `point at a cluster and install`, with a kind-first local path that preserves the long-term goal of cluster-provider agnostic operation.
+Kubecrate's current docs define a two-axis model: lifecycle phase (`bootstrap installation` or `GitOps-managed operation`) and workload category (`platform services` or `application services`). They also state the target experience as `point at a cluster and install`, while the kind-first local path remains a separate local reference path that preserves the long-term goal of cluster-provider agnostic operation.
 
 The missing piece is the bootstrap installation contract document. Without it, later implementation work can accidentally collapse cluster creation, bootstrap installation, GitOps setup, platform services, and application services into one vague installer. This change keeps those boundaries explicit before any manifests or scripts are added.
 
@@ -12,7 +12,7 @@ The missing piece is the bootstrap installation contract document. Without it, l
 - Define what an operator or calling tool must provide at the conceptual level.
 - Define the handoff into GitOps-managed operation.
 - Define conceptual GitOps source structure roles for platform services and application services.
-- Preserve kind-first as the first reference path without making kind the product interface.
+- Preserve a cluster-provider agnostic bootstrap boundary while allowing kind-first to remain a separate reference validation path.
 - Record compatibility criteria for future bootstrap packaging decisions.
 - Include an illustrative example flow that shows the lifecycle without creating runnable implementation artifacts.
 
@@ -26,11 +26,11 @@ The missing piece is the bootstrap installation contract document. Without it, l
 
 ## Decisions
 
-### Kubecrate begins at a reachable Kubernetes API
+### Kubecrate begins at a reachable Kubernetes API with usable access
 
-Kubecrate bootstrap installation starts after a conforming Kubernetes API is reachable and the operator or calling tool can provide credentials to apply bootstrap resources.
+Kubecrate bootstrap installation starts after a Kubernetes API is reachable, the operator or calling tool can provide credentials and permissions to apply bootstrap resources, and any pre-existing resources that bootstrap installation will own do not conflict with those bootstrap-owned resources.
 
-This keeps cluster creation outside the Kubecrate bootstrap boundary. The kind-first local path can create a local cluster for reference use later, but that is a driver for the contract, not the contract itself.
+This keeps cluster creation outside the Kubecrate bootstrap boundary and avoids implying that a fresh cluster is universally required. The kind-first local path can create a local cluster for reference validation, but that is separate from the contract itself.
 
 Alternatives considered:
 
@@ -74,5 +74,5 @@ Alternatives considered:
 
 - [Risk] The proposal remains too abstract to guide implementation. → Mitigation: include an illustrative bootstrap installation contract document with concrete lifecycle stages and GitOps structure roles.
 - [Risk] Helm as preferred candidate is mistaken for a final implementation commitment. → Mitigation: describe it as a working assumption and compatibility criterion to be validated later.
-- [Risk] kind-first work later expands the product boundary to include cluster creation. → Mitigation: explicitly state that Kubecrate begins at a reachable Kubernetes API and kind is a reference path.
+- [Risk] kind-first work later expands the product boundary to include cluster creation. → Mitigation: explicitly state that Kubecrate begins at a reachable Kubernetes API boundary and keep kind-first scoped to reference validation.
 - [Risk] GitOps structure roles become final paths by implication. → Mitigation: label any example repository shape as illustrative and non-final.

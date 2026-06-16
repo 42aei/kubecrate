@@ -7,7 +7,7 @@ That is intentional. The first goal is to make the project model, language, and 
 ## Documents in this folder
 
 - `architecture.md` explains the core model.
-- `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including the bootstrap installation contract, GitOps-managed operation handoff, kind-first local path, and how platform services and application services fit after handoff.
+- `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
 

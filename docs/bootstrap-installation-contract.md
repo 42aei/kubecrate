@@ -17,10 +17,13 @@ Bootstrap installation is a lifecycle phase, not a third workload category.
 
 Bootstrap installation starts after:
 
-- a conforming Kubernetes API is reachable, and
-- the operator or calling tool can provide credentials to apply the resources required for bootstrap installation.
+- a Kubernetes API is reachable,
+- the operator or calling tool has credentials and permissions to create or update the resources required for bootstrap installation, and
+- any pre-existing resources that bootstrap installation will own do not conflict with those bootstrap-owned resources.
 
-Cluster creation is outside the bootstrap installation boundary. The kind-first local path is a reference path for this contract, not part of the contract boundary itself.
+Bootstrap installation does not require a fresh or new cluster by default. It can start on any cluster that meets these prerequisites.
+
+Cluster creation is outside the bootstrap installation boundary.
 
 ## Bootstrap installation completion and GitOps handoff
 
@@ -38,7 +41,7 @@ Bootstrap installation may include the GitOps controller and supporting bootstra
 
 The operator or calling tool provides two conceptual input categories:
 
-1. **Kubernetes access**: a reachable API and credentials that allow bootstrap installation.
+1. **Kubernetes access**: a reachable API and credentials with permissions that allow bootstrap installation.
 2. **GitOps source information**: a reference to a Git repository that the GitOps controller will reconcile, including any access credentials required.
 
 These inputs are tool-neutral. The contract does not require a kind-specific, Terraform-specific, Ansible-specific, or bespoke Kubecrate interface.
@@ -56,12 +59,6 @@ After bootstrap installation hands off to GitOps-managed operation, the GitOps s
 | **ordering and ownership boundaries** | A way to keep reconciliation order and responsibility understandable, especially between platform services, application services, and cluster-specific binding concerns. |
 
 Common patterns already exist across controllers. Flux documentation often shows roles that resemble infrastructure, apps, and cluster directories, sometimes with environment directories such as production or staging. Argo CD commonly expresses similar roles through Applications, AppProjects, destinations, and declarative parent-child entrypoints. Kubecrate should stay compatible with those patterns without locking the contract to a single repository layout.
-
-## Kind-first local path
-
-The kind-first local path is the first reference path for proving the contract. It allows early slices to stay small and testable on a local Kubernetes cluster without depending on a cloud provider.
-
-Kind is a reference path, not the product interface or provider boundary. The bootstrap installation contract remains cluster-provider agnostic.
 
 ## Contract decisions and deferred decisions
 
@@ -89,7 +86,7 @@ The following diagram is illustrative only. It shows the lifecycle boundaries an
 flowchart TD
     A[Operator or calling tool]
     B[Kubernetes API reachable]
-    C[Credentials can apply required bootstrap resources]
+    C[Credentials and permissions can apply required bootstrap resources]
     D[Install GitOps controller]
     E[Apply supporting bootstrap resources required for controller operation]
     F[Bind GitOps controller to Git source]
