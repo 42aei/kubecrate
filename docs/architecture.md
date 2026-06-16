@@ -68,14 +68,3 @@ Repository docs, proposals, and tasks should keep two axes visible:
    - application services
 
 If those axes blur, the project becomes harder to reason about.
-
-## Implications for implementation
-
-The first implementation slices should answer a small set of questions:
-
-- What is the minimum component set needed for a useful platform baseline?
-- What must exist during bootstrap installation before the GitOps handoff condition is met?
-- What should move into GitOps-managed operation once the GitOps controller is running?
-- What should the kind-first local path look like without treating it as the only future path?
-
-That is why this first repository pass stays docs-first. The project needs a stable vocabulary and operating model before it needs scaffolding.

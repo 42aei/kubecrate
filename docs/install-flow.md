@@ -43,14 +43,17 @@ These inputs are tool-neutral. The contract does not require a kind-specific, Te
 
 ## GitOps source structure roles
 
-After bootstrap installation hands off to GitOps-managed operation, the Git source must support the following conceptual roles. These are structure roles, not final repository paths:
+After bootstrap installation hands off to GitOps-managed operation, the GitOps source must support a small set of conceptual roles. These are roles, not final repository paths or directory names.
 
-- **GitOps entrypoint**: the root or bootstrap reference that the GitOps controller watches and reconciles.
-- **platform services**: definitions for shared platform capabilities (ingress, certificate management, observability, policy, etc.).
+- **GitOps entrypoint**: the reconciled entrypoint that defines what the controller starts from. In Flux terms this may look like a root Kustomization chain. In Argo CD terms it may look like an App of Apps or another declarative entrypoint.
+- **platform services**: definitions for shared platform capabilities such as ingress, certificate management, observability, policy, and the GitOps controller's supporting resources.
 - **application services**: definitions for the workloads that run on the platform.
-- **cluster or environment binding**: configuration that binds the GitOps definitions to a specific cluster or environment (target, overlays, values).
+- **cluster or environment binding**: configuration that binds shared definitions to a target cluster or environment, such as destination settings, overlays, values, or similar controller-specific binding data.
+- **ordering and ownership boundaries**: a way to keep reconciliation order and responsibility understandable, especially between shared platform services, application services, and cluster-specific binding concerns.
 
-Final directory names and repository layout are not decided in this change. They will be resolved by later implementation proposals once the kind-first local path and first installable slice are ready.
+Common patterns already exist across controllers. Flux documentation often shows roles that resemble infrastructure, apps, and cluster directories, sometimes with environment directories such as production or staging. Argo CD commonly expresses similar roles through Applications, AppProjects, destinations, and declarative parent-child entrypoints. Kubecrate should stay compatible with those patterns without locking this change to a single repository layout.
+
+Final directory names, repository boundaries, and controller-specific object mapping are not decided in this change. They will be resolved by later implementation proposals once the kind-first local path and first installable slice are ready.
 
 ## Kind-first local path
 
@@ -73,7 +76,7 @@ This install-flow definition explicitly excludes:
 - **Cluster creation**. Bootstrap installation starts with a reachable Kubernetes API. Cluster creation tools and workflows are outside this bootstrap installation contract.
 - **Runnable manifests**. This document defines the contract. Kubernetes manifests, Helm charts, and other runnable artifacts belong in later implementation changes.
 - **Installation scripts**. The contract is tool-neutral. Specific scripts, commands, or CLI interfaces are out of scope.
-- **Final repository paths**. The GitOps source structure roles are conceptual. Final directory layout decisions belong in later implementation proposals.
+- **Final repository paths**. The GitOps source structure roles are conceptual. Final directory layout decisions, including how environments are represented, belong in later implementation proposals.
 - **Final platform service selection**. The contract defines where platform services fit in the structure. Choosing which platform services to include is out of scope for bootstrap installation.
 
 ## Illustrative flow (non-runnable)
