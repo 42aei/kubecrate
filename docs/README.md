@@ -7,6 +7,7 @@ That is intentional. The first goal is to make the project model, language, and 
 ## Documents in this folder
 
 - `architecture.md` explains the core model.
+- `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
 
@@ -16,8 +17,9 @@ If you are new to the project, start with:
 
 1. the top-level `README.md`
 2. `architecture.md`
-3. `roadmap.md`
-4. the backlog items for near-term slices
+3. `bootstrap-installation-contract.md`
+4. `roadmap.md`
+5. the backlog items for near-term slices
 
 ## Current boundaries
 

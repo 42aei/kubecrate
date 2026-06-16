@@ -25,24 +25,13 @@ Kubecrate has two axes:
 1. lifecycle phase: bootstrap installation or GitOps-managed operation
 2. workload category: platform services or application services
 
-```mermaid
-flowchart TB
-    subgraph B[bootstrap installation]
-        BP[platform services]
-        BA[application services]
-    end
-
-    subgraph G[GitOps-managed operation]
-        GP[platform services]
-        GA[application services]
-    end
-```
-
 Platform services are shared capabilities that make the platform usable.
 
 Application services are the workloads that run on it.
 
-Bootstrap is not a third workload category. It is a lifecycle or management mode. Some platform services need bootstrap installation before GitOps exists, then move into GitOps-managed operation.
+Bootstrap is not a third workload category. It is a lifecycle or management mode.
+
+In practice, some platform services need bootstrap installation before GitOps exists. After that, they should move into GitOps-managed operation.
 
 ## Current repository scope
 
@@ -54,6 +43,7 @@ It defines the project model, vocabulary, roadmap, and backlog. It does not yet 
 
 - `docs/README.md` for the docs map
 - `docs/architecture.md` for the operating model
+- `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
 

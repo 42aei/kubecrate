@@ -1,7 +1,7 @@
 ---
 task_id: "0001"
 title: "Write initial project README"
-status: "proposed"
+status: "done"
 depends_on: []
 ---
 

@@ -38,21 +38,21 @@ They are the workloads people want to run once the shared capabilities exist.
 
 Bootstrap is not a separate workload category.
 
-Some platform services have to be installed before GitOps exists. That is a lifecycle constraint, not a different class of service.
+Some bootstrap components have to be installed before GitOps-managed operation exists. That is a lifecycle constraint, not a different class of service.
+
+This handoff is the main reason to keep the lifecycle axis separate from the workload category axis.
 
 ```mermaid
 stateDiagram-v2
     [*] --> bootstrap_installation
     bootstrap_installation: bootstrap installation
-    bootstrap_installation --> minimum_platform_services_installed
-    minimum_platform_services_installed: minimum platform services installed
-    minimum_platform_services_installed --> gitops_controller_available
-    gitops_controller_available: GitOps controller available
-    gitops_controller_available --> gitops_managed_operation
+    bootstrap_installation --> gitops_handoff_ready
+    gitops_handoff_ready: GitOps controller running\nbound to Git source\nable to reconcile initial structure
+    gitops_handoff_ready --> gitops_managed_operation
     gitops_managed_operation: GitOps-managed operation
 ```
 
-Once GitOps is available, those same services should move to GitOps-managed operation unless a later proposal explicitly documents why a bootstrap-managed exception is still necessary.
+Once GitOps-managed operation is available, platform services and application services should be reconciled through GitOps unless a later proposal explicitly documents why a bootstrap-managed exception is still necessary.
 
 This keeps the long-term handling of platform services and application services aligned and reduces special-case operational paths.
 
@@ -68,14 +68,3 @@ Repository docs, proposals, and tasks should keep two axes visible:
    - application services
 
 If those axes blur, the project becomes harder to reason about.
-
-## Implications for implementation
-
-The first implementation slices should answer a small set of questions:
-
-- What is the minimum component set needed for a useful platform baseline?
-- What must exist during bootstrap installation?
-- What should move into GitOps-managed operation once the GitOps controller is running?
-- What should the kind-first local path look like without treating it as the only future path?
-
-That is why this first repository pass stays docs-first. The project needs a stable vocabulary and operating model before it needs scaffolding.

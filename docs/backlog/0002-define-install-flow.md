@@ -1,7 +1,7 @@
 ---
 task_id: "0002"
 title: "Define install flow"
-status: "proposed"
+status: "in_progress"
 depends_on: ["0001"]
 ---
 
@@ -15,4 +15,4 @@ Identify the expected inputs, the bootstrap installation boundary, and the condi
 
 Keep it implementation-facing, but do not tie it to a specific script shape yet.
 
-Preserve a future install-flow diagram that shows: operator points at cluster and install, bootstrap installation starts, minimum platform services installed, GitOps controller running, handoff to GitOps-managed operation, and ongoing management through GitOps.
+This work is now expanded in OpenSpec change `define-install-flow` under `openspec/changes/define-install-flow/`. The change defines what `point at a cluster and install` means, including the bootstrap installation boundaries, GitOps-managed operation handoff condition, conceptual GitOps source structure roles for platform services and application services, and an illustrative non-runnable flow diagram. The kind-first local path is the first reference path, and Helm is noted as a preferred bootstrap packaging candidate with final validation deferred to a later proposal.

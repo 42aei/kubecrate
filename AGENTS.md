@@ -45,6 +45,7 @@ Do not collapse these axes together in docs or tasks.
 - They are starting points, not full specifications.
 - OpenSpec proposals expand them later when a task is ready.
 - Do not over-template backlog entries.
+- AI agents must keep backlog item frontmatter status current whenever they create, expand, start, complete, or obsolete backlog work. Do not expect the user to handle routine status hygiene manually.
 
 ## Slicing expectations
 
