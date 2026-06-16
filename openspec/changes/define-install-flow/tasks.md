@@ -1,11 +1,11 @@
 ## 1. Install-flow documentation
 
-- [ ] 1.1 Create `docs/install-flow.md` defining the operator-facing meaning of `point at a cluster and install`.
-- [ ] 1.2 Document the bootstrap installation start boundary as an already reachable Kubernetes API with usable credentials.
-- [ ] 1.3 Document the bootstrap completion condition as a running GitOps controller bound to a Git source with an initial reconciliation structure.
-- [ ] 1.4 Document conceptual GitOps source structure roles for GitOps entrypoint, platform services, application services, and cluster or environment binding.
-- [ ] 1.5 Include an illustrative non-runnable flow diagram that shows bootstrap installation handing off to GitOps-managed operation.
-- [ ] 1.6 Reconcile lifecycle wording and the illustrative flow so bootstrap installation ends at GitOps controller plus Git source plus reconciliation structure, not at a `minimum platform services installed` stage or final platform service selection.
+- [x] 1.1 Create `docs/install-flow.md` defining the operator-facing meaning of `point at a cluster and install`.
+- [x] 1.2 Document the bootstrap installation start boundary as an already reachable Kubernetes API with usable credentials.
+- [x] 1.3 Document the bootstrap completion condition as a running GitOps controller bound to a Git source with an initial reconciliation structure.
+- [x] 1.4 Document conceptual GitOps source structure roles for GitOps entrypoint, platform services, application services, and cluster or environment binding.
+- [x] 1.5 Include an illustrative non-runnable flow diagram that shows bootstrap installation handing off to GitOps-managed operation.
+- [x] 1.6 Reconcile lifecycle wording and the illustrative flow so bootstrap installation ends at GitOps controller plus Git source plus reconciliation structure, not at a `minimum platform services installed` stage or final platform service selection.
 
 Acceptance checks:
 - `docs/install-flow.md` states that `point at a cluster and install` starts from a reachable Kubernetes API and usable credentials.
@@ -16,9 +16,9 @@ Acceptance checks:
 
 ## 2. Compatibility and scope boundaries
 
-- [ ] 2.1 Document kind-first as the first local reference path without making kind the product interface.
-- [ ] 2.2 Document bootstrap packaging compatibility criteria and Helm as a preferred candidate, with final packaging validation deferred to a later proposal.
-- [ ] 2.3 Explicitly state non-goals: cluster creation, runnable manifests, install scripts, final repository paths, and final component selection.
+- [x] 2.1 Document kind-first as the first local reference path without making kind the product interface.
+- [x] 2.2 Document bootstrap packaging compatibility criteria and Helm as a preferred candidate, with final packaging validation deferred to a later proposal.
+- [x] 2.3 Explicitly state non-goals: cluster creation, runnable manifests, install scripts, final repository paths, and final component selection.
 
 Acceptance checks:
 - The install-flow document describes the kind-first local path as a reference path and keeps the contract cluster-provider agnostic.
@@ -27,10 +27,10 @@ Acceptance checks:
 
 ## 3. Repository integration and validation
 
-- [ ] 3.1 Link `docs/install-flow.md` from `docs/README.md` and the top-level `README.md`.
-- [ ] 3.2 Update `docs/backlog/0002-define-install-flow.md` to reflect that this OpenSpec change now captures the work.
-- [ ] 3.3 Verify the change preserves required project language and the two-axis architecture framing.
-- [ ] 3.4 Run `openspec validate define-install-flow --type change --strict --json --no-interactive` and `openspec status --change define-install-flow --json`.
+- [x] 3.1 Link `docs/install-flow.md` from `docs/README.md` and the top-level `README.md`.
+- [x] 3.2 Update `docs/backlog/0002-define-install-flow.md` to reflect that this OpenSpec change now captures the work.
+- [x] 3.3 Verify the change preserves required project language and the two-axis architecture framing.
+- [x] 3.4 Run `openspec validate define-install-flow --type change --strict --json --no-interactive` and `openspec status --change define-install-flow --json`.
 
 Acceptance checks:
 - `docs/README.md` and `README.md` both link to `docs/install-flow.md`.
