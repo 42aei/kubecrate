@@ -7,10 +7,12 @@ depends_on: ["0004"]
 
 ## Goal
 
-Create a lightweight local skill or workflow aid that helps contributors capture backlog items in the repository format without turning them into full proposals too early.
+Capture a deferred idea for a lightweight local skill or workflow aid that could help contributors record backlog items in the repository format without turning them into full proposals too early.
 
 ## Notes
 
-This should support the raw-capture nature of the backlog.
+Support the raw-capture nature of the backlog.
 
 Keep the format light and aligned with the repository language, especially around vertical slices and the two-axis model.
+
+This is a docs/backlog capture for a future workflow aid. No .opencode implementation belongs in the current docs-first pass.

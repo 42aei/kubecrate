@@ -2,7 +2,7 @@
 
 This folder contains lightweight raw captures.
 
-These files are not full specs. They are a simple way to keep near-term work visible until it is ready to become an OpenSpec proposal or implementation slice.
+These files are not full specs. They keep near-term work visible until it is ready to become an OpenSpec proposal or implementation slice.
 
 ## Format
 

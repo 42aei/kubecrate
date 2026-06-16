@@ -11,6 +11,6 @@ Create the first reviewable installable slice for Kubecrate using the kind-first
 
 ## Notes
 
-This should be a vertical slice, not a broad horizontal foundation pass.
+Make it a vertical slice, not a broad horizontal foundation pass.
 
 The slice should prove a small end-to-end path from bootstrap installation toward GitOps-managed operation.

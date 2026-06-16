@@ -11,6 +11,6 @@ Define the kind-first local path that will act as the first reference workflow f
 
 ## Notes
 
-The workflow should be local-first and simple enough for non-experienced platform engineers, while still reflecting the real install flow the project wants over time.
+Keep the workflow local-first and simple enough for less experienced platform engineers while still reflecting the intended install flow.
 
-Avoid language that makes kind look like the only supported future path.
+Avoid language that makes kind look like the only future path.

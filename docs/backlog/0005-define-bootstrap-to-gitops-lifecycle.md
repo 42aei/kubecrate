@@ -11,6 +11,6 @@ Clarify how Kubecrate moves from bootstrap installation into GitOps-managed oper
 
 ## Notes
 
-This should make it clear that bootstrap is a lifecycle mode, not a third service category.
+Make it clear that bootstrap is a lifecycle mode, not a third service category.
 
-It should also identify platform services that require pre-GitOps installation and how they are expected to transition once GitOps is available.
+Identify which platform services need pre-GitOps installation and how they move once GitOps is available.

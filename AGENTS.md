@@ -2,7 +2,7 @@
 
 This repository is in an early docs-first bootstrap phase.
 
-Use the repository language consistently and keep changes small, reviewable, and aligned with the project model.
+Use the project language consistently. Keep changes small, reviewable, and aligned with the project model.
 
 ## Repository working principles
 
@@ -26,32 +26,32 @@ Use these terms consistently in docs, tasks, and proposals:
 - kind-first local path
 - point at a cluster and install
 
-Avoid introducing competing terms for the same concepts unless there is a clear reason and the change is made explicitly across the repo.
+Do not introduce competing terms unless there is a clear reason and the change is made explicitly across the repo.
 
 ## Architecture framing to preserve
 
-Kubecrate uses a two-axis model and repository work should preserve it:
+Kubecrate uses a two-axis model. Preserve it in repository work:
 
 - lifecycle phase: bootstrap installation or GitOps-managed operation
 - workload category: platform services or application services
 
 Bootstrap is a lifecycle or management mode, not a separate service category.
 
-Docs and tasks should not collapse these axes together.
+Do not collapse these axes together in docs or tasks.
 
 ## Backlog and planning rules
 
 - Backlog items in `docs/backlog/` are lightweight raw captures.
 - They are starting points, not full specifications.
-- OpenSpec proposals expand backlog items later when a task is ready to be worked.
+- OpenSpec proposals expand them later when a task is ready.
 - Do not over-template backlog entries.
 
 ## Slicing expectations
 
 - Prefer vertical slices.
 - Each OpenSpec change should produce a reviewable increment.
-- Avoid horizontal layer-only slices unless there is an explicit justification.
-- Keep each slice tied to a user-visible or operator-visible outcome where possible.
+- Avoid horizontal layer-only slices unless there is a clear justification.
+- Tie each slice to a user-visible or operator-visible outcome where possible.
 
 ## Current phase guardrails
 

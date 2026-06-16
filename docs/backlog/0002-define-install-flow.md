@@ -11,6 +11,6 @@ Describe what point at a cluster and install should mean for Kubecrate from the 
 
 ## Notes
 
-This should identify the expected inputs, the bootstrap installation boundary, and what conditions mark the handoff into GitOps-managed operation.
+Identify the expected inputs, the bootstrap installation boundary, and the conditions that mark the handoff into GitOps-managed operation.
 
-Keep it implementation-facing, but not tied to a specific script shape yet.
+Keep it implementation-facing, but do not tie it to a specific script shape yet.

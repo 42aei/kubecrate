@@ -11,6 +11,6 @@ Write down the working model for platform services and application services so l
 
 ## Notes
 
-The model should stay practical.
+Keep the model practical.
 
 It should help with ownership, lifecycle thinking, and repository structure, not become a taxonomy exercise.

@@ -6,9 +6,9 @@ That is intentional. The first goal is to make the project model, language, and 
 
 ## Documents in this folder
 
-- `architecture.md` explains the core model and the main operating assumptions.
-- `roadmap.md` outlines the current expected order of work.
-- `backlog/` holds lightweight raw task captures that can later turn into OpenSpec proposals.
+- `architecture.md` explains the core model.
+- `roadmap.md` shows the near-term order of work.
+- `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
 
 ## How to read the docs
 
@@ -23,4 +23,4 @@ If you are new to the project, start with:
 
 This docs set is for the first Kubecrate bootstrap pass.
 
-It defines intent and direction, but it does not yet define final manifests, component wiring, or installation mechanics in enough detail to be treated as implementation-ready.
+It defines intent and direction. It is not implementation-ready, and it does not yet define final manifests, component wiring, or installation mechanics.
