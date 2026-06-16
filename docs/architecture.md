@@ -40,6 +40,8 @@ Bootstrap is not a separate workload category.
 
 Some platform services have to be installed before GitOps exists. That is a lifecycle constraint, not a different class of service.
 
+This handoff is the main reason to keep the lifecycle axis separate from the workload category axis.
+
 ```mermaid
 stateDiagram-v2
     [*] --> bootstrap_installation
