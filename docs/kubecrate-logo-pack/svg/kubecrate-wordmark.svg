@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="130" viewBox="0 0 560 130" role="img" aria-labelledby="title desc">
+<title id="title">KubeCrate logo</title>
+<desc id="desc">A blue isometric crate with a Kubernetes-inspired badge, used as the KubeCrate logo.</desc>
+
+
+<defs>
+  <linearGradient id="textBlue" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0%" stop-color="#2563EB"/>
+    <stop offset="100%" stop-color="#38BDF8"/>
+  </linearGradient>
+</defs>
+<text x="8" y="92" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif" font-size="88" font-weight="800" letter-spacing="-3">
+  <tspan fill="#061A3A">Kube</tspan><tspan fill="url(#textBlue)">Crate</tspan>
+</text>
+
+</svg>
