@@ -45,6 +45,8 @@ Bootstrap installation is complete when the cluster reaches the defined handoff 
 
 This is the evidence point for the local reference workflow.
 
+Kubecrate intentionally treats the bootstrap-installed GitOps controller and supporting bootstrap resources as part of GitOps-managed operation after handoff. Once handoff is reached, those resources are expected to be controlled and reconciled through GitOps rather than left in an ambiguous bootstrap-owned state.
+
 ### 4. GitOps-managed operation
 
 After handoff, ongoing reconciliation moves into GitOps-managed operation.
@@ -53,11 +55,21 @@ From that point, platform services and application services are managed through 
 
 ## Inputs and outputs
 
-### Inputs
+### Local setup output
 
-The kind-first local path assumes these conceptual inputs:
+Local setup produces the boundary that bootstrap installation consumes:
 
-- local Kubernetes access to a reachable cluster API
+- a reachable local Kubernetes API
+- kubeconfig or equivalent Kubernetes access for the operator or calling tool
+- usable permissions for the operator or calling tool to perform bootstrap installation
+
+Any local credentials, kubeconfig updates, and operator-supplied secret trust material needed to reach that boundary are prepared during local setup.
+
+### Bootstrap installation inputs
+
+Bootstrap installation then consumes these conceptual inputs:
+
+- Kubernetes access to the reachable cluster API
 - permissions for the operator or calling tool to perform bootstrap installation
 - GitOps source information
 - operator-supplied secret trust material if a bootstrap or early platform service needs it
@@ -73,6 +85,7 @@ That handoff is evidenced by the following non-runnable signals:
 - the GitOps controller is running in the cluster
 - the controller is bound to the intended Git source
 - the initial structure for platform services and application services can reconcile
+- the bootstrap-installed GitOps controller and supporting bootstrap resources have handed off into GitOps-managed operation
 
 ## What this workflow is for
 
@@ -91,6 +104,7 @@ This document does not define:
 - runnable manifests, scripts, charts, or commands
 - a final component set for platform services or application services
 - a final repository layout for GitOps-managed operation
+- the final GitOps source structure or repository boundary beyond backlog item `0010`
 - a provider-specific product boundary beyond the kind-first local path as the first reference workflow
 - a final packaging choice for bootstrap installation
 - a final GitOps controller choice
