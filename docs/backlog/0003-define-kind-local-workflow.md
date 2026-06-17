@@ -1,7 +1,7 @@
 ---
 task_id: "0003"
 title: "Define kind local workflow"
-status: "proposed"
+status: "done"
 depends_on: ["0002"]
 ---
 
@@ -14,3 +14,7 @@ Define the kind-first local path that will act as the first reference workflow f
 Keep the workflow local-first and simple enough for less experienced platform engineers while still reflecting the intended install flow.
 
 Avoid language that makes kind look like the only future path.
+
+## Outcome
+
+Permanent document added at `docs/kind-local-workflow.md`.

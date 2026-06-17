@@ -8,6 +8,7 @@ That is intentional. The first goal is to make the project model, language, and 
 
 - `architecture.md` explains the core model.
 - `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
+- `kind-local-workflow.md` defines the local reference workflow for the kind-first local path.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
 
@@ -18,8 +19,9 @@ If you are new to the project, start with:
 1. the top-level `README.md`
 2. `architecture.md`
 3. `bootstrap-installation-contract.md`
-4. `roadmap.md`
-5. the backlog items for near-term slices
+4. `kind-local-workflow.md`
+5. `roadmap.md`
+6. the backlog items for near-term slices
 
 ## Current boundaries
 
