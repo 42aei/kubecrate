@@ -1,7 +1,7 @@
 ---
 task_id: "0005"
 title: "Define bootstrap to GitOps lifecycle"
-status: "proposed"
+status: "done"
 depends_on: ["0002"]
 ---
 

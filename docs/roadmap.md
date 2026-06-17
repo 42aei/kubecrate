@@ -28,6 +28,8 @@ The platform should start with the smallest useful set of platform services.
 
 If a component does not help establish the baseline or validate the first installable slice, it should wait.
 
+Part of that work is deciding how secret handling should work on the kind-first local path. Start the research from the External-Secrets Operator supported backends list and narrow toward the smallest practical local secret engine.
+
 ### 4. Create the first installable slice
 
 The first real slice should be reviewable and useful on its own.

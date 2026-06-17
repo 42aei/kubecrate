@@ -43,6 +43,7 @@ The operator or calling tool provides two conceptual input categories:
 
 1. **Kubernetes access**: a reachable API and credentials with permissions that allow bootstrap installation.
 2. **GitOps source information**: a reference to a Git repository that the GitOps controller will reconcile, including any access credentials required.
+3. **Secret trust material**: any credentials or trust material required by secret-handling platform services are supplied by the operator for now.
 
 These inputs are tool-neutral. The contract does not require a kind-specific, Terraform-specific, Ansible-specific, or bespoke Kubecrate interface.
 
