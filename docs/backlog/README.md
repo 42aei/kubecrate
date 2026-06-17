@@ -19,4 +19,5 @@ Nothing more is required in this phase.
 - Keep items short and concrete.
 - Preserve project language and the two-axis model.
 - Before expanding an item into OpenSpec, evaluate its size and readiness. Do not turn every small note or discussion thread into a proposal; keep it lightweight until it is large and concrete enough to need a scoped change.
+- `proposed` means candidate for evaluation, not approval for OpenSpec. When asked what is next, return `ready for OpenSpec`, `not ready`, or `unclear` first; default to `unclear` if the item lacks concrete scope or acceptance criteria.
 - Prefer backlog entries that can turn into vertical slices.
