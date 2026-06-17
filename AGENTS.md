@@ -1,6 +1,6 @@
 # AGENTS
 
-This repository is in an early docs-first bootstrap phase.
+This repository is in an early architecture and planning phase before implementation files are added.
 
 Use the project language consistently. Keep changes small, reviewable, and aligned with the project model.
 
@@ -43,7 +43,7 @@ Do not collapse these axes together in docs or tasks.
 
 - Backlog items in `docs/backlog/` are lightweight raw captures.
 - They are starting points, not full specifications.
-- OpenSpec proposals expand them later when a task is ready.
+- Before expanding a backlog item into OpenSpec, first evaluate whether the idea is large, concrete, and ready enough to justify a scoped change. Small ideas, loose thoughts, and undersized follow-ups should stay as discussion or lightweight backlog notes until that threshold is met.
 - Do not over-template backlog entries.
 - AI agents must keep backlog item frontmatter status current whenever they create, expand, start, complete, or obsolete backlog work. Do not expect the user to handle routine status hygiene manually.
 
@@ -54,9 +54,19 @@ Do not collapse these axes together in docs or tasks.
 - Avoid horizontal layer-only slices unless there is a clear justification.
 - Tie each slice to a user-visible or operator-visible outcome where possible.
 
+## Repository placement rules
+
+- Docs and planning artifacts live under `docs/` until an installable slice requires runtime files.
+- Do not add empty technical skeleton directories.
+- Do not create top-level lifecycle or workload folders until a proposal needs concrete files.
+- Future runtime layout must preserve both axes:
+  - lifecycle phase: bootstrap installation or GitOps-managed operation
+  - workload category: platform services or application services
+- Environment-specific structure is deferred until a change needs more than the kind-first local path.
+
 ## Current phase guardrails
 
-For this bootstrap pass:
+For this architecture and planning pass:
 
 - focus on repository docs and backlog definition
 - do not add Kubernetes manifests

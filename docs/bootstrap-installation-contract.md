@@ -39,7 +39,7 @@ Bootstrap installation may include the GitOps controller and supporting bootstra
 
 ## Operator inputs
 
-The operator or calling tool provides two conceptual input categories:
+The operator or calling tool provides three conceptual input categories:
 
 1. **Kubernetes access**: a reachable API and credentials with permissions that allow bootstrap installation.
 2. **GitOps source information**: a reference to a Git repository that the GitOps controller will reconcile, including any access credentials required.

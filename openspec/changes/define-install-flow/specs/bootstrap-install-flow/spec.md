@@ -49,8 +49,8 @@ Kubecrate SHALL define bootstrap packaging criteria that prefer widely consumabl
 - **WHEN** the install flow discusses bootstrap packaging direction
 - **THEN** it identifies Helm as the preferred candidate due to broad compatibility while leaving final implementation validation to a later proposal
 
-### Requirement: Keep bootstrap installation contract document docs-only
-Kubecrate SHALL keep this bootstrap installation contract document docs-only and SHALL NOT add Kubernetes manifests, installation scripts, Helm charts, or final component selections.
+### Requirement: Keep bootstrap installation contract document non-runnable
+Kubecrate SHALL keep this bootstrap installation contract document non-runnable and SHALL NOT add Kubernetes manifests, installation scripts, Helm charts, or final component selections.
 
 #### Scenario: Definition work avoids implementation artifacts
 - **WHEN** the bootstrap installation contract document change is applied

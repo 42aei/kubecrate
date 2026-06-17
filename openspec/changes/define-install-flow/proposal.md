@@ -10,7 +10,7 @@ Kubecrate needs a clear bootstrap installation contract document before adding i
 - Define conceptual GitOps source structure roles for platform services and application services after handoff.
 - Preserve a cluster-provider agnostic bootstrap boundary while allowing the kind-first local path to remain a separate reference validation path.
 - Document bootstrap packaging criteria that favor widely consumable Kubernetes tooling, with Helm as the preferred candidate unless a later proposal identifies a concrete incompatibility.
-- Add a docs-only bootstrap installation contract document with an illustrative, non-runnable example flow.
+- Add a bootstrap installation contract document with an illustrative, non-runnable example flow.
 - Do not add Kubernetes manifests, installation scripts, or final component selections in this change.
 
 ## Capabilities
