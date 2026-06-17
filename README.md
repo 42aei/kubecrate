@@ -48,6 +48,7 @@ It defines the project model, vocabulary, roadmap, and backlog before adding Kub
 - `docs/README.md` for the docs map
 - `docs/architecture.md` for the operating model
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
+- `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
 
