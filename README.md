@@ -39,9 +39,9 @@ In practice, some platform services need bootstrap installation before GitOps ex
 
 ## Current repository scope
 
-This repository is still docs-first.
+This repository is currently in an architecture and planning phase.
 
-It defines the project model, vocabulary, roadmap, and backlog. It does not yet include Kubernetes manifests, installation scripts, or runtime scaffolding.
+It defines the project model, vocabulary, roadmap, and backlog before adding Kubernetes manifests, installation scripts, or runtime structure.
 
 ## Documents
 

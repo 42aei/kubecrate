@@ -18,5 +18,5 @@ Nothing more is required in this phase.
 
 - Keep items short and concrete.
 - Preserve project language and the two-axis model.
-- Expand an item later when it is ready for proposal or execution.
+- Before expanding an item into OpenSpec, evaluate its size and readiness. Do not turn every small note or discussion thread into a proposal; keep it lightweight until it is large and concrete enough to need a scoped change.
 - Prefer backlog entries that can turn into vertical slices.

@@ -23,6 +23,6 @@ If you are new to the project, start with:
 
 ## Current boundaries
 
-This docs set is for the first Kubecrate bootstrap pass.
+This docs set is for the first Kubecrate architecture and planning pass.
 
 It defines intent and direction. It is not implementation-ready, and it does not yet define final manifests, component wiring, or installation mechanics.

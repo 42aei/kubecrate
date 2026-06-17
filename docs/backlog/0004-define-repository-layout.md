@@ -1,20 +1,22 @@
 ---
 task_id: "0004"
 title: "Define repository layout"
-status: "proposed"
+status: "done"
 depends_on: ["0001"]
 ---
 
 ## Goal
 
-Define a repository layout that supports small vertical slices and keeps docs, bootstrap installation concerns, and GitOps-managed operation concerns clear.
+Define repository placement rules that support small vertical slices without adding runtime structure before an installable slice needs it.
 
 ## Notes
 
-Reflect the two-axis model without creating too many top-level categories too early.
+Docs and planning artifacts live under `docs/` until an installable slice requires runtime files.
 
-Favor a structure that stays navigable for contributors who are still learning the platform domain.
+Do not add empty technical skeleton directories.
 
-Future repository layout work should treat environments such as prod, staging, test, and local as an explicit design axis. That should be evaluated alongside lifecycle phase and workload category, without changing the current two-axis architecture model too early.
+Do not create top-level lifecycle or workload folders until a proposal needs concrete files.
 
-Evaluate layout patterns later rather than locking them now. That includes monorepo and split-repository approaches such as repo-per-environment, repo-per-team, or repo-per-app.
+Future runtime layout must preserve both axes: lifecycle phase (`bootstrap installation` or `GitOps-managed operation`) and workload category (`platform services` or `application services`).
+
+Environment-specific structure is deferred until a change needs more than the kind-first local path.
