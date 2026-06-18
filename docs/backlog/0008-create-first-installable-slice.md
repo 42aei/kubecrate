@@ -15,6 +15,8 @@ This item should become an OpenSpec proposal before implementation. Do not turn 
 
 A vertical slice that targets a prepared kind cluster and installs a minimal platform baseline into it. It is not a broad horizontal platform foundation. Ingress, certificate management, observability, policy, and multi-environment/wave-like promotion are explicitly out of scope for 0008 (see 0011 and 0012).
 
+Kind cluster creation and preparation that validates the local environment is repository-owned local validation setup for the kind-first local path. It is not bootstrap installation. Bootstrap installation — `point at a cluster and install` — starts only once the Kubernetes API is reachable and the installer has usable credentials. This boundary keeps the bootstrap lifecycle phase focused on cluster-internal operations and avoids conflating environment preparation with lifecycle management.
+
 The slice must make concrete decisions in these areas:
 
 - **GitOps controller selection** — Choose the first GitOps controller (e.g., Flux, Argo CD, or another) for the kind-first bootstrap. The controller is initially installed during bootstrap installation, not as a GitOps-managed management unit at install time. The bootstrap installation contract's deferred controller choice is resolved here.
@@ -55,6 +57,7 @@ The following are candidate tasks for the OpenSpec proposal. They are listed her
 ## Acceptance direction
 
 - A reviewer can exercise `point at a cluster and install` on the kind-first local path by targeting a prepared kind cluster from a defined starting point.
+- Kind cluster creation and credential setup is repository-owned local validation infrastructure; bootstrap installation starts from a cluster with a reachable Kubernetes API and usable credentials.
 - Against a prepared kind cluster, the slice produces a running GitOps controller and at least one GitOps-managed platform service (ESO with Fake / ConfigMap-based local provider).
 - The bootstrap-installed resources come under GitOps-managed operation after handoff.
 - Validation evidence is captured and reproducible.
