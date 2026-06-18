@@ -23,7 +23,7 @@ The slice must make concrete decisions in these areas:
 
 - **Bootstrap packaging / interface** — Define how bootstrap installation installs into the prepared cluster. Contract-first packaging posture is settled; this slice selects the concrete packaging format (Helm chart, Kustomize overlay, controller wrapper, or a combination) that satisfies the management-unit contract from the define-gitops-component-management change. Bootstrap installation must not depend on a GitOps provider to install the controller itself.
 
-- **Runtime source layout** — Define the first runtime directory structure under the repository placement rules, preserving the two-axis model (lifecycle phase: bootstrap installation / GitOps-managed operation; workload category: platform services / application services). The layout must express platform services as separate management units, distinguish environment binding, and keep ordering and ownership boundaries clear.
+- **Runtime source layout** — Define the first runtime directory structure under the repository placement rules, preserving the two-axis model (lifecycle phase: bootstrap installation / GitOps-managed operation; workload category: platform services / application services). The layout must express platform services as separate management units, distinguish concrete cluster binding, and keep ordering and ownership boundaries clear.
 
 - **Repository boundary** — Resolve whether this repository is a one-stop shop or whether template or example repositories hold platform services and application services definitions. This decision is forced by the need to place runtime files.
 
@@ -36,8 +36,8 @@ The slice must make concrete decisions in these areas:
 ## Decisions to make
 
 - Which GitOps controller for the kind-first bootstrap?
-- What concrete packaging format for the bootstrap-delivered controller and the first GitOps-managed platform service?
-- What runtime directory layout expresses the two-axis model with separate management units and separable environment binding?
+- What concrete packaging format for the bootstrap-delivered controller and the first tracer bullet platform services?
+- What runtime directory layout expresses the two-axis model with separate management units and separable cluster binding?
 - Single-repository vs. template/example repository boundary?
 - How does the bootstrap-installed controller hand off ownership to GitOps-managed operation (controller self-management style)?
 - What is the minimum validation evidence that proves the slice works?
@@ -51,14 +51,14 @@ The following are candidate tasks for the OpenSpec proposal. They are listed her
 3. Define bootstrap-to-GitOps ownership handoff mechanics.
 4. Define the local validation/evidence contract for installable slices.
 5. Implement bootstrap installation against a prepared kind cluster with the chosen GitOps controller.
-6. Implement the first GitOps-managed platform service (ESO with Fake provider) as a management unit.
+6. Implement the first tracer bullet secret-handling path (ESO with Fake provider or another validated minimal local provider path) as a management unit where appropriate, while preserving the accepted bootstrap-critical Seed Secrets direction.
 7. Validate the end-to-end slice.
 
 ## Acceptance direction
 
 - A reviewer can exercise `point at a cluster and install` on the kind-first local path by targeting a prepared kind cluster from a defined starting point.
 - Kind cluster creation and credential setup is repository-owned local validation infrastructure; bootstrap installation starts from a cluster with a reachable Kubernetes API and usable credentials.
-- Against a prepared kind cluster, the slice produces a running GitOps controller and at least one GitOps-managed platform service (ESO with Fake / ConfigMap-based local provider).
+- Against a prepared kind cluster, the slice produces a running GitOps controller and the accepted secret-handling bootstrap path, including Seed Secrets projection for the GitOps controller and any first GitOps-managed platform service needed by the tracer bullet.
 - The bootstrap-installed resources come under GitOps-managed operation after handoff.
 - Validation evidence is captured and reproducible.
 
