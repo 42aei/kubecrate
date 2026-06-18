@@ -1,7 +1,7 @@
 ---
 task_id: "0008"
 title: "Create first kind-first installable bootstrap-to-GitOps slice"
-status: "proposed"
+status: "started"
 depends_on: ["0003", "0004", "0007", "0010"]
 ---
 
@@ -58,6 +58,7 @@ The following are candidate tasks for the OpenSpec proposal. They are listed her
 
 ## Notes
 
+- Active OpenSpec change: `openspec/changes/create-first-installable-slice/`.
 - This is a vertical slice, not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are deferred (see 0011). Wave-like promotion policy and gating are deferred (see 0012), but environment-specific configuration and future wave-like promotion remain preserved capabilities.
 - The management-unit contract and source-structure contract from the define-gitops-component-management change are binding inputs.
 - The kind-first local path (0003), repository placement rules (0004), minimal component set (0007), and GitOps source structure (0010) are all completed prerequisites.
