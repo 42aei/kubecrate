@@ -9,6 +9,7 @@ That is intentional. The first goal is to make the project model, language, and 
 - `architecture.md` explains the core model.
 - `platform-and-application-service-model.md` defines the working model for platform services and application services, including ownership, scope boundaries, and practical classification rules.
 - `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
+- `gitops-component-management.md` defines the management-unit contract, the minimal initial set of GitOps-managed platform services, the source-structure contract, and the packaging posture.
 - `kind-local-workflow.md` defines the local reference workflow for the kind-first local path.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
@@ -21,9 +22,10 @@ If you are new to the project, start with:
 2. `architecture.md`
 3. `platform-and-application-service-model.md`
 4. `bootstrap-installation-contract.md`
-5. `kind-local-workflow.md`
-6. `roadmap.md`
-7. the backlog items for near-term slices
+5. `gitops-component-management.md`
+6. `kind-local-workflow.md`
+7. `roadmap.md`
+8. the backlog items for near-term slices
 
 ## Current boundaries
 

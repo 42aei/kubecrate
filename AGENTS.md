@@ -44,6 +44,7 @@ Do not collapse these axes together in docs or tasks.
 - Backlog items in `docs/backlog/` are lightweight raw captures.
 - They are starting points, not full specifications.
 - Before expanding a backlog item into OpenSpec, first evaluate whether the idea is large, concrete, and ready enough to justify a scoped change. Small ideas, loose thoughts, and undersized follow-ups should stay as discussion or lightweight backlog notes until that threshold is met.
+- A backlog item marked `proposed` is only a candidate for evaluation, not permission to create an OpenSpec change. When asked what is next from the backlog, first return a readiness verdict: `ready for OpenSpec`, `not ready`, or `unclear`, with the recommended next action. Do not return `ready for OpenSpec` unless the item already has enough concrete scope and acceptance criteria to justify a change; otherwise return `unclear` and ask what decision or outcome should be clarified next.
 - Do not over-template backlog entries.
 - AI agents must keep backlog item frontmatter status current whenever they create, expand, start, complete, or obsolete backlog work. Do not expect the user to handle routine status hygiene manually.
 
