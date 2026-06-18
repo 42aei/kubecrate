@@ -35,21 +35,21 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 - [x] 1.5.2 Run `kubectl apply -k <bootstrap-overlay>` against the prepared cluster.
 - [x] 1.5.3 Verify ESO is running and the `seed-secrets` Secret exists in the ESO namespace.
 - [x] 1.5.4 Verify ESO ClusterSecretStore is connected and ExternalSecrets are projected (Git credentials synced).
-- [ ] 1.5.5 Verify Flux controller is running, has reconciled its initial state, and the `GitRepository` is Ready using the HTTPS remote and projected credentials.
+- [x] 1.5.5 Verify Flux controller is running, has reconciled its initial state, and the `GitRepository` is Ready using the HTTPS remote and projected credentials.
 
 Acceptance: ESO status shows Healthy. `kubectl get secret seed-secrets -n eso` exists. ESO ExternalSecrets show SecretSynced. `flux get all` shows Flux running with Ready GitRepository and the first reconciliation complete. Evidence commands capture the state.
 
 ### 1.6 Flux self-management and `kubecrate-reconciliation-marker` at version X
 
-- [ ] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
-- [ ] 1.6.2 Verify `kubecrate-reconciliation-marker` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value).
-- [ ] 1.6.3 Capture baseline evidence: Flux Kustomization status, `kubecrate-reconciliation-marker` version via `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'`, and resource presence or status.
+- [x] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
+- [x] 1.6.2 Verify `kubecrate-reconciliation-marker` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value).
+- [x] 1.6.3 Capture baseline evidence: Flux Kustomization status, `kubecrate-reconciliation-marker` version via `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'`, and resource presence or status.
 
 Acceptance: Flux Kustomization for itself shows Ready. The reconciliation marker is present at version X. The evidence command confirms `v0.1.0`. No bootstrap re-run is needed for Flux or the reconciliation marker proof to be active.
 
 ### 1.7 GitOps-managed update: `kubecrate-reconciliation-marker` version X→Y
 
-- [ ] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y (bump `data.version` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` or the equivalent cluster-owned marker path).
+- [x] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y (bump `data.version` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` or the equivalent cluster-owned marker path).
 - [ ] 1.7.2 Commit and push the change to the implementation branch. Wait for Flux reconciliation or trigger reconciliation.
 - [ ] 1.7.3 Verify Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y.
 - [ ] 1.7.4 Capture update evidence: before/after marker version via evidence command, Flux reconciliation logs or events, and updated ConfigMap content.
