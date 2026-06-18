@@ -51,9 +51,9 @@ These inputs are tool-neutral. The contract does not require a kind-specific, Te
 
 Kubecrate uses the term **Seed Secrets** for the initial operator-supplied trust material used during bootstrap installation.
 
-For the accepted 0008 direction, the operator provides a local `.env` file outside version control. Bootstrap installation reads that local file and materializes a Kubernetes Secret named `seed-secrets` in the External-Secrets Operator namespace.
+For the first installable slice, the operator provides a local `.env` file outside version control. Bootstrap installation reads that local file and materializes a Kubernetes Secret named `seed-secrets` in the External-Secrets Operator namespace.
 
-That Secret is not the long-term consumption point for platform services or application services. Instead, External-Secrets Operator uses Seed Secrets as bootstrap trust material and projects narrowly scoped Secrets into the namespaces that need them. In the accepted 0008 direction, this includes the Git credential Secret in `flux-system` before Flux starts.
+That Secret is not the long-term consumption point for platform services or application services. Instead, External-Secrets Operator uses Seed Secrets as bootstrap trust material and projects narrowly scoped Secrets into the namespaces that need them. In the first installable slice, this includes the Git credential Secret in `flux-system` before Flux starts.
 
 Seed Secrets standardizes how Kubecrate handles the first-secret problem during bootstrap installation. It does not remove that problem or replace a real external secret source.
 
@@ -63,10 +63,10 @@ After bootstrap installation hands off to GitOps-managed operation, the GitOps s
 
 | Role | Purpose |
 | --- | --- |
-| **GitOps entrypoint** | The reconciled entrypoint that defines what the controller starts from. In the accepted 0008 direction this is a Flux root path for a concrete cluster entrypoint. More generally, in Flux terms this may look like a root Kustomization chain. In Argo CD terms it may look like an App of Apps or another declarative entrypoint. |
+| **GitOps entrypoint** | The reconciled entrypoint that defines what the controller starts from. In the first installable slice this is a Flux root path for a concrete cluster entrypoint. More generally, in Flux terms this may look like a root Kustomization chain. In Argo CD terms it may look like an App of Apps or another declarative entrypoint. |
 | **platform services** | Definitions for shared platform capabilities such as ingress, certificate management, observability, policy, and supporting resources used by the GitOps controller. |
 | **application services** | Definitions for the workloads that run on the platform. |
-| **cluster or environment binding** | Configuration that binds shared definitions to a concrete target cluster or environment, such as destination settings, overlays, values, versions, or similar controller-specific binding data. The accepted 0008 direction uses concrete cluster binding first while preserving environment as a capability that can later drive promotion policy and gating. |
+| **cluster or environment binding** | Configuration that binds shared definitions to a concrete target cluster or environment, such as destination settings, overlays, values, versions, or similar controller-specific binding data. The first installable slice uses concrete cluster binding first while preserving environment as a capability that can later drive promotion policy and gating. |
 | **ordering and ownership boundaries** | A way to keep reconciliation order and responsibility understandable, especially between platform services, application services, and cluster-specific binding concerns. |
 
 Common patterns already exist across controllers. Flux documentation often shows roles that resemble infrastructure, apps, and cluster directories, sometimes with environment directories such as production or staging. Argo CD commonly expresses similar roles through Applications, AppProjects, destinations, and declarative parent-child entrypoints. Kubecrate should stay compatible with those patterns without locking the contract to a single repository layout.
@@ -75,20 +75,27 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 | Topic | Status | Contract position |
 | --- | --- | --- |
-| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The accepted 0008 direction is Kustomize-first bootstrap installation, likely `kubectl apply -k` or a very thin wrapper around it. |
-| GitOps source directory names and repository boundaries | Partially decided | The contract still treats source roles as the durable requirement, but the accepted 0008 direction is concrete cluster directories that bind reusable service definitions and place the first tracer bullet runtime files in this repository. |
+| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path is Kustomize-first, likely `kubectl apply -k` or a very thin wrapper around it. |
+| GitOps source directory names and repository boundaries | Partially decided | The contract still treats source roles as the durable requirement, but the first installable slice uses concrete cluster directories that bind reusable service definitions and place the first runtime files in this repository. |
 | Platform service selection after handoff | Deferred decision | The contract defines where platform services fit. It does not define the final set of platform services beyond bootstrap-supporting resources required for handoff. |
 
-## Accepted 0008 direction
+## First installable slice direction
 
-The following points are implementation direction accepted for backlog 0008. They do not replace the more general contract above.
+The first installable slice uses Flux as the first GitOps controller while the broader contract remains controller-agnostic.
 
-- Flux is the first concrete GitOps controller for 0008.
-- External-Secrets Operator is bootstrap-critical for 0008 and is installed before Flux because Flux needs projected Git credentials.
-- Bootstrap installation is Kustomize-first and should apply or reference the same Flux desired-state path that Flux later reconciles.
-- Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
-- The first runtime layout uses reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
-- Repository-owned kind setup plumbing can be part of the local validation harness for the kind-first local path, but it remains outside the bootstrap installation boundary.
+The first bootstrap path is Kustomize-first and should apply or reference the same Flux desired-state path that Flux later reconciles.
+
+Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
+
+The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
+
+External-Secrets Operator is bootstrap-critical and is installed before Flux because Flux needs projected Git credentials.
+
+Seed Secrets are materialized as `seed-secrets` in the ESO namespace and projected into narrow service-specific Secrets before consumers start.
+
+For the Seed Secrets flow, the local baseline must use an ESO provider that can read the bootstrap-created `seed-secrets` Kubernetes Secret. The ESO Kubernetes provider is the first expected local baseline. The Fake provider can still serve as a simple ESO smoke path, but not as Seed Secrets validation.
+
+Repository-owned kind setup plumbing can be part of the local validation harness for the kind-first local path, but it remains outside the bootstrap installation boundary.
 
 ## Non-goals
 
@@ -97,7 +104,7 @@ This bootstrap installation contract explicitly excludes:
 - **Cluster creation**. Bootstrap installation starts with a reachable Kubernetes API. Cluster creation tools and workflows are outside this contract.
 - **Runnable manifests**. This document defines the contract. Kubernetes manifests, Helm charts, and other runnable artifacts are outside this document.
 - **Installation scripts**. The contract is tool-neutral. Specific scripts, commands, or CLI interfaces are out of scope.
-- **Final repository paths**. The GitOps source structure roles are conceptual. The accepted 0008 direction gives the first concrete layout shape, but later changes can still refine path details or how environments are represented when there is a clear operational reason.
+- **Final repository paths**. The GitOps source structure roles are conceptual. The first installable slice gives the first concrete layout shape, but later changes can still refine path details or how environments are represented when there is a clear operational reason.
 - **Final platform service selection**. The contract defines where platform services fit. It does not define the complete set of platform services installed after handoff.
 
 ## Lifecycle diagram

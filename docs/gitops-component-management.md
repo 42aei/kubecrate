@@ -7,7 +7,7 @@ Kubecrate manages platform services as separately targetable units under GitOps-
 - The **source-structure contract**: the conceptual roles a GitOps source layout must express.
 - The **packaging posture**: contract-first; concrete packaging is chosen later.
 
-This document is a durable reference, not a runnable implementation. It builds on the [architecture](architecture.md) (two-axis model) and the [bootstrap installation contract](bootstrap-installation-contract.md) (handoff into GitOps-managed operation). The contract in this document was defined in `openspec/changes/define-gitops-component-management/` and combines backlog items 0007 and 0010. Where this document also records accepted 0008 direction, that material is labeled explicitly as 0008-specific implementation direction layered on top of the durable contract.
+This document is a durable reference, not a runnable implementation. It builds on the [architecture](architecture.md) (two-axis model) and the [bootstrap installation contract](bootstrap-installation-contract.md) (handoff into GitOps-managed operation). Where this document records first-slice implementation direction, that material is labeled explicitly so the broader contract stays clear.
 
 ## Management-unit contract
 
@@ -55,23 +55,23 @@ The GitOps controller is installed during bootstrap installation because it is r
 
 After handoff into GitOps-managed operation, the bootstrap-installed controller and supporting bootstrap resources are expected to come under GitOps-managed operation. Only the concrete mechanics of how those bootstrap resources are brought under GitOps-managed operation are deferred.
 
-The durable contract in this document does not require a controller choice. The accepted 0008 direction does make a first concrete controller choice, and that direction is recorded below without changing the broader controller-agnostic contract.
+The durable contract in this document does not require a controller choice. The first installable slice does make a first concrete controller choice, and that direction is recorded below without changing the broader controller-agnostic contract.
 
-#### Accepted 0008 controller and handoff direction
+#### First-slice controller and handoff direction
 
-For 0008, the first concrete GitOps controller is **Flux**.
+The first concrete GitOps controller for the first installable slice is **Flux**.
 
 Flux uses a self-managing handoff model for the first slice. Bootstrap installation should apply or reference the same Flux desired-state path that Flux later reconciles. There must not be duplicate independent Flux definitions under bootstrap installation and platform services. Bootstrap installation is a loader or reference, not a second source of truth.
 
 #### Bootstrap trust: operator-provided inputs
 
-Bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs needed to start bootstrap-critical services. This includes the GitOps controller, External-Secrets Operator in the accepted 0008 direction, and any other bootstrap-critical service.
+Bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs needed to start bootstrap-critical services. In the first slice, that trust material enters through Seed Secrets and ESO projection for the GitOps controller, External-Secrets Operator, and any other bootstrap-critical service that needs projected credentials.
 
 Bootstrap-critical services may be installed during bootstrap installation and then handed off to GitOps-managed operation. Whether a service is bootstrap-installed or first installed under GitOps-managed operation depends on its operational needs. This document states the input rule without prematurely classifying every service. When a later change introduces a concrete service, that change resolves whether the service follows the bootstrap-install-handoff path or the direct GitOps-managed path.
 
 ### External-Secrets Operator (bootstrap-critical platform service)
 
-**External-Secrets Operator (ESO)** is bootstrap-critical for the accepted 0008 direction. ESO is installed before the GitOps controller during bootstrap installation because the GitOps controller itself needs a projected Git credential before it can start GitOps-managed operation.
+**External-Secrets Operator (ESO)** is bootstrap-critical for the first installable slice. ESO is installed before the GitOps controller during bootstrap installation because the GitOps controller itself needs a projected Git credential before it can start GitOps-managed operation.
 
 ESO is still a platform service. The bootstrap-critical classification is about lifecycle phase, not workload category.
 
@@ -81,9 +81,13 @@ Services and controllers should not consume the raw `seed-secrets` Secret direct
 
 This pattern does not eliminate the first-secret problem. It standardizes how operator-supplied trust material enters the cluster and how that material is narrowed before services consume it.
 
-#### Fake provider for the kind-first local path
+#### Local ESO provider direction for Seed Secrets
 
-For the kind-first local path, the **Fake provider** is still the recommended local secret-handling baseline unless the first tracer bullet validates another minimal local provider path. It requires no external secret store credentials and keeps the local development path simple. The Fake provider is scoped to the kind-first local path only; it is not a production recommendation.
+For the first installable slice, the Seed Secrets path needs an ESO provider that can read the bootstrap-created `seed-secrets` Kubernetes Secret and project narrower Secrets from it.
+
+The **Fake provider** can still be used as a simple ESO smoke or demo path, but it does not validate the Seed Secrets flow because it does not read `seed-secrets`.
+
+The kind-first local path should therefore use the **ESO Kubernetes provider**, or an equivalent local provider with the same capability, as the Seed Secrets baseline.
 
 Real providers (AWS Secrets Manager, GCP Secret Manager, Vault, or others) can be introduced later as provider-specific needs arise, without changing the management-unit contract or the source structure.
 
@@ -112,9 +116,9 @@ The GitOps source structure must express the conceptual roles needed to support 
 | **cluster binding** | Configuration that binds management units to a concrete cluster. This includes values, overlays, destination settings, versions, or controller-specific binding data. |
 | **ordering and ownership boundaries** | A way to keep reconciliation order and responsibility understandable, especially between platform services and cluster binding. |
 
-These roles are conceptual. They do not mandate final file names for every controller object, but the current 0008 direction is concrete enough to state the intended first runtime layout when runtime files are introduced.
+These roles are conceptual. They do not mandate final file names for every controller object, but the first installable slice is concrete enough to state the intended first runtime layout when runtime files are introduced.
 
-### Accepted 0008 layout direction
+### First-slice layout direction
 
 When runtime files are introduced, reusable service definitions should live under `platform-services/<service>/base`.
 
@@ -126,13 +130,17 @@ This follows the general shape of Flux's recommended monorepo pattern where each
 
 The intended first model is concrete cluster directories, not reusable shared layers or profiles. Environment remains a preserved capability in this model because the concrete cluster identity can encode environment and later promotion policy can build on that. If duplication later becomes an operational problem, Kubecrate can revisit layered variants explicitly.
 
-For 0008, only the tracer bullet runtime files that are actually needed should be introduced. Empty skeleton directories are still out of scope.
+Only the tracer bullet runtime files that are actually needed should be introduced in the first installable slice. Empty skeleton directories are still out of scope.
 
 ### Concrete cluster identity
 
-The deployable unit is a concrete cluster identity such as `gcp-prod-web-eu1`, `gcp-prod-web-us1`, `gcp-prod-storage-eu1`, `gcp-staging-web-eu1`, `gcp-staging-storage-eu1`, or `aws-prod-web-eu1`.
+The first concrete cluster directory convention is `<provider>-<environment>-<workload>-<location>`.
 
-The directory name can encode provider, environment, workload, and region as a pragmatic convention. Kubecrate does not need a separate shared profile layer to express that model in the first runtime layout.
+Examples include `gcp-prod-web-eu1`, `gcp-prod-web-us1`, `gcp-prod-storage-eu1`, `gcp-staging-web-eu1`, `gcp-staging-storage-eu1`, and `aws-prod-web-eu1`.
+
+The same shape also applies to the kind-first local path as `kind-dev-misc-local`.
+
+This is a pragmatic first convention for concrete cluster directories, not an immutable taxonomy. It gives the first runtime layout a clear naming shape without introducing shared profile layers too early.
 
 ### Cluster binding separation
 
@@ -140,11 +148,11 @@ Cluster binding MUST be separable per management unit. A single platform service
 
 Version selection and configuration selection happen at the cluster binding layer, not only in the reusable service base. In practice, one cluster can stay on one version of a platform service while another cluster moves ahead first. That makes targeted rollout possible without introducing extra shared profile layers up front.
 
-### Accepted 0008 repository boundary direction
+### First-slice repository boundary direction
 
-For 0008, the first concrete runtime files for the tracer bullet should live in this repository. Template or example repository indirection is not part of the first slice.
+The first concrete runtime files for the tracer bullet should live in this repository. Template or example repository indirection is not part of the first slice.
 
-This is a 0008 implementation direction, not a permanent rule that every future repository boundary decision is closed forever. A later change can revisit broader repository boundaries if there is a clear operational reason.
+This is a first-slice direction, not a permanent rule that closes every future repository boundary decision. A later change can revisit broader repository boundaries if there is a clear operational reason.
 
 ## Packaging posture
 
@@ -160,7 +168,7 @@ The following packaging formats are identified as candidates that can satisfy th
 | **Kustomize** | A Kustomize overlay can be a management unit. Patches and overlays provide cluster-specific binding. |
 | **Controller wrappers** | Flux HelmRelease or Kustomization objects, or Argo CD Application objects, can wrap either format and provide additional reconciliation features. |
 
-The accepted 0008 direction is Kustomize-first bootstrap installation, likely `kubectl apply -k` or a very thin wrapper around it. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
+The first bootstrap path is Kustomize-first, likely `kubectl apply -k` or a very thin wrapper around it. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
 
 ### Forcing function
 
@@ -172,8 +180,8 @@ The following decisions are explicitly deferred. Each includes the rationale and
 
 | Decision | Rationale | Forcing function |
 | --- | --- | --- |
-| **Additional platform services** (ingress, certificate management, observability, policy) | The project posture is minimal over comprehensive. External-Secrets Operator validates the bootstrap-critical Seed Secrets and secret projection path, but it does not by itself prove the broader GitOps-managed platform services model. Additional services stay deferred unless 0008 explicitly needs one tiny extra GitOps-managed platform service to complete the first tracer bullet. | A later change that introduces a specific platform service when its operational need is clear. |
-| **Shared profile layers or reusable environment overlays** | The accepted 0008 direction is concrete cluster directories first. Shared layers can be reconsidered later if duplication becomes a clear operational problem. | A later change that has enough duplication evidence to justify a more layered source structure. |
+| **Additional platform services** (ingress, certificate management, observability, policy) | The project posture is minimal over comprehensive. External-Secrets Operator validates the bootstrap-critical Seed Secrets and secret projection path, but it does not by itself prove the broader GitOps-managed platform services model. Additional services stay deferred unless the first installable slice explicitly needs one tiny extra GitOps-managed platform service to complete the first tracer bullet. | A later change that introduces a specific platform service when its operational need is clear. |
+| **Shared profile layers or reusable environment overlays** | The first installable slice uses concrete cluster directories first. Shared layers can be reconsidered later if duplication becomes a clear operational problem. | A later change that has enough duplication evidence to justify a more layered source structure. |
 
 No deferred decision is indefinite or unresolvable. Each has a clear forcing function tied to a concrete future change.
 
