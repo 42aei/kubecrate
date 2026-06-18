@@ -13,58 +13,52 @@ This item should become an OpenSpec proposal before implementation. Do not turn 
 
 ## Scope
 
-A vertical slice that targets a prepared kind cluster and installs a minimal platform baseline into it. It is not a broad horizontal platform foundation. Ingress, certificate management, observability, policy, and multi-environment/wave-like promotion are explicitly out of scope for 0008 (see 0011 and 0012).
+A vertical slice that targets a prepared kind cluster and installs a minimal platform baseline into it. It is not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are explicitly out of scope for 0008 (see 0011). Wave-like promotion policy and gating are also out of scope for 0008 (see 0012), but the slice must preserve environment-specific configuration and future wave-like promotion as capabilities.
 
 Kind cluster creation and preparation that validates the local environment is repository-owned local validation setup for the kind-first local path. It is not bootstrap installation. Bootstrap installation — `point at a cluster and install` — starts only once the Kubernetes API is reachable and the installer has usable credentials. This boundary keeps the bootstrap lifecycle phase focused on cluster-internal operations and avoids conflating environment preparation with lifecycle management.
 
-The slice must make concrete decisions in these areas:
+## Accepted 0008 direction
 
-- **GitOps controller selection** — Choose the first GitOps controller (e.g., Flux, Argo CD, or another) for the kind-first bootstrap. The controller is initially installed during bootstrap installation, not as a GitOps-managed management unit at install time. The bootstrap installation contract's deferred controller choice is resolved here.
+The planning discussion already resolved the following 0008 design direction. The OpenSpec proposal should treat these as accepted inputs, not open questions.
 
-- **Bootstrap packaging / interface** — Define how bootstrap installation installs into the prepared cluster. Contract-first packaging posture is settled; this slice selects the concrete packaging format (Helm chart, Kustomize overlay, controller wrapper, or a combination) that satisfies the management-unit contract from the define-gitops-component-management change. Bootstrap installation must not depend on a GitOps provider to install the controller itself.
+- **GitOps controller** — 0008 uses **Flux** as the first concrete GitOps controller.
+- **Bootstrap packaging / interface** — 0008 uses a **Kustomize-first** bootstrap path, likely `kubectl apply -k` or a very thin wrapper around it. Helm is not the Kubecrate bootstrap package for this first slice. HelmRelease remains appropriate inside GitOps-managed operation for Helm-native platform services.
+- **Seed Secrets and ESO** — 0008 uses **Seed Secrets** as the operator-provided local input path. A real `.env` file must not be committed. Bootstrap installation materializes one Secret named `seed-secrets` in the ESO namespace. ESO is bootstrap-critical for 0008 and is installed before Flux so Flux can consume projected Git credentials. Services and controllers consume narrow ESO-projected Secrets, not the raw `seed-secrets` Secret.
+- **Flux self-management handoff** — 0008 uses a self-managing controller model. Bootstrap installation applies or loads the same Flux desired-state path that Flux later reconciles. There must not be duplicate independent Flux definitions under bootstrap installation and platform services. Bootstrap installation is a loader or reference, not a second source of truth.
+- **Runtime layout direction** — Reusable platform service definitions live under `platform-services/<service>/base`. Concrete cluster enablement, configuration, and version binding live under `clusters/<cluster>/platform-services/<service>.yaml` or an equivalent cluster binding path. `clusters/<cluster>/entrypoint` is the first GitOps reconciliation root for a concrete cluster. Do not make `platform-services/<service>/kind` the default pattern. Introduce reusable variants only if later duplication justifies them.
+- **Repository boundary** — 0008 uses this repository for the first concrete runtime files needed by the tracer bullet. Template or example repository indirection is not part of the first slice.
+- **Concrete cluster model** — Concrete cluster directories are the first runtime model. Cluster names may encode provider, environment, workload, and region, for example `gcp-prod-web-eu1`. This preserves environment as a capability through concrete cluster identity rather than replacing environment with clusters only.
+- **Kind plumbing** — Kind cluster creation and preparation remain outside bootstrap installation, but repository-owned kind validation plumbing is part of 0008 local validation scope. Implementation may add kind config, Make targets, or equivalent setup commands if needed to prove the kind-first local path.
+- **Tracer bullet validation** — 0008 should include a tracer bullet that proves GitOps-managed operation performs an update, for example by reconciling one version first and then changing the Git-managed version and confirming Flux upgrades it.
 
-- **Runtime source layout** — Define the first runtime directory structure under the repository placement rules, preserving the two-axis model (lifecycle phase: bootstrap installation / GitOps-managed operation; workload category: platform services / application services). The layout must express platform services as separate management units, distinguish concrete cluster binding, and keep ordering and ownership boundaries clear.
+## OpenSpec proposal focus
 
-- **Repository boundary** — Resolve whether this repository is a one-stop shop or whether template or example repositories hold platform services and application services definitions. This decision is forced by the need to place runtime files.
-
-- **Controller self-management / bootstrap-to-GitOps ownership handoff mechanics** — Define how the initially bootstrap-installed GitOps controller and supporting bootstrap resources come under GitOps-managed operation after handoff. The controller is not a GitOps-managed management unit at initial installation time; this task defines its subsequent ownership model. This covers the concrete mechanics deferred by the define-gitops-component-management change.
-
-- **ESO Fake provider validation** — Confirm that External-Secrets Operator with the Fake provider (or an equivalent ConfigMap-based local provider) works as the kind-first local path secret-handling baseline. If exact ESO provider naming or API is not validated here, capture it as a proposal validation task rather than a hard implementation claim.
-
-- **Local validation / evidence contract** — Define what validation gates and evidence an installable slice must satisfy before it is considered complete: e.g., cluster bootstrap succeeds, GitOps controller reconciles, ESO deploys and can sync a secret from the Fake provider, and the setup survives a kind cluster restart.
-
-## Decisions to make
-
-- Which GitOps controller for the kind-first bootstrap?
-- What concrete packaging format for the bootstrap-delivered controller and the first tracer bullet platform services?
-- What runtime directory layout expresses the two-axis model with separate management units and separable cluster binding?
-- Single-repository vs. template/example repository boundary?
-- How does the bootstrap-installed controller hand off ownership to GitOps-managed operation (controller self-management style)?
-- What is the minimum validation evidence that proves the slice works?
+The proposal still needs to turn the accepted direction into a reviewable slice. The main work is to define the smallest concrete implementation and validation path that proves the model.
 
 ## Tasks
 
 The following are candidate tasks for the OpenSpec proposal. They are listed here as starting points; the proposal may refine, reorder, or merge them.
 
-1. Choose the first GitOps controller for the kind-first bootstrap path.
-2. Define the first runtime source layout and repository boundary.
-3. Define bootstrap-to-GitOps ownership handoff mechanics.
-4. Define the local validation/evidence contract for installable slices.
-5. Implement bootstrap installation against a prepared kind cluster with the chosen GitOps controller.
-6. Implement the first tracer bullet secret-handling path (ESO with Fake provider or another validated minimal local provider path) as a management unit where appropriate, while preserving the accepted bootstrap-critical Seed Secrets direction.
-7. Validate the end-to-end slice.
+1. Define the smallest concrete runtime files that express the accepted Flux, Seed Secrets, and cluster binding direction.
+2. Define the bootstrap installation path for a prepared kind cluster using the accepted Kustomize-first interface.
+3. Define the Flux self-management handoff so bootstrap installation references the same desired-state path that Flux later reconciles.
+4. Define the local validation and evidence contract, including repository-owned kind setup plumbing needed for the kind-first local path.
+5. Implement bootstrap installation against a prepared kind cluster with Flux and bootstrap-critical ESO.
+6. Implement the first tracer bullet secret-handling path, including Seed Secrets projection for Flux and any first GitOps-managed platform service needed to prove the slice.
+7. Validate the end-to-end slice, including a GitOps-driven update.
 
 ## Acceptance direction
 
 - A reviewer can exercise `point at a cluster and install` on the kind-first local path by targeting a prepared kind cluster from a defined starting point.
-- Kind cluster creation and credential setup is repository-owned local validation infrastructure; bootstrap installation starts from a cluster with a reachable Kubernetes API and usable credentials.
-- Against a prepared kind cluster, the slice produces a running GitOps controller and the accepted secret-handling bootstrap path, including Seed Secrets projection for the GitOps controller and any first GitOps-managed platform service needed by the tracer bullet.
-- The bootstrap-installed resources come under GitOps-managed operation after handoff.
-- Validation evidence is captured and reproducible.
+- Repository-owned kind validation plumbing exists for local proof, but bootstrap installation still starts only from a cluster with a reachable Kubernetes API and usable credentials.
+- Against a prepared kind cluster, the slice produces bootstrap-critical ESO, projected Seed Secrets for Flux, a running Flux controller, and the first GitOps-managed platform service needed by the tracer bullet.
+- Flux becomes self-managing after handoff without duplicate independent Flux definitions in bootstrap installation and platform services.
+- Runtime files follow the accepted first model: reusable platform service definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
+- Validation evidence proves reconciliation works and that a Git-managed change causes Flux to update the tracer bullet.
 
 ## Notes
 
-- This is a vertical slice, not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are deferred (see 0011). Multi-environment and wave-like promotion are deferred (see 0012).
+- This is a vertical slice, not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are deferred (see 0011). Wave-like promotion policy and gating are deferred (see 0012), but environment-specific configuration and future wave-like promotion remain preserved capabilities.
 - The management-unit contract and source-structure contract from the define-gitops-component-management change are binding inputs.
 - The kind-first local path (0003), repository placement rules (0004), minimal component set (0007), and GitOps source structure (0010) are all completed prerequisites.
-- Explicitly identify which decisions from the define-gitops-component-management change this slice resolves and which it carries forward or defers.
+- Explicitly identify which previously deferred decisions this slice now resolves for 0008 and which broader contracts remain intentionally controller-agnostic.

@@ -7,7 +7,7 @@ Kubecrate manages platform services as separately targetable units under GitOps-
 - The **source-structure contract**: the conceptual roles a GitOps source layout must express.
 - The **packaging posture**: contract-first; concrete packaging is chosen later.
 
-This document is a durable reference, not a runnable implementation. It builds on the [architecture](architecture.md) (two-axis model) and the [bootstrap installation contract](bootstrap-installation-contract.md) (handoff into GitOps-managed operation). The decisions recorded here were made in `openspec/changes/define-gitops-component-management/` and combine backlog items 0007 and 0010.
+This document is a durable reference, not a runnable implementation. It builds on the [architecture](architecture.md) (two-axis model) and the [bootstrap installation contract](bootstrap-installation-contract.md) (handoff into GitOps-managed operation). The contract in this document was defined in `openspec/changes/define-gitops-component-management/` and combines backlog items 0007 and 0010. Where this document also records accepted 0008 direction, that material is labeled explicitly as 0008-specific implementation direction layered on top of the durable contract.
 
 ## Management-unit contract
 
@@ -37,7 +37,7 @@ Dependency orchestration (coordinating related services that genuinely depend on
 
 #### Future wave-like promotion
 
-The contract preserves wave-like promotion as a firm capability. A management unit can be promoted across clusters in a wave-like pattern. Per-cluster targeting and per-cluster configuration are the foundation that enables wave-like promotion. The specific promotion mechanism (environment sequencing, gating) is deferred to a later change, but the capability is a preserved design requirement, not an open question.
+The contract preserves wave-like promotion as a firm capability. A management unit can be promoted across concrete clusters in a wave-like pattern, and those concrete clusters may represent different environments. Per-cluster targeting and per-cluster configuration are the foundation that enables wave-like promotion. The specific promotion mechanism, environment sequencing, and gating are deferred to a later change, but the capability is a preserved design requirement, not an open question.
 
 ### Why contract-first
 
@@ -55,7 +55,13 @@ The GitOps controller is installed during bootstrap installation because it is r
 
 After handoff into GitOps-managed operation, the bootstrap-installed controller and supporting bootstrap resources are expected to come under GitOps-managed operation. Only the concrete mechanics of how those bootstrap resources are brought under GitOps-managed operation are deferred.
 
-The controller choice itself (Flux, Argo CD, or another) is also deferred. See [Deferred decisions](#deferred-decisions).
+The durable contract in this document does not require a controller choice. The accepted 0008 direction does make a first concrete controller choice, and that direction is recorded below without changing the broader controller-agnostic contract.
+
+#### Accepted 0008 controller and handoff direction
+
+For 0008, the first concrete GitOps controller is **Flux**.
+
+Flux uses a self-managing handoff model for the first slice. Bootstrap installation should apply or reference the same Flux desired-state path that Flux later reconciles. There must not be duplicate independent Flux definitions under bootstrap installation and platform services. Bootstrap installation is a loader or reference, not a second source of truth.
 
 #### Bootstrap trust: operator-provided inputs
 
@@ -108,15 +114,17 @@ The GitOps source structure must express the conceptual roles needed to support 
 
 These roles are conceptual. They do not mandate final file names for every controller object, but the current 0008 direction is concrete enough to state the intended first runtime layout when runtime files are introduced.
 
-### Current layout direction for 0008
+### Accepted 0008 layout direction
 
 When runtime files are introduced, reusable service definitions should live under `platform-services/<service>/base`.
 
 Concrete cluster directories should explicitly enable and configure those services, for example `clusters/<cluster>/platform-services/<service>.yaml`.
 
+`clusters/<cluster>/entrypoint` is the intended first GitOps reconciliation root or table of contents for that concrete cluster.
+
 This follows the general shape of Flux's recommended monorepo pattern where each cluster state is defined in a dedicated cluster directory that references shared infrastructure or app definitions. In Kubecrate terms, those reusable definitions are `platform services` and `application services`, not generic infrastructure or apps, unless the Flux pattern itself is being cited.
 
-The intended first model is concrete cluster directories, not reusable shared layers or profiles. If duplication later becomes an operational problem, Kubecrate can revisit that choice explicitly.
+The intended first model is concrete cluster directories, not reusable shared layers or profiles. Environment remains a preserved capability in this model because the concrete cluster identity can encode environment and later promotion policy can build on that. If duplication later becomes an operational problem, Kubecrate can revisit layered variants explicitly.
 
 For 0008, only the tracer bullet runtime files that are actually needed should be introduced. Empty skeleton directories are still out of scope.
 
@@ -132,11 +140,11 @@ Cluster binding MUST be separable per management unit. A single platform service
 
 Version selection and configuration selection happen at the cluster binding layer, not only in the reusable service base. In practice, one cluster can stay on one version of a platform service while another cluster moves ahead first. That makes targeted rollout possible without introducing extra shared profile layers up front.
 
-### Repository boundary deferred
+### Accepted 0008 repository boundary direction
 
-The repository boundary question from backlog 0010 (whether this repository is a one-stop shop or whether template or example repositories hold platform services and application services definitions) is still deferred to the source-layout implementation change that backlog 0010 itself identifies as its forcing function. The accepted 0008 layout direction says how runtime files should be organized if they land in this repository, but it does not force the broader repository-boundary decision by itself.
+For 0008, the first concrete runtime files for the tracer bullet should live in this repository. Template or example repository indirection is not part of the first slice.
 
-The forcing function for the repository boundary decision is the first change that needs to place runtime files for a concrete management unit. Until then, the conceptual roles are sufficient.
+This is a 0008 implementation direction, not a permanent rule that every future repository boundary decision is closed forever. A later change can revisit broader repository boundaries if there is a clear operational reason.
 
 ## Packaging posture
 
@@ -152,7 +160,7 @@ The following packaging formats are identified as candidates that can satisfy th
 | **Kustomize** | A Kustomize overlay can be a management unit. Patches and overlays provide cluster-specific binding. |
 | **Controller wrappers** | Flux HelmRelease or Kustomization objects, or Argo CD Application objects, can wrap either format and provide additional reconciliation features. |
 
-Helm is the preferred candidate for bootstrap packaging (per the bootstrap installation contract), but that preference does not extend to GitOps-managed management units unless a later change validates it.
+The accepted 0008 direction is Kustomize-first bootstrap installation, likely `kubectl apply -k` or a very thin wrapper around it. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
 
 ### Forcing function
 
@@ -164,9 +172,7 @@ The following decisions are explicitly deferred. Each includes the rationale and
 
 | Decision | Rationale | Forcing function |
 | --- | --- | --- |
-| **GitOps controller choice** (Flux, Argo CD, or another) | The management-unit and source-structure contracts are designed to be compatible with Flux, Argo CD, and other common GitOps controllers. The controller does not need to be named for this contract to be valid. | The first installable slice that implements bootstrap installation with a concrete controller. |
-| **Final packaging format** (Helm, Kustomize, or controller wrapper) | The contract-first posture ensures any choice satisfies the management-unit contract. The first management-unit implementation has not yet validated a specific format. | The first change that implements a management unit. |
-| **Additional platform services** (ingress, certificate management, observability, policy) | The project posture is minimal over comprehensive. External-Secrets Operator is enough to validate the first tracer bullet. Adding more services now would over-scope the first installable slice. | A later change that introduces a specific platform service when its operational need is clear. |
+| **Additional platform services** (ingress, certificate management, observability, policy) | The project posture is minimal over comprehensive. External-Secrets Operator validates the bootstrap-critical Seed Secrets and secret projection path, but it does not by itself prove the broader GitOps-managed platform services model. Additional services stay deferred unless 0008 explicitly needs one tiny extra GitOps-managed platform service to complete the first tracer bullet. | A later change that introduces a specific platform service when its operational need is clear. |
 | **Shared profile layers or reusable environment overlays** | The accepted 0008 direction is concrete cluster directories first. Shared layers can be reconsidered later if duplication becomes a clear operational problem. | A later change that has enough duplication evidence to justify a more layered source structure. |
 
 No deferred decision is indefinite or unresolvable. Each has a clear forcing function tied to a concrete future change.

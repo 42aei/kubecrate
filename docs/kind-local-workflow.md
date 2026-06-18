@@ -107,9 +107,9 @@ This document does not define:
 - the final GitOps source structure or repository boundary beyond backlog item `0010`
 - a provider-specific product boundary beyond the kind-first local path as the first reference workflow
 - a final packaging choice for bootstrap installation
-- a final GitOps controller choice
+- the long-term controller-agnostic contract beyond the accepted 0008 Flux direction
 
-Helm and common GitOps controllers may remain likely candidates for later validation, but this document does not make those choices final.
+The accepted 0008 direction now uses Flux for the first installable slice and a Kustomize-first bootstrap path, but this workflow document still does not redefine the broader controller-agnostic contract.
 
 ## Relationship to the broader project direction
 
