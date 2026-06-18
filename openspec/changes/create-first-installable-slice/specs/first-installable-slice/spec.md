@@ -25,11 +25,11 @@ Kubecrate SHALL install External-Secrets Operator during bootstrap installation,
 - **THEN** ESO is classified as bootstrap-critical for this slice, not as a GitOps-managed management unit
 
 ### Requirement: Seed Secrets projection via ESO Kubernetes provider
-Kubecrate SHALL use Seed Secrets as the operator-provided local input path. Only `.env.example` with placeholder values and usage documentation SHALL be committed. The real `.env` file SHALL be in `.gitignore`. Bootstrap installation SHALL materialize one Secret named `seed-secrets` in the ESO namespace via a thin wrapper or documented command such as `kubectl create secret generic seed-secrets -n eso --from-env-file=.env --dry-run=client -o yaml | kubectl apply -f -`. ESO SHALL project secrets from `seed-secrets` using the Kubernetes provider or an equivalent local provider that can read a bootstrap-created Kubernetes Secret. The Fake provider SHALL NOT be used for Seed Secrets projection because it does not read the `seed-secrets` Secret.
+Kubecrate SHALL use Seed Secrets as the operator-provided local input path. Only `.env.example` with placeholder values and usage documentation SHALL be committed. The real `.env` file SHALL be in `.gitignore`. Bootstrap installation SHALL materialize one Secret named `seed-secrets` in the ESO namespace via a thin wrapper that reads the current supported keys from `.env` and ignores legacy local keys. ESO SHALL project secrets from `seed-secrets` using the Kubernetes provider or an equivalent local provider that can read a bootstrap-created Kubernetes Secret. The Fake provider SHALL NOT be used for Seed Secrets projection because it does not read the `seed-secrets` Secret.
 
 #### Scenario: Seed Secrets Secret is created during bootstrap
 - **WHEN** bootstrap installation executes
-- **THEN** a Kubernetes Secret named `seed-secrets` is created in the ESO namespace containing operator-provided credentials via the documented command or wrapper
+- **THEN** a Kubernetes Secret named `seed-secrets` is created in the ESO namespace containing the current supported operator-provided credential keys via the documented wrapper
 - **AND** no real `.env` file containing credentials is committed to the repository; only `.env.example` with placeholder values is committed
 
 #### Scenario: Seed Secrets example file is committed, real env is ignored

@@ -39,7 +39,7 @@ kind-dev-misc-local-recreate:
 kind-dev-misc-local-bootstrap:
 > kubectl --context "$(KIND_CONTEXT)" apply --server-side -k "$(BOOTSTRAP_ESO_INSTALL)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/external-secrets -n "$(SEED_SECRET_NAMESPACE)" --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" create secret generic seed-secrets -n "$(SEED_SECRET_NAMESPACE)" --from-env-file=.env --dry-run=client -o yaml | kubectl --context "$(KIND_CONTEXT)" apply -f -
+> python3 -c 'exec("import base64, sys\nrequired = (\"SEED_FLUX_GIT_USERNAME\", \"SEED_FLUX_GIT_PAT\")\ndata = {}\nfor raw in sys.stdin:\n    line = raw.strip()\n    if not line or line.startswith(\"#\") or \"=\" not in line:\n        continue\n    key, value = line.split(\"=\", 1)\n    key = key.strip()\n    if key in required:\n        data[key] = value.strip()\nmissing = [key for key in required if not data.get(key)]\nif missing:\n    sys.stderr.write(\"missing required seed key(s): \" + \", \".join(missing) + \"\\n\")\n    sys.exit(1)\nsys.stdout.write(\"apiVersion: v1\\nkind: Secret\\nmetadata:\\n  name: seed-secrets\\n  namespace: eso\\ntype: Opaque\\ndata:\\n\")\nfor key in required:\n    encoded = base64.b64encode(data[key].encode()).decode()\n    sys.stdout.write(\"  \" + key + \": \" + encoded + \"\\n\")\n")' < .env | kubectl --context "$(KIND_CONTEXT)" apply -f -
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(BOOTSTRAP_STAGE_TWO)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready clustersecretstores.external-secrets.io/seed-secrets-store --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(FLUX_INSTALL_ROOT)"

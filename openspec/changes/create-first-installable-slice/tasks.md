@@ -23,7 +23,7 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 ### 1.4 Minimum bootstrap manifests (enabling)
 
 - [x] 1.4.1 Commit `.env.example` with the minimal Seed Secret contract and usage documentation. Verify `.env` remains in `.gitignore`. No real credential material is committed.
-- [x] 1.4.2 Create the bootstrap Kustomize overlay that references ESO installation manifests (upstream or vendored), materializes the `seed-secrets` Secret in the ESO namespace via `kubectl create secret generic seed-secrets -n eso --from-env-file=.env --dry-run=client -o yaml | kubectl apply -f -` (or equivalent documented wrapper), and references the cluster entrypoint Flux desired-state path.
+- [x] 1.4.2 Create the bootstrap Kustomize overlay that references ESO installation manifests (upstream or vendored), materializes the `seed-secrets` Secret in the ESO namespace via a documented wrapper that reads the current supported `.env` keys, and references the cluster entrypoint Flux desired-state path.
 - [x] 1.4.3 Define the ESO ClusterSecretStore (or equivalent) using the Kubernetes provider to read the `seed-secrets` Secret.
 - [x] 1.4.4 Define ESO ExternalSecret resources that project Git credentials from `seed-secrets` for Flux consumption using the `username` and `password` keys Flux HTTPS basic auth expects.
 - [x] 1.4.5 Create the Flux Git source: `GitRepository` resource pointing to this repository's HTTPS remote and the current implementation branch, referencing the ESO-projected credential Secret backed by a fine-grained PAT that is read-capable now and ready for write-back before `ImageUpdateAutomation` is enabled.

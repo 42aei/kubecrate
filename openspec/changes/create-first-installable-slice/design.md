@@ -73,7 +73,7 @@ Alternatives considered:
 
 ### Seed Secrets and ESO ordering
 
-Seed Secrets are the operator-provided local input path. No real `.env` file is committed. Only `.env.example` is committed, with placeholder values and usage documentation for the minimal Seed Secret contract. The real `.env` file is in `.gitignore`. Bootstrap installation materializes one Secret named `seed-secrets` in the ESO namespace via a thin wrapper or documented command such as `kubectl create secret generic seed-secrets -n eso --from-env-file=.env --dry-run=client -o yaml | kubectl apply -f -`. The secret contains credentials that ESO projects, including Git credentials Flux needs to reconcile.
+Seed Secrets are the operator-provided local input path. No real `.env` file is committed. Only `.env.example` is committed, with placeholder values and usage documentation for the minimal Seed Secret contract. The real `.env` file is in `.gitignore`. Bootstrap installation materializes one Secret named `seed-secrets` in the ESO namespace via a thin wrapper that reads the current supported keys from `.env` and ignores legacy local keys. The secret contains credentials that ESO projects, including Git credentials Flux needs to reconcile.
 
 ESO is bootstrap-critical and installed before Flux. The ESO ClusterSecretStore or SecretStore definition references the bootstrap-created `seed-secrets` Secret using the Kubernetes provider (or equivalent local provider that can read a bootstrap-created Kubernetes Secret). The Fake provider does not validate this path because it does not read `seed-secrets`.
 
