@@ -1,12 +1,17 @@
 # GitOps Component Management
 
-This document defines the management-unit contract, the minimal initial set of GitOps-managed platform services, the source-structure contract, and the packaging posture for Kubecrate. It is a durable reference document, not a runnable implementation. No Kubernetes manifests, installation scripts, Helm charts, Kustomize overlays, or technical skeleton directories are introduced here.
+Kubecrate manages platform services as separately targetable units under GitOps-managed operation. Each service is installed, configured, and updated independently per environment. This document defines:
 
-This document builds on the [architecture](architecture.md) (two-axis model) and the [bootstrap installation contract](bootstrap-installation-contract.md) (handoff into GitOps-managed operation). The decisions recorded here were made in `openspec/changes/define-gitops-component-management/` and combine backlog items 0007 and 0010.
+- The **management-unit contract**: what it means for a platform service to be separately targetable.
+- The **minimal initial platform services set**: which services come first.
+- The **source-structure contract**: the conceptual roles a GitOps source layout must express.
+- The **packaging posture**: contract-first; concrete packaging is chosen later.
+
+This document is a durable reference, not a runnable implementation. It builds on the [architecture](architecture.md) (two-axis model) and the [bootstrap installation contract](bootstrap-installation-contract.md) (handoff into GitOps-managed operation). The decisions recorded here were made in `openspec/changes/define-gitops-component-management/` and combine backlog items 0007 and 0010.
 
 ## Management-unit contract
 
-Each GitOps-managed platform service is a **separately targetable management unit**. A management unit is the smallest independently operated piece of a platform service under GitOps-managed operation.
+A **management unit**, or **service unit**, is one separately targetable GitOps-managed platform service.
 
 ### Contract requirements
 
@@ -16,21 +21,29 @@ A management unit MUST satisfy all of the following:
 
 A management unit can be installed in a target environment without requiring all other platform services in that environment. Installing or updating External-Secrets Operator in staging does not require cert-manager, ingress, or any other platform service to be present or reconciled first.
 
+Independent targeting does not mean a management unit has no dependencies. Dependencies between services are expected — an application depends on ingress, which depends on certificate management. Ordering and dependencies are expressed through simple source-structure conventions (layer or name ordering, similar in spirit to systemd-style naming) and are enforced by the selected GitOps controller when implementation happens. The first implementation that needs ordering must show how the chosen controller makes dependency order clear and enforceable. Kubecrate does not introduce custom dependency metadata files, unit descriptors, generated graphs, or bespoke dependency models.
+
 #### Environment-specific configuration
 
 A management unit accepts environment-specific configuration (values, overlays, or equivalent binding data) without changing the shared definition of the service. The same service definition can target a local kind cluster with one set of binding data and a production cluster with another.
 
+Shared defaults live with the service definition. Environment binding records only real environment-specific overrides or references, avoiding noisy defaults repeated in every environment.
+
 #### No umbrella bundle lock-in
 
-No management unit is locked inside a single umbrella bundle that blocks per-service or per-environment operations. A monochart or monolithic overlay that forces all platform services to deploy or update together violates this contract.
+No management unit is locked inside a single indivisible umbrella bundle that blocks per-service or per-environment operations. A monochart or monolithic overlay that forces all platform services to deploy or update together violates this contract.
+
+Dependency orchestration (coordinating related services that genuinely depend on each other) is allowed. The prohibition is against forcing unrelated platform services into one indivisible bundle.
 
 #### Future wave-like promotion
 
-The contract preserves the ability for a management unit to be promoted across environments in a wave-like pattern (for example, local → staging → production) as a later capability. Per-environment targeting and per-environment configuration are the foundation that enables wave-like promotion. The wave-like promotion mechanism itself is deferred to a later change when environment sequencing and gating requirements are clear.
+The contract preserves wave-like promotion as a firm capability. A management unit can be promoted across environments in a wave-like pattern (e.g., local → staging → production). Per-environment targeting and per-environment configuration are the foundation that enables wave-like promotion. The specific promotion mechanism (environment sequencing, gating) is deferred to a later change, but the capability is a preserved design requirement, not an open question.
 
 ### Why contract-first
 
 The contract is packaging-agnostic. It can be satisfied by a Helm release, a Kustomize overlay, a Flux HelmRelease or Kustomization, an Argo CD Application, or another GitOps controller wrapper, provided the controller support exists. The contract constrains the *behavior* of a management unit, not the packaging format used to express it.
+
+Controller-specific objects (Argo CD Applications, Flux Kustomizations, etc.) are replaceable adapters for the selected GitOps controller. They are not the portable contract. The durable expression of a management unit must remain separable from any particular controller so that replacing the controller later does not require redefining every service. Bootstrap installation must not depend on a GitOps provider to install the controller itself.
 
 ## Minimal initial platform services set
 
@@ -43,6 +56,12 @@ The GitOps controller is installed during bootstrap installation because it is r
 After handoff into GitOps-managed operation, the bootstrap-installed controller and supporting bootstrap resources are expected to come under GitOps-managed operation. Only the concrete mechanics of how those bootstrap resources are brought under GitOps-managed operation are deferred.
 
 The controller choice itself (Flux, Argo CD, or another) is also deferred. See [Deferred decisions](#deferred-decisions).
+
+#### Bootstrap trust: operator-provided inputs
+
+Bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs needed to start bootstrap-required services. This includes the GitOps controller, External-Secrets Operator if ESO is bootstrap-required, and any other bootstrap-required service.
+
+Bootstrap-required services may be installed during bootstrap and then handed off to GitOps-managed operation. Whether a service is bootstrap-installed or first installed under GitOps-managed operation depends on its operational needs. This document states the input rule without prematurely classifying every service. When a later change introduces a concrete service, that change resolves whether the service follows the bootstrap-install-handoff path or the direct GitOps-managed path.
 
 ### External-Secrets Operator (first GitOps-managed platform service)
 
@@ -87,7 +106,7 @@ Environment binding MUST be separable per management unit. A single platform ser
 
 ### Repository boundary deferred
 
-The repository boundary question from backlog 0010 (whether this repository is a one-stop shop or whether template or example repositories hold platform services and application services definitions) is **explicitly deferred to the first installable slice or source-layout implementation change**. The source-structure contract defines conceptual roles only. Whether those roles live in a single repository, separate template repos, or a reference-and-copy model is deferred.
+The repository boundary question from backlog 0010 (whether this repository is a one-stop shop or whether template or example repositories hold platform services and application services definitions) is explicitly deferred to the source-layout implementation change that backlog 0010 itself identifies as its forcing function. The source-structure contract defines conceptual roles only. Whether those roles live in a single repository, separate template repos, or a reference-and-copy model is deferred.
 
 The forcing function for the repository boundary decision is the first change that needs to place runtime files for a concrete management unit. Until then, the conceptual roles are sufficient.
 

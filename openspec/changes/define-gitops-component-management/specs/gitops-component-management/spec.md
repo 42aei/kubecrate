@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Define management-unit contract
-Kubecrate SHALL define each GitOps-managed platform service as a separately targetable management unit that supports independent installation, environment-specific configuration, and the future ability to be promoted across environments.
+Kubecrate SHALL define each GitOps-managed platform service as a separately targetable management unit (or service unit) that supports independent installation, environment-specific configuration, and wave-like promotion across environments as a firm preserved capability.
 
 #### Scenario: Management unit is independently targetable
 - **WHEN** a platform service is defined as a management unit
@@ -17,8 +17,14 @@ Kubecrate SHALL define each GitOps-managed platform service as a separately targ
 
 #### Scenario: Management unit supports future wave-like promotion
 - **WHEN** a management unit's rollout model is defined
-- **THEN** the contract preserves the ability for a management unit to be promoted across environments in a wave-like pattern (e.g., local → staging → production) as a later capability
+- **THEN** the contract preserves wave-like promotion as a firm capability, allowing a management unit to be promoted across environments in a wave-like pattern (e.g., local → staging → production)
 - **AND** per-environment targeting and configuration are supported as the foundation that enables wave-like promotion
+- **AND** the specific promotion mechanism (environment sequencing, gating) is deferred to a later change, but the capability is a preserved design requirement
+
+#### Scenario: Management unit ordering through source-structure conventions
+- **WHEN** management units have dependencies on each other
+- **THEN** ordering and dependencies are expressed through simple source-structure conventions (layer or name ordering, similar in spirit to systemd-style naming), not through custom dependency metadata files, unit descriptors, generated graphs, or bespoke dependency models
+- **AND** the first implementation that needs ordering must show how the chosen GitOps controller makes dependency order clear and enforceable
 
 ### Requirement: Define minimal initial platform services set
 Kubecrate SHALL define the minimal initial set of platform services for the first GitOps-managed installable slice.
@@ -28,6 +34,12 @@ Kubecrate SHALL define the minimal initial set of platform services for the firs
 - **THEN** the GitOps controller is identified as bootstrap-required for handoff into GitOps-managed operation
 - **AND** the controller is not classified as a GitOps-managed management unit under this change's contract
 - **AND** the bootstrap-installed controller and supporting resources are expected to come under GitOps-managed operation after handoff; only the concrete mechanics of how are deferred
+
+#### Scenario: Bootstrap trust inputs are operator-provided
+- **WHEN** bootstrap-required services need secret or trust material to start
+- **THEN** bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs
+- **AND** this includes the GitOps controller, External-Secrets Operator if ESO is bootstrap-required, and any other bootstrap-required service
+- **AND** bootstrap-required services may be installed during bootstrap and then handed off to GitOps-managed operation
 
 #### Scenario: External-Secrets Operator is the first GitOps-managed platform service
 - **WHEN** the initial platform services set is described
@@ -63,6 +75,8 @@ Kubecrate SHALL adopt a contract-first packaging posture where concrete packagin
 #### Scenario: Packaging choice is deferred
 - **WHEN** the packaging posture is documented
 - **THEN** Helm, Kustomize, and controller wrappers are identified as candidates that can satisfy the management-unit contract, but no single format is selected as final
+- **AND** controller-specific objects (Argo CD Applications, Flux Kustomizations, etc.) are treated as replaceable adapters for the selected GitOps controller, not as the portable contract
+- **AND** bootstrap installation must not depend on a GitOps provider to install the controller itself
 
 #### Scenario: First implementation validates packaging
 - **WHEN** a later change implements a management unit
