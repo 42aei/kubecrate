@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubecrate-system
+  labels:
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/lifecycle-phase: gitops-managed-operation
