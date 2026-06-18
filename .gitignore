@@ -1,1 +1,3 @@
 .ralph/
+.env
+.env.local

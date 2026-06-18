@@ -27,6 +27,8 @@ The operator prepares a local Kubernetes cluster through kind and confirms that 
 
 Any local credentials, kubeconfig access, and operator-supplied secret trust material needed for early platform services are prepared here.
 
+For concrete cluster naming, the first convention is `<provider>-<environment>-<workload>-<location>`. The same shape applies to the kind-first local path as `kind-dev-misc-local`.
+
 ### 2. Bootstrap installation
 
 Kubecrate bootstrap installation begins only after the local setup boundary is satisfied.
@@ -72,7 +74,7 @@ Bootstrap installation then consumes these conceptual inputs:
 - Kubernetes access to the reachable cluster API
 - permissions for the operator or calling tool to perform bootstrap installation
 - GitOps source information
-- operator-supplied secret trust material if a bootstrap or early platform service needs it
+- operator-supplied Seed Secrets trust material if a bootstrap-critical service needs it
 
 These inputs are still tool-neutral. The local reference workflow does not require a Kubecrate-specific interface.
 
@@ -107,9 +109,11 @@ This document does not define:
 - the final GitOps source structure or repository boundary beyond backlog item `0010`
 - a provider-specific product boundary beyond the kind-first local path as the first reference workflow
 - a final packaging choice for bootstrap installation
-- a final GitOps controller choice
+- the long-term controller-agnostic contract beyond the first-slice Flux direction
 
-Helm and common GitOps controllers may remain likely candidates for later validation, but this document does not make those choices final.
+The first installable slice uses Flux and a Kustomize-first bootstrap path, but this workflow document does not redefine the broader controller-agnostic contract.
+
+Repository-owned kind validation plumbing is expected to be substantial enough to make the local path repeatable. That includes kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands. Those pieces support the kind-first local path, but they still remain outside the bootstrap installation lifecycle.
 
 ## Relationship to the broader project direction
 

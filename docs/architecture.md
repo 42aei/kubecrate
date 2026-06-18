@@ -77,4 +77,4 @@ Repository layout decisions should preserve the same two-axis model.
 
 Planning artifacts live under `docs/` until an installable slice requires runtime files. Runtime directories should be introduced only by proposals that need concrete files, not as empty skeleton structure.
 
-Future runtime layout may make lifecycle phase, workload category, and environment binding visible, but it should not collapse them into a single premature hierarchy. Environment-specific structure is deferred until a change needs more than the kind-first local path.
+Future runtime layout may make lifecycle phase, workload category, and cluster or environment binding visible, but it should not collapse them into a single premature hierarchy. Environment-specific structure is deferred until a change needs more than the kind-first local path.
