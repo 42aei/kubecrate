@@ -1,6 +1,6 @@
 # AGENTS
 
-This repository is in an early architecture and planning phase before implementation files are added.
+This repository is in an early architecture-led phase. Implementation files are added only when a proposal-approved OpenSpec change explicitly authorizes them.
 
 Use the project language consistently. Keep changes small, reviewable, and aligned with the project model.
 
@@ -70,7 +70,7 @@ Do not collapse these axes together in docs or tasks.
 For this architecture and planning pass:
 
 - focus on repository docs and backlog definition
-- do not add Kubernetes manifests
-- do not add installation scripts
-- do not add technical skeleton directories beyond `docs/backlog`
+- proposal-approved implementation for `openspec/changes/create-first-installable-slice/` may add runtime manifests, installation scripts, and supporting config only in the paths approved by that OpenSpec change
+- outside that approved exception, do not add Kubernetes manifests, installation scripts, or runtime/config expansion
+- do not add unrelated or empty technical skeleton directories beyond `docs/backlog`
 - do not edit `.opencode` files in this pass

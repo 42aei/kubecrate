@@ -44,14 +44,14 @@ The following are candidate tasks for the OpenSpec proposal. They are listed her
 3. Define the Flux self-management handoff so bootstrap installation references the same desired-state path that Flux later reconciles.
 4. Define the local validation and evidence contract, including repository-owned kind setup plumbing needed for the kind-first local path.
 5. Implement bootstrap installation against a prepared kind cluster with Flux and bootstrap-critical ESO.
-6. Implement the first tracer bullet secret-handling path, including Seed Secrets projection for Flux and any first GitOps-managed platform service needed to prove the slice.
+6. Implement the first tracer bullet secret-handling path, including Seed Secrets projection for Flux and the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof needed to prove the slice. The marker is not a platform service or application service.
 7. Validate the end-to-end slice, including a GitOps-driven update.
 
 ## Acceptance direction
 
 - A reviewer can exercise `point at a cluster and install` on the kind-first local path by targeting a prepared kind cluster from a defined starting point.
 - Repository-owned kind validation plumbing exists for local proof, including kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands, but bootstrap installation still starts only from a cluster with a reachable Kubernetes API and usable credentials.
-- Against a prepared kind cluster, the slice produces bootstrap-critical ESO, projected Seed Secrets for Flux, a running Flux controller, and the first GitOps-managed platform service needed by the tracer bullet.
+- Against a prepared kind cluster, the slice produces bootstrap-critical ESO, projected Seed Secrets for Flux, a running Flux controller, and the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof needed by the tracer bullet. The marker is not a platform service or application service.
 - Flux becomes self-managing after handoff without duplicate independent Flux definitions in bootstrap installation and platform services.
 - Runtime files follow the accepted first model: reusable platform service definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
 - Validation evidence proves reconciliation works and that a Git-managed change causes Flux to update the tracer bullet.
@@ -59,6 +59,7 @@ The following are candidate tasks for the OpenSpec proposal. They are listed her
 ## Notes
 
 - Active OpenSpec change: `openspec/changes/create-first-installable-slice/`.
+- For 0008, the active OpenSpec change supersedes older wording that treated the tracer bullet as workload-category content and replaces it with the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof. The marker is not a platform service or application service.
 - This is a vertical slice, not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are deferred (see 0011). Wave-like promotion policy and gating are deferred (see 0012), but environment-specific configuration and future wave-like promotion remain preserved capabilities.
 - The management-unit contract and source-structure contract from the define-gitops-component-management change are binding inputs.
 - The kind-first local path (0003), repository placement rules (0004), minimal component set (0007), and GitOps source structure (0010) are all completed prerequisites.
