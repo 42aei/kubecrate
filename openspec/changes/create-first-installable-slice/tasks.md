@@ -50,9 +50,9 @@ Acceptance: Flux Kustomization for itself shows Ready. The reconciliation marker
 ### 1.7 GitOps-managed update: `kubecrate-reconciliation-marker` version X→Y
 
 - [x] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y (bump `data.version` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` or the equivalent cluster-owned marker path).
-- [ ] 1.7.2 Commit and push the change to the implementation branch. Wait for Flux reconciliation or trigger reconciliation.
-- [ ] 1.7.3 Verify Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y.
-- [ ] 1.7.4 Capture update evidence: before/after marker version via evidence command, Flux reconciliation logs or events, and updated ConfigMap content.
+- [x] 1.7.2 Commit and push the change to the implementation branch. Wait for Flux reconciliation or trigger reconciliation.
+- [x] 1.7.3 Verify Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y.
+- [x] 1.7.4 Capture update evidence: before/after marker version via evidence command, Flux reconciliation logs or events, and updated ConfigMap content.
 
 Acceptance: `kubecrate-reconciliation-marker` is verified at version Y (`v0.2.0`) after Flux reconciliation. Evidence command output shows the version transition from X to Y triggered by the Git commit. Flux events or logs confirm the reconciliation.
 

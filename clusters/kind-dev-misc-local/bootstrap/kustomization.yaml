@@ -3,3 +3,4 @@ kind: Kustomization
 resources:
   - ./eso-install
   - ./stage-2
+  - ../entrypoint

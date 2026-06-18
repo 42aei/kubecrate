@@ -111,18 +111,6 @@ rules:
   - apiGroups:
       - ""
     resources:
-      - secrets
-    verbs:
-      - get
-      - list
-      - watch
-      - create
-      - update
-      - delete
-      - patch
-  - apiGroups:
-      - ""
-    resources:
       - serviceaccounts/token
     verbs:
       - create
