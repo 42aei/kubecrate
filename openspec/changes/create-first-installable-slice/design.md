@@ -108,7 +108,7 @@ Alternatives considered:
 
 ### Flux Git source contract for kind
 
-Flux reconciles this repository's HTTPS remote and the current implementation branch. The Flux `GitRepository` resource points to the repository's HTTPS URL (for example `https://github.com/<owner>/<repo>.git`) with the branch set to the implementation branch for this change.
+Flux reconciles this repository's HTTPS remote and the current implementation branch. The Flux `GitRepository` manifest is the source of truth for the repository HTTPS URL (for example `https://github.com/<owner>/<repo>.git`) and the branch selected for this change. These URL and branch values are Git-managed desired state, not Seed Secret inputs.
 
 Flux HTTPS basic auth uses a Secret with `username` and `password` keys, so the ESO-projected Git credential Secret must match that contract. The default contract for 0008 is a GitHub username or bot name projected as `username` and a fine-grained PAT projected as `password`. The PAT is read-capable for the repository immediately and should be write-capable for the same repository and branch before Flux `ImageUpdateAutomation` is enabled, because `ImageUpdateAutomation` checks out a `GitRepository` and commits and pushes changes back to Git.
 
@@ -125,11 +125,12 @@ clusters/
   <cluster>/
     entrypoint/
       kustomization.yaml
-      kubecrate-reconciliation-marker.yaml
+      bootstrap-loader/
+        kubecrate-reconciliation-marker.yaml
 ```
 
 - `clusters/<cluster>/entrypoint/` is the first GitOps reconciliation root for that cluster. Flux reconciles from this path.
-- `clusters/<cluster>/entrypoint/kubecrate-reconciliation-marker.yaml` is the first validation proof. It is cluster-owned validation material, not a platform service or application service.
+- `clusters/<cluster>/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` is the first validation proof. It lives under the bootstrap loader because bootstrap applies the same entrypoint content before Flux handoff; it remains cluster-owned validation material, not a platform service or application service.
 - `platform-services/<service>/base/` and `clusters/<cluster>/platform-services/<service>.yaml` remain the future pattern for real platform services.
 - `application-services/<service>/base/` and `clusters/<cluster>/application-services/<service>.yaml` remain the future pattern for real application services.
 
@@ -161,7 +162,7 @@ Alternatives considered:
 
 The tracer bullet proves GitOps-managed operation performs an update using `kubecrate-reconciliation-marker`, a Flux-managed validation marker/config proof whose sole purpose is to demonstrate reconciliation:
 
-1. **Baseline reconcile**: Bootstrap installs the full stack. Flux reconciles the desired state. Evidence confirms Flux is running, ESO is projecting secrets, and `kubecrate-reconciliation-marker` is present at version X (`data.version: v0.1.0` or equivalent config value tracked in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`).
+1. **Baseline reconcile**: Bootstrap installs the full stack. Flux reconciles the desired state. Evidence confirms Flux is running, ESO is projecting secrets, and `kubecrate-reconciliation-marker` is present at version X (`data.version: v0.1.0` or equivalent config value tracked in `clusters/kind-dev-misc-local/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml`).
 2. **Git-managed change**: The operator commits a version bump for `kubecrate-reconciliation-marker` from `v0.1.0` to `v0.2.0` in the cluster entrypoint path and pushes to the implementation branch.
 3. **Flux update evidence**: Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y. Evidence captures the before/after version value, Flux reconciliation logs or status, and the updated ConfigMap content.
 

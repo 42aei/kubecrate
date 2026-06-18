@@ -49,8 +49,9 @@ Kubecrate SHALL use Seed Secrets as the operator-provided local input path. Only
 
 #### Scenario: Minimal Seed Secret contract documents Flux operator input
 - **WHEN** `.env.example` documents the first installable slice input contract
-- **THEN** it includes the minimal Flux Git keys for URL, branch, username, and PAT
+- **THEN** it includes the minimal Flux Git credential keys for username and PAT
 - **AND** it explains that the PAT is used as the projected Flux HTTPS basic-auth password
+- **AND** it explains that the Flux GitRepository URL and branch are Git-managed in the Flux desired-state manifest, not Seed Secret inputs
 
 ### Requirement: Flux self-management handoff
 Kubecrate SHALL hand off Flux to self-management after bootstrap installation. Bootstrap installation SHALL apply or reference the same Flux desired-state path that Flux later reconciles. There SHALL NOT be duplicate independent Flux definitions under bootstrap installation and the GitOps desired-state path. Bootstrap installation is a loader or reference, not a second source of truth for Flux configuration.
@@ -93,7 +94,7 @@ Kubecrate SHALL place the first concrete runtime files under a layout that prese
 #### Scenario: Reconciliation marker lives directly under the concrete cluster path
 - **WHEN** the runtime layout is populated for the first installable slice
 - **THEN** `clusters/kind-dev-misc-local/entrypoint/` contains the first GitOps reconciliation root
-- **AND** `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` contains the validation marker/config proof with version X
+- **AND** `clusters/kind-dev-misc-local/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` contains the validation marker/config proof with version X
 - **AND** no empty workload-category skeleton directories are required just to host the marker
 
 #### Scenario: Concrete cluster follows naming convention
@@ -127,7 +128,7 @@ Kubecrate SHALL include a tracer bullet that proves GitOps-managed operation per
 - **AND** the evidence command `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'` returns the expected value for version X
 
 #### Scenario: Git-managed change triggers Flux update of kubecrate-reconciliation-marker
-- **WHEN** the operator commits a version bump for `kubecrate-reconciliation-marker` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` and pushes to the implementation branch
+- **WHEN** the operator commits a version bump for `kubecrate-reconciliation-marker` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` and pushes to the implementation branch
 - **THEN** Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y
 - **AND** evidence captures the before/after version value via the evidence command and Flux reconciliation status confirming the update
 
