@@ -1,7 +1,7 @@
 ---
 task_id: "0007"
 title: "Choose minimal component set"
-status: "started"
+status: "done"
 depends_on: ["0005", "0006"]
 ---
 
@@ -15,4 +15,4 @@ Reflect the project posture of minimal over comprehensive.
 
 Every component should have a clear reason to exist in the first slice, especially if it affects bootstrap installation complexity.
 
-Work started in `openspec/changes/define-gitops-component-management/` (combined with 0010).
+Work completed in `openspec/changes/define-gitops-component-management/` (combined with 0010).
