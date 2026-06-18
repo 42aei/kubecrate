@@ -38,9 +38,9 @@ The two-axis model separates lifecycle phase (bootstrap installation or GitOps-m
 
 ### GitOps controller (bootstrap-installed, not a management unit)
 
-The GitOps controller is installed during bootstrap installation because it is required for handoff into GitOps-managed operation. Under this change's contract, the GitOps controller is **not classified as a GitOps-managed management unit**.
+The GitOps controller is installed during bootstrap installation because it is required for handoff into GitOps-managed operation. The management-unit contract applies to platform services under GitOps-managed operation. Because the controller is bootstrap-installed and not yet under GitOps-managed operation at handoff time, it is not classified as a management unit under this change's contract. This is not an exception to the contract — the contract governs a different lifecycle phase.
 
-The bootstrap-installed controller and supporting bootstrap resources are expected to come under GitOps-managed operation after handoff. Only the concrete mechanics of how those bootstrap resources are brought under GitOps-managed operation are deferred.
+After handoff into GitOps-managed operation, the bootstrap-installed controller and supporting bootstrap resources are expected to come under GitOps-managed operation. Only the concrete mechanics of how those bootstrap resources are brought under GitOps-managed operation are deferred.
 
 The controller choice itself (Flux, Argo CD, or another) is also deferred. See [Deferred decisions](#deferred-decisions).
 
