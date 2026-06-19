@@ -10,4 +10,4 @@ metadata:
     app.kubernetes.io/part-of: kubecrate
     kubecrate.io/purpose: validation-marker
 data:
-  version: v0.2.0
+  version: v0.1.0
