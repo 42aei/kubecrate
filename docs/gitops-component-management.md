@@ -116,15 +116,17 @@ The GitOps source structure must express the conceptual roles needed to support 
 | **cluster binding** | Configuration that binds management units to a concrete cluster. This includes values, overlays, destination settings, versions, or controller-specific binding data. |
 | **ordering and ownership boundaries** | A way to keep reconciliation order and responsibility understandable, especially between platform services and cluster binding. |
 
-These roles are conceptual. They do not mandate final file names for every controller object, but the first installable slice is concrete enough to state the intended first runtime layout when runtime files are introduced.
+These roles are conceptual, but the first installable slice is concrete enough to state the required initial runtime layout for real services.
 
 ### First-slice layout direction
 
-When runtime files are introduced, reusable service definitions should live under `platform-services/<service>/base`.
+A real platform service uses `platform-services/<service>/base/` for its reusable service definition.
 
-Concrete cluster directories should explicitly enable and configure those services, for example `clusters/<cluster>/platform-services/<service>.yaml`.
+Concrete cluster directories explicitly enable and configure those services under `clusters/<cluster>/platform-services/<service>/`.
 
 `clusters/<cluster>/entrypoint` is the intended first GitOps reconciliation root or table of contents for that concrete cluster.
+
+Temporary cluster-local platform service implementations are forbidden unless an approved change explicitly allows them with a removal plan.
 
 This follows the general shape of Flux's recommended monorepo pattern where each cluster state is defined in a dedicated cluster directory that references shared infrastructure or app definitions. In Kubecrate terms, those reusable definitions are `platform services` and `application services`, not generic infrastructure or apps, unless the Flux pattern itself is being cited.
 
@@ -168,7 +170,7 @@ The following packaging formats are identified as candidates that can satisfy th
 | **Kustomize** | A Kustomize overlay can be a management unit. Patches and overlays provide cluster-specific binding. |
 | **Controller wrappers** | Flux HelmRelease or Kustomization objects, or Argo CD Application objects, can wrap either format and provide additional reconciliation features. |
 
-The first bootstrap path is Kustomize-first, likely `kubectl apply -k` or a very thin wrapper around it. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
+The first bootstrap path is Kustomize-first, using `kubectl apply -k` for plain manifests or `kubectl kustomize --enable-helm <path> | kubectl apply -f -` when a platform service is sourced from an official Helm chart. Local `helm` is required for that Kustomize render path, but bootstrap still does not use `helm install`. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
 
 ### Forcing function
 

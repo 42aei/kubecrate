@@ -31,10 +31,10 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 
 ### 1.5 Bootstrap installation execution
 
-Validation note: static render or build checks are necessary but not sufficient after `kubectl apply -k <bootstrap-overlay>` or later reconciliation. Success for this slice requires the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, pause for bounded, symptom-driven diagnosis instead of claiming success. Authorization or RBAC checks are examples only when evidence points there, not a mandatory per-ServiceAccount checklist.
+Validation note: static render or build checks are necessary but not sufficient after the bootstrap render/apply sequence or later reconciliation. Success for this slice requires the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, pause for bounded, symptom-driven diagnosis instead of claiming success. Authorization or RBAC checks are examples only when evidence points there, not a mandatory per-ServiceAccount checklist.
 
 - [x] 1.5.1 Prepare the kind cluster using kind plumbing from 1.2.
-- [x] 1.5.2 Run `kubectl apply -k <bootstrap-overlay>` against the prepared cluster.
+- [x] 1.5.2 Run the bootstrap render/apply sequence against the prepared cluster, rendering Helm-backed paths with `kubectl kustomize --enable-helm <path> | kubectl apply -f -` and applying the remaining plain-manifest Kustomize paths with `kubectl apply -k`.
 - [x] 1.5.3 Verify ESO is running and the `seed-secrets` Secret exists in the `core-external-secrets-operator` namespace.
 - [x] 1.5.4 Verify ESO ClusterSecretStore is connected and ExternalSecrets are projected (Git credentials synced).
 - [x] 1.5.5 Verify Flux controller is running, has reconciled its initial state, and the `GitRepository` is Ready using the HTTPS remote and projected credentials.

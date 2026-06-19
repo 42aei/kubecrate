@@ -39,9 +39,9 @@ In practice, some platform services need bootstrap installation before GitOps ex
 
 ## Current repository scope
 
-This repository is currently in an architecture and planning phase.
+This repository is still early, but it now includes the first installable slice for the kind-first local path.
 
-It defines the project model, vocabulary, roadmap, and backlog before adding Kubernetes manifests, installation scripts, or runtime structure.
+It carries the project model, vocabulary, roadmap, and backlog alongside the first runtime files for bootstrap installation and GitOps-managed operation.
 
 ## Documents
 
@@ -56,4 +56,4 @@ It defines the project model, vocabulary, roadmap, and backlog before adding Kub
 
 Kubecrate is early.
 
-The next goal is a small first installable slice on the kind-first local path, without losing the broader cluster-provider agnostic direction.
+The current focus is validating and reviewing the first installable slice on the kind-first local path without losing the broader cluster-provider agnostic direction.

@@ -66,6 +66,14 @@ Do not collapse these axes together in docs or tasks.
   - lifecycle phase: bootstrap installation or GitOps-managed operation
   - workload category: platform services or application services
 - Environment-specific structure is deferred until a change needs more than the kind-first local path.
+- When a real platform service is introduced, place its reusable base at `platform-services/<service>/base/` and its concrete cluster binding at `clusters/<cluster>/platform-services/<service>/` immediately.
+- Do not keep a real platform service only in a temporary cluster-local path unless an approved OpenSpec change explicitly allows that exception and includes a removal plan.
+
+## Bootstrap orchestration guardrails
+
+- Makefile targets are shortcut and evidence wrappers only. They must not be the authoritative source for bootstrap installation orchestration semantics.
+- Authoritative bootstrap installation dependency and ordering semantics must live in repository manifests and docs, not only in Makefile targets.
+- Do not fix bootstrap installation by adding new Makefile-only orchestration.
 
 ## Kubernetes validation guardrails
 

@@ -3,11 +3,8 @@ kind: ConfigMap
 metadata:
   name: kubecrate-reconciliation-marker
   namespace: kubecrate-system
-  annotations:
-    kubecrate.io/description: Validation marker/config proof only; not a platform service or application service.
   labels:
     app.kubernetes.io/name: kubecrate-reconciliation-marker
     app.kubernetes.io/part-of: kubecrate
-    kubecrate.io/purpose: validation-marker
 data:
   version: v0.2.0

@@ -1,16 +1,19 @@
 ## ADDED Requirements
 
 ### Requirement: Kustomize-first bootstrap installation
-Kubecrate SHALL use a Kustomize-first bootstrap installation path, applying bootstrap resources via `kubectl apply -k` or a thin equivalent wrapper. Bootstrap installation SHALL NOT require Helm as the bootstrap packaging interface.
+Kubecrate SHALL use a Kustomize-first bootstrap installation path, applying plain-manifest Kustomize paths via `kubectl apply -k` and rendering Helm-backed paths via `kubectl kustomize --enable-helm <path> | kubectl apply -f -`. For Helm-backed paths, the local Helm CLI SHALL be available as a Kustomize render dependency. Bootstrap installation SHALL NOT use `helm install` as the bootstrap packaging interface.
 
-#### Scenario: Bootstrap entrypoint is a Kustomize overlay
+#### Scenario: Bootstrap execution uses Kustomize render/apply paths
 - **WHEN** an operator runs bootstrap installation against a prepared kind cluster
-- **THEN** bootstrap installation applies a Kustomize overlay directory that references ESO, Seed Secrets, and the Flux desired-state path
-- **AND** the bootstrap overlay does not embed a duplicate independent copy of Flux manifests
+- **THEN** bootstrap installation renders and applies the Helm-backed External-Secrets Operator path through `kubectl kustomize --enable-helm <path> | kubectl apply -f -`
+- **AND** bootstrap installation applies the remaining plain-manifest Kustomize paths through `kubectl apply -k`
+- **AND** the applied paths reference ESO, Seed Secrets, and the Flux desired-state path
+- **AND** the bootstrap execution path does not embed a duplicate independent copy of Flux manifests
 
-#### Scenario: Helm is not required for bootstrap
-- **WHEN** the bootstrap installation interface is defined
-- **THEN** Helm is not the bootstrap packaging interface, and the operator is not required to install Helm or run `helm install` to complete bootstrap installation
+#### Scenario: Helm-backed bootstrap uses a local render dependency
+- **WHEN** the bootstrap installation interface is defined for a Helm-backed path
+- **THEN** local `helm` is required for Kustomize `--enable-helm` rendering
+- **AND** the operator does not run `helm install` to complete bootstrap installation
 
 ### Requirement: ESO is bootstrap-critical and installed before Flux
 Kubecrate SHALL install External-Secrets Operator during bootstrap installation, before Flux, so Flux can consume ESO-projected Git credentials. ESO SHALL be bootstrap-critical for this slice and SHALL NOT be a GitOps-managed management unit.
@@ -25,7 +28,7 @@ Kubecrate SHALL install External-Secrets Operator during bootstrap installation,
 - **THEN** ESO is classified as bootstrap-critical for this slice, not as a GitOps-managed management unit
 
 ### Requirement: Seed Secrets projection via ESO Kubernetes provider
-Kubecrate SHALL use Seed Secrets as the operator-provided local input path. Only `.env.example` with placeholder values and usage documentation SHALL be committed. The real `.env` file SHALL be in `.gitignore`. Bootstrap installation SHALL materialize one Secret named `seed-secrets` in the `core-external-secrets-operator` namespace via a thin wrapper that reads the current supported keys from `.env` and ignores legacy local keys. ESO SHALL project secrets from `seed-secrets` using the Kubernetes provider or an equivalent local provider that can read a bootstrap-created Kubernetes Secret. The Fake provider SHALL NOT be used for Seed Secrets projection because it does not read the `seed-secrets` Secret.
+Kubecrate SHALL use Seed Secrets as the operator-provided local input path. Only `.env.example` with placeholder values and usage documentation SHALL be committed. The real `.env` file SHALL be in `.gitignore`. Bootstrap installation SHALL materialize one Secret named `seed-secrets` in the `core-external-secrets-operator` namespace via a thin wrapper that consumes only `SEED_FLUX_GIT_USERNAME` and `SEED_FLUX_GIT_PAT` from `.env`; all other `.env` keys SHALL be ignored. ESO SHALL project secrets from `seed-secrets` using the Kubernetes provider or an equivalent local provider that can read a bootstrap-created Kubernetes Secret. The Fake provider SHALL NOT be used for Seed Secrets projection because it does not read the `seed-secrets` Secret.
 
 #### Scenario: Seed Secrets Secret is created during bootstrap
 - **WHEN** bootstrap installation executes
@@ -92,12 +95,17 @@ Kubecrate SHALL hand off Flux to self-management after bootstrap installation. B
 - **AND** GitHub App authentication is explicitly listed for reconsideration when bot or app identity, shorter-lived installation tokens, cleaner audit or rotation, stronger org or repo permission boundaries, or multi-repo or multi-org scale matters
 
 ### Requirement: Concrete runtime layout
-Kubecrate SHALL place the first concrete runtime files under a layout that preserves the two-axis model while allowing cluster-owned validation material to live directly in a concrete cluster path. Each concrete cluster SHALL have an entrypoint at `clusters/<cluster>/entrypoint/` as the first GitOps reconciliation root. The first concrete cluster SHALL be `kind-dev-misc-local`. The first validation proof under this layout SHALL be `kubecrate-reconciliation-marker`, and it SHALL live in a concrete cluster path because it is not a platform service or application service. When real platform services or application services are introduced, their reusable base definitions SHALL live under `platform-services/<service>/base/` or `application-services/<service>/base/`, with cluster-specific binding under `clusters/<cluster>/platform-services/` or `clusters/<cluster>/application-services/`.
+Kubecrate SHALL place the first concrete runtime files under a layout that preserves the two-axis model while allowing cluster-owned validation material to live directly in a concrete cluster path. Each concrete cluster SHALL have an entrypoint at `clusters/<cluster>/entrypoint/` as the first GitOps reconciliation root. The first concrete cluster SHALL be `kind-dev-misc-local`. The first validation proof under this layout SHALL be `kubecrate-reconciliation-marker`, and it SHALL live in a concrete cluster path because it is not a platform service or application service. Real platform services SHALL use `platform-services/<service>/base/` with cluster-specific binding under `clusters/<cluster>/platform-services/<service>/` immediately when introduced. Real application services SHALL use `application-services/<service>/base/` with cluster-specific binding under `clusters/<cluster>/application-services/<service>/` when introduced.
 
 #### Scenario: Reusable service definitions are separate from cluster binding
 - **WHEN** a platform service or application service is defined
 - **THEN** its reusable base definition lives under the workload-category path for that service
 - **AND** cluster-specific enablement, configuration, and version binding live under the corresponding cluster workload-category path
+
+#### Scenario: Temporary cluster-local platform service implementations are forbidden
+- **WHEN** a real platform service is introduced
+- **THEN** it is not kept only in a cluster-local bootstrap directory
+- **AND** any exception requires an approved change with an explicit removal plan
 
 #### Scenario: Reconciliation marker lives directly under the concrete cluster path
 - **WHEN** the runtime layout is populated for the first installable slice

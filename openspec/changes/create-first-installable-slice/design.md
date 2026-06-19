@@ -1,6 +1,6 @@
 ## Context
 
-Backlog 0008 is the forcing implementation change for Kubecrate. Prior OpenSpec changes `define-install-flow` and `define-gitops-component-management` established contracts, boundaries, and deferred decisions that 0008 now resolves with concrete runtime files. The project has no runtime files yet, and the AGENTS.md phase guardrails reflect a planning-only pass that 0008 overrides for its own implementation scope.
+Backlog 0008 is the forcing implementation change for Kubecrate. Prior OpenSpec changes `define-install-flow` and `define-gitops-component-management` established contracts, boundaries, and deferred decisions that 0008 now resolves with concrete runtime files. The first installable slice now exists and is under validation and review, and the AGENTS.md phase guardrails reflect the earlier planning-only pass that 0008 overrides for its own implementation scope.
 
 The accepted 0008 direction establishes Flux as the first GitOps controller, Kustomize-first bootstrap, Seed Secrets/ESO ordering, Flux self-management, a concrete runtime layout, kind plumbing, and a tracer bullet validation requirement. This design defines how those accepted inputs come together as a coherent, minimal vertical slice.
 
@@ -57,15 +57,15 @@ Alternatives considered:
 
 ### Kustomize-first bootstrap path
 
-Bootstrap installation uses `kubectl apply -k` (or a very thin wrapper) against a Kustomize overlay directory. The bootstrap Kustomization references Flux's desired-state Kustomization path so that what bootstrap applies is the same path Flux later reconciles.
+Bootstrap installation uses a Kustomize-first render/apply path across a small set of Kustomize directories. Plain-manifest paths may use `kubectl apply -k`, while a platform service sourced from an official Helm chart uses `kubectl kustomize --enable-helm <path> | kubectl apply -f -` (or a very thin equivalent wrapper). Helm-backed renders require local `helm` to be available to Kustomize, but bootstrap still does not use `helm install`. The bootstrap path applies or references the same Flux desired-state Kustomization path that Flux later reconciles.
 
-The bootstrap entrypoint is a single Kustomize overlay that:
-- Installs ESO via a Kustomize resource or inline manifest reference
+The bootstrap execution path is a small Kustomize-first sequence that:
+- Renders and applies ESO from the official External-Secrets Operator Helm chart with `kubectl kustomize --enable-helm`
 - Creates the `seed-secrets` Secret in the `core-external-secrets-operator` namespace from `.env`
-- References the Flux desired-state path, including Flux installation manifests and the concrete cluster entrypoint
+- Applies the remaining plain-manifest bootstrap and Flux paths with `kubectl apply -k`, including Flux installation manifests and the concrete cluster entrypoint
 - Does not embed a separate copy of Flux manifests
 
-Helm is not the bootstrap package for this slice. HelmRelease remains appropriate inside GitOps-managed operation for Helm-native platform services.
+Helm is not the bootstrap packaging interface for this slice, but local `helm` remains a prerequisite whenever Kustomize renders a Helm-backed path. HelmRelease remains appropriate inside GitOps-managed operation for Helm-native platform services.
 
 Alternatives considered:
 - Use Helm for bootstrap. Rejected per accepted 0008 direction: Kustomize is the bootstrap interface, HelmRelease is for GitOps-managed services.
@@ -73,14 +73,14 @@ Alternatives considered:
 
 ### Seed Secrets and ESO ordering
 
-Seed Secrets are the operator-provided local input path. No real `.env` file is committed. Only `.env.example` is committed, with placeholder values and usage documentation for the minimal Seed Secret contract. The real `.env` file is in `.gitignore`. Bootstrap installation materializes one Secret named `seed-secrets` in the `core-external-secrets-operator` namespace via a thin wrapper that reads the current supported keys from `.env` and ignores legacy local keys. The secret contains credentials that ESO projects, including Git credentials Flux needs to reconcile.
+Seed Secrets are the operator-provided local input path. No real `.env` file is committed. Only `.env.example` is committed, with placeholder values and usage documentation for the minimal Seed Secret contract. The real `.env` file is in `.gitignore`. Bootstrap installation materializes one Secret named `seed-secrets` in the `core-external-secrets-operator` namespace via a thin wrapper that consumes only `SEED_FLUX_GIT_USERNAME` and `SEED_FLUX_GIT_PAT` from `.env`; all other `.env` keys are ignored. The secret contains credentials that ESO projects, including Git credentials Flux needs to reconcile.
 
 Dedicated namespaces for platform services use the `core-<service-name>` pattern. For this slice, External-Secrets Operator uses `core-external-secrets-operator`.
 
 ESO is bootstrap-critical and installed before Flux. The ESO ClusterSecretStore or SecretStore definition references the bootstrap-created `seed-secrets` Secret using the Kubernetes provider (or equivalent local provider that can read a bootstrap-created Kubernetes Secret). The Fake provider does not validate this path because it does not read `seed-secrets`.
 
 The ordering is:
-1. Bootstrap applies ESO manifests (Kustomize overlay or inline reference)
+1. Bootstrap applies the External-Secrets Operator cluster binding at `clusters/<cluster>/platform-services/external-secrets-operator/`, which renders the official chart from `platform-services/external-secrets-operator/base/`
 2. Bootstrap creates the `seed-secrets` Secret in the `core-external-secrets-operator` namespace from `.env`
 3. Bootstrap applies the ESO ClusterSecretStore referencing `seed-secrets`
 4. Bootstrap applies the Flux desired-state path (Flux manifests reference ESO-projected credentials)
@@ -97,7 +97,7 @@ Alternatives considered:
 Flux self-management means Flux reconciles its own installation from the same desired-state path that bootstrap applied. The bootstrap Kustomize overlay does not embed a separate Flux definition. It references the same Flux manifests and cluster entrypoint content that Flux later reconciles.
 
 The handoff sequence:
-1. Bootstrap applies the Flux desired-state path via `kubectl apply -k <bootstrap-overlay>`
+1. Bootstrap applies the Flux desired-state path via the same Kustomize-first render/apply path bootstrap uses for the slice
 2. The bootstrap overlay includes or references Flux manifests (controller, CRDs, RBAC)
 3. Flux starts, finds itself in the desired-state path, and becomes self-managing
 4. Subsequent changes to Flux configuration in the desired-state path are reconciled by Flux itself
@@ -123,8 +123,15 @@ Local Git server alternatives (for example `git daemon` or Gitea running in kind
 The concrete runtime layout for 0008 is:
 
 ```
+platform-services/
+  external-secrets-operator/
+    base/
+      kustomization.yaml
 clusters/
   <cluster>/
+    platform-services/
+      external-secrets-operator/
+        kustomization.yaml
     entrypoint/
       kustomization.yaml
       bootstrap-loader/
@@ -133,12 +140,12 @@ clusters/
 
 - `clusters/<cluster>/entrypoint/` is the first GitOps reconciliation root for that cluster. Flux reconciles from this path.
 - `clusters/<cluster>/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` is the first validation proof. It lives under the bootstrap loader because bootstrap applies the same entrypoint content before Flux handoff; it remains cluster-owned validation material, not a platform service or application service.
-- `platform-services/<service>/base/` and `clusters/<cluster>/platform-services/<service>.yaml` remain the future pattern for real platform services.
-- `application-services/<service>/base/` and `clusters/<cluster>/application-services/<service>.yaml` remain the future pattern for real application services.
+- Real platform services use `platform-services/<service>/base/` plus `clusters/<cluster>/platform-services/<service>/` immediately. For this slice, External-Secrets Operator is the first concrete example.
+- Real application services use `application-services/<service>/base/` plus `clusters/<cluster>/application-services/<service>/` when they are introduced.
 
 The first concrete cluster is `kind-dev-misc-local`, following the `<provider>-<environment>-<workload>-<location>` naming convention.
 
-Do not make `platform-services/<service>/kind` the default pattern. Introduce reusable variants only if later duplication justifies them. Do not create empty workload-category skeleton directories before a real platform service or application service needs them.
+Do not make `platform-services/<service>/kind` the default pattern. Temporary cluster-local platform service implementations are forbidden unless an approved change explicitly allows a removal plan. Introduce reusable variants only if later duplication justifies them. Do not create empty workload-category skeleton directories before a real platform service or application service needs them.
 
 Alternatives considered:
 - Require `platform-services/<service>/base/` for the first proof. Rejected because the reconciliation marker is not a workload-category service and should not force empty scaffolding.
@@ -180,5 +187,6 @@ Alternatives considered:
 - [Risk] The Kustomize-first bootstrap path may become unwieldy as the number of bootstrap resources grows. → Mitigation: Kustomize overlays support composition. If complexity exceeds Kustomize's sweet spot, a later change can introduce a thin wrapper while preserving the overlay structure.
 - [Risk] ESO Kubernetes provider reads Secrets from the same cluster, which some operators consider a security concern for production credential material binding. → Mitigation: this is production-inspired, not production-ready. The Kubernetes provider validates the Seed Secrets projection path for the kind-first local path. A real external provider can be introduced later without changing the projection model.
 - [Risk] The tracer bullet may reveal unexpected Flux or ESO compatibility issues or version constraints. → Mitigation: use well-known compatible versions. Document the tested version matrix. If issues arise, they are resolved in the implementation task, not deferred.
+- [Risk] The official External-Secrets Operator chart may introduce more generated resources than the previous hand-written bootstrap manifests. → Mitigation: use the official chart version `2.6.0`, matching the previously validated ESO `appVersion`/image tag `v2.6.0`, disable unused chart controllers, and keep kind-specific overrides minimal.
 - [Risk] Kind plumbing (Make targets, prerequisite checks) may drift from the actual operator workflow. → Mitigation: the tracer bullet exercises the plumbing end-to-end, keeping it honest. Evidence commands capture actual output.
 - [Risk] The concrete runtime layout under `clusters/<cluster>/` may need restructuring once multi-cluster or multi-provider scenarios appear. → Mitigation: this is a pragmatic first convention, not an immutable taxonomy. The layout preserves the two-axis model for future workload-category content while keeping the first proof minimal.

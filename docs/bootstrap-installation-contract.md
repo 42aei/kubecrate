@@ -89,7 +89,7 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 | Topic | Status | Contract position |
 | --- | --- | --- |
-| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path is Kustomize-first, likely `kubectl apply -k` or a very thin wrapper around it. |
+| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path is Kustomize-first, using `kubectl apply -k` for plain manifests or `kubectl kustomize --enable-helm <path> | kubectl apply -f -` when a platform service is sourced from an official Helm chart. For Helm-backed paths, local `helm` is required as a Kustomize render dependency. |
 | GitOps source directory names and repository boundaries | Partially decided | The contract still treats source roles as the durable requirement, but the first installable slice uses concrete cluster directories that bind reusable service definitions and place the first runtime files in this repository. |
 | Platform service selection after handoff | Deferred decision | The contract defines where platform services fit. It does not define the final set of platform services beyond bootstrap-supporting resources required for handoff. |
 
@@ -97,11 +97,11 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 The first installable slice uses Flux as the first GitOps controller while the broader contract remains controller-agnostic.
 
-The first bootstrap path is Kustomize-first and should apply or reference the same Flux desired-state path that Flux later reconciles.
+The first bootstrap path is Kustomize-first and should apply or reference the same Flux desired-state path that Flux later reconciles. When a platform service uses an official Helm chart, Kustomize renders that chart with `--enable-helm`. That render path requires local `helm`, but bootstrap still does not use `helm install` as its interface.
 
 Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
 
-The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
+The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint. When a real platform service is introduced, its reusable base lives at `platform-services/<service>/base/` and its concrete cluster binding lives at `clusters/<cluster>/platform-services/<service>/` immediately.
 
 External-Secrets Operator is bootstrap-critical and is installed before Flux because Flux needs projected Git credentials.
 
@@ -118,7 +118,7 @@ This bootstrap installation contract explicitly excludes:
 - **Cluster creation**. Bootstrap installation starts with a reachable Kubernetes API. Cluster creation tools and workflows are outside this contract.
 - **Runnable manifests**. This document defines the contract. Kubernetes manifests, Helm charts, and other runnable artifacts are outside this document.
 - **Installation scripts**. The contract is tool-neutral. Specific scripts, commands, or CLI interfaces are out of scope.
-- **Final repository paths**. The GitOps source structure roles are conceptual. The first installable slice gives the first concrete layout shape, but later changes can still refine path details or how environments are represented when there is a clear operational reason.
+- **Final repository paths**. The GitOps source structure roles remain the durable requirement. The first installable slice fixes the initial concrete service layout (`platform-services/<service>/base/` plus `clusters/<cluster>/platform-services/<service>/` for real platform services), while later changes can still refine broader repository boundaries or environment representation when there is a clear operational reason.
 - **Final platform service selection**. The contract defines where platform services fit. It does not define the complete set of platform services installed after handoff.
 
 ## Lifecycle diagram
