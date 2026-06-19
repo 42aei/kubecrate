@@ -67,6 +67,13 @@ Do not collapse these axes together in docs or tasks.
   - workload category: platform services or application services
 - Environment-specific structure is deferred until a change needs more than the kind-first local path.
 
+## Kubernetes validation guardrails
+
+- Static rendering, schema, or build validation is necessary but not sufficient whenever bootstrap installation or GitOps-managed operation applies or reconciles Kubernetes resources.
+- Before claiming success, verify the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome.
+- If health is failing or unclear, do not claim success. Use `debug-kubernetes` for bounded diagnosis before proposing or applying fixes.
+- Keep deeper checks symptom-driven. Authorization or RBAC checks such as `kubectl auth can-i` are examples to use when evidence points to that layer, not a mandatory per-ServiceAccount checklist.
+
 ## Current phase guardrails
 
 For this architecture and planning pass:

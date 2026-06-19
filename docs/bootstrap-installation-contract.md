@@ -37,6 +37,20 @@ This is the handoff condition into GitOps-managed operation.
 
 Bootstrap installation may include the GitOps controller and supporting bootstrap resources required to reach that handoff condition. It does not require final platform service selection before handoff. After handoff, platform services and application services are managed through GitOps unless a later decision documents a bootstrap-managed exception.
 
+## Validation expectations for applied or reconciled resources
+
+Static rendering, schema, and build validation are necessary, but they do not prove that bootstrap installation or GitOps-managed operation is healthy after Kubernetes resources are applied or reconciled.
+
+Operator-visible validation should confirm:
+
+- the intended cluster context is targeted,
+- the expected resources exist,
+- the relevant controllers and workloads report healthy, readiness, or sync conditions,
+- recent events or logs do not show blocking errors, and
+- the intended operator-visible outcome is present.
+
+If those checks fail or stay inconclusive, the result is not yet a successful bootstrap installation or GitOps-managed operation outcome. Investigation should stay symptom-driven and focus on the layer showing evidence of failure, such as reconciliation status, events, logs, networking, or authorization, rather than treating any single deep check as universally mandatory.
+
 ## Operator inputs
 
 The operator or calling tool provides three conceptual input categories:

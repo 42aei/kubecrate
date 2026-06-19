@@ -128,17 +128,19 @@ Kubecrate SHALL provide repository-owned kind validation plumbing for the kind-f
 - **AND** `point at a cluster and install` expects an already reachable Kubernetes API with usable credentials
 
 ### Requirement: Tracer bullet validation proves GitOps-managed update
-Kubecrate SHALL include a tracer bullet that proves GitOps-managed operation performs an update using `kubecrate-reconciliation-marker`, a Flux-managed validation marker/config proof rather than a platform service or application service. The validation SHALL demonstrate: baseline reconciliation of `kubecrate-reconciliation-marker` at version X (`v0.1.0` or equivalent Git-tracked config value), a Git-managed version bump to version Y (`v0.2.0`), and Flux reconciliation evidence confirming the update. Version X→Y SHALL be defined via a Git-managed config value with evidence commands such as `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'` before and after the change. Validation SHALL be operational and evidence-command based.
+Kubecrate SHALL include a tracer bullet that proves GitOps-managed operation performs an update using `kubecrate-reconciliation-marker`, a Flux-managed validation marker/config proof rather than a platform service or application service. The validation SHALL demonstrate: baseline reconciliation of `kubecrate-reconciliation-marker` at version X (`v0.1.0` or equivalent Git-tracked config value), a Git-managed version bump to version Y (`v0.2.0`), and Flux reconciliation evidence confirming the update. Version X→Y SHALL be defined via a Git-managed config value with evidence commands such as `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'` before and after the change. Validation SHALL be operational and evidence-command based. Static manifest rendering or build validation SHALL be treated as necessary but not sufficient after bootstrap installation applies resources and Flux reconciles them. Validation SHALL confirm the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, this slice SHALL NOT claim success until bounded, symptom-driven diagnosis identifies the blocking layer. Authorization or RBAC checks MAY be used when evidence points there, but SHALL NOT be a mandatory per-ServiceAccount validation step for every resource.
 
 #### Scenario: Baseline reconcile succeeds with kubecrate-reconciliation-marker at version X
 - **WHEN** bootstrap installation completes and Flux has reconciled
 - **THEN** evidence confirms Flux is running, ESO is projecting secrets, and `kubecrate-reconciliation-marker` is present at version X (`v0.1.0`)
 - **AND** the evidence command `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'` returns the expected value for version X
+- **AND** validation confirms the intended cluster context, expected resources, relevant health, readiness, or sync conditions, and no blocking errors in recent events or logs
 
 #### Scenario: Git-managed change triggers Flux update of kubecrate-reconciliation-marker
 - **WHEN** the operator commits a version bump for `kubecrate-reconciliation-marker` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` and pushes to the implementation branch
 - **THEN** Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y
 - **AND** evidence captures the before/after version value via the evidence command and Flux reconciliation status confirming the update
+- **AND** validation checks deeper than render output remain symptom-driven, using layers such as events, logs, networking, or authorization only when the observed evidence points there
 
 ### Requirement: Preserve project vocabulary and two-axis model
 Kubecrate SHALL preserve the required project vocabulary and the two-axis architecture model in all runtime files, documentation, and validation commands of this slice.
