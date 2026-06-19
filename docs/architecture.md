@@ -28,6 +28,8 @@ Platform services are shared capabilities that make the platform usable.
 
 They are often upstream or open source components such as ingress, certificate management, secret handling components such as External-Secrets Operator, observability building blocks, or GitOps controllers.
 
+When a platform service needs a dedicated Kubernetes namespace, Kubecrate uses the `core-<service-name>` naming rule. For External-Secrets Operator, the namespace is `core-external-secrets-operator`.
+
 When a backing secret store is involved, the trust material for that store is operator-supplied for now. In the kind-first local path, the operator loads that material by hand during setup.
 
 ### Application services

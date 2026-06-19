@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: external-secrets
-  namespace: eso
+  namespace: core-external-secrets-operator
   labels:
     app.kubernetes.io/name: external-secrets
     app.kubernetes.io/part-of: kubecrate

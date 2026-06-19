@@ -75,7 +75,7 @@ Bootstrap-critical services may be installed during bootstrap installation and t
 
 ESO is still a platform service. The bootstrap-critical classification is about lifecycle phase, not workload category.
 
-Kubecrate uses **Seed Secrets** for the initial trust material. Bootstrap installation reads an operator-provided local `.env` file, materializes it as a Secret named `seed-secrets` in the ESO namespace, and lets ESO project service-specific Secrets from that source.
+Kubecrate uses **Seed Secrets** for the initial trust material. Bootstrap installation reads an operator-provided local `.env` file, materializes it as a Secret named `seed-secrets` in the `core-external-secrets-operator` namespace, and lets ESO project service-specific Secrets from that source.
 
 Services and controllers should not consume the raw `seed-secrets` Secret directly. Each service should define or receive an ESO projection that writes a narrow Secret in the namespace it actually uses. For example, the GitOps controller should consume a Git credential Secret written into `flux-system`, not `seed-secrets` itself.
 

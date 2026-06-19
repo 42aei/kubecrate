@@ -45,7 +45,7 @@ Three distinct lifecycle boundaries exist in 0008:
 
 1. **Kind plumbing** (outside bootstrap installation): repository-owned kind config, prerequisite docs/checks, setup commands (Make targets or equivalent), teardown/recreate expectations, and evidence commands. Kind cluster creation and preparation validates the local environment but does not install Kubecrate. The Kubernetes API is reachable and the operator has usable credentials at the end of kind plumbing.
 
-2. **Bootstrap installation** starts when kind plumbing completes and the operator runs `point at a cluster and install` against a reachable Kubernetes API with usable credentials. Bootstrap installs ESO (bootstrap-critical, before Flux), creates the `seed-secrets` Secret in the ESO namespace from `.env`, applies the Kustomize-first Flux desired-state path, and hands off to GitOps-managed operation once Flux is running and self-managing.
+2. **Bootstrap installation** starts when kind plumbing completes and the operator runs `point at a cluster and install` against a reachable Kubernetes API with usable credentials. Bootstrap installs ESO (bootstrap-critical, before Flux), creates the `seed-secrets` Secret in the `core-external-secrets-operator` namespace from `.env`, applies the Kustomize-first Flux desired-state path, and hands off to GitOps-managed operation once Flux is running and self-managing.
 
 3. **GitOps-managed operation** begins after Flux handoff. Flux reconciles the same desired-state path bootstrap applied. Flux self-manages its own configuration. Real platform services or application services remain future workload-category content; the first proof in 0008 is only the reconciliation marker.
 
@@ -61,7 +61,7 @@ Bootstrap installation uses `kubectl apply -k` (or a very thin wrapper) against 
 
 The bootstrap entrypoint is a single Kustomize overlay that:
 - Installs ESO via a Kustomize resource or inline manifest reference
-- Creates the `seed-secrets` Secret in the ESO namespace from `.env`
+- Creates the `seed-secrets` Secret in the `core-external-secrets-operator` namespace from `.env`
 - References the Flux desired-state path, including Flux installation manifests and the concrete cluster entrypoint
 - Does not embed a separate copy of Flux manifests
 
@@ -73,13 +73,15 @@ Alternatives considered:
 
 ### Seed Secrets and ESO ordering
 
-Seed Secrets are the operator-provided local input path. No real `.env` file is committed. Only `.env.example` is committed, with placeholder values and usage documentation for the minimal Seed Secret contract. The real `.env` file is in `.gitignore`. Bootstrap installation materializes one Secret named `seed-secrets` in the ESO namespace via a thin wrapper that reads the current supported keys from `.env` and ignores legacy local keys. The secret contains credentials that ESO projects, including Git credentials Flux needs to reconcile.
+Seed Secrets are the operator-provided local input path. No real `.env` file is committed. Only `.env.example` is committed, with placeholder values and usage documentation for the minimal Seed Secret contract. The real `.env` file is in `.gitignore`. Bootstrap installation materializes one Secret named `seed-secrets` in the `core-external-secrets-operator` namespace via a thin wrapper that reads the current supported keys from `.env` and ignores legacy local keys. The secret contains credentials that ESO projects, including Git credentials Flux needs to reconcile.
+
+Dedicated namespaces for platform services use the `core-<service-name>` pattern. For this slice, External-Secrets Operator uses `core-external-secrets-operator`.
 
 ESO is bootstrap-critical and installed before Flux. The ESO ClusterSecretStore or SecretStore definition references the bootstrap-created `seed-secrets` Secret using the Kubernetes provider (or equivalent local provider that can read a bootstrap-created Kubernetes Secret). The Fake provider does not validate this path because it does not read `seed-secrets`.
 
 The ordering is:
 1. Bootstrap applies ESO manifests (Kustomize overlay or inline reference)
-2. Bootstrap creates the `seed-secrets` Secret in the ESO namespace from `.env`
+2. Bootstrap creates the `seed-secrets` Secret in the `core-external-secrets-operator` namespace from `.env`
 3. Bootstrap applies the ESO ClusterSecretStore referencing `seed-secrets`
 4. Bootstrap applies the Flux desired-state path (Flux manifests reference ESO-projected credentials)
 5. Flux starts, reads projected credentials from ESO, and reconciles

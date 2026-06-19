@@ -145,13 +145,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: external-secrets
-    namespace: eso
+    namespace: core-external-secrets-operator
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: external-secrets-leaderelection
-  namespace: eso
+  namespace: core-external-secrets-operator
   labels:
     app.kubernetes.io/name: external-secrets
     app.kubernetes.io/part-of: kubecrate
@@ -179,7 +179,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: external-secrets-leaderelection
-  namespace: eso
+  namespace: core-external-secrets-operator
   labels:
     app.kubernetes.io/name: external-secrets
     app.kubernetes.io/part-of: kubecrate
@@ -190,4 +190,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: external-secrets
-    namespace: eso
+    namespace: core-external-secrets-operator

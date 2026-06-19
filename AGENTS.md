@@ -35,6 +35,8 @@ Kubecrate uses a two-axis model. Preserve it in repository work:
 - lifecycle phase: bootstrap installation or GitOps-managed operation
 - workload category: platform services or application services
 
+When a platform service needs a dedicated Kubernetes namespace, name it with the `core-<service-name>` pattern. The first concrete example is External-Secrets Operator in `core-external-secrets-operator`.
+
 Bootstrap is a lifecycle or management mode, not a separate service category.
 
 Do not collapse these axes together in docs or tasks.

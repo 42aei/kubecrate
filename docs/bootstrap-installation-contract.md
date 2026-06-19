@@ -91,7 +91,7 @@ The first runtime files live in this repository and use reusable `platform servi
 
 External-Secrets Operator is bootstrap-critical and is installed before Flux because Flux needs projected Git credentials.
 
-Seed Secrets are materialized as `seed-secrets` in the ESO namespace and projected into narrow service-specific Secrets before consumers start.
+Seed Secrets are materialized as `seed-secrets` in the `core-external-secrets-operator` namespace and projected into narrow service-specific Secrets before consumers start.
 
 For the Seed Secrets flow, the local baseline must use an ESO provider that can read the bootstrap-created `seed-secrets` Kubernetes Secret. The ESO Kubernetes provider is the first expected local baseline. The Fake provider can still serve as a simple ESO smoke path, but not as Seed Secrets validation.
 
@@ -117,7 +117,7 @@ flowchart TD
     B[Kubernetes API reachable]
     C[Credentials and permissions can apply required bootstrap resources]
     D[Install External-Secrets Operator as bootstrap-critical]
-    E[Create seed-secrets in the ESO namespace from local operator inputs]
+    E[Create seed-secrets in the core-external-secrets-operator namespace from local operator inputs]
     F[Project service-specific Secrets from Seed Secrets]
     G[Install GitOps controller]
     H[Bind GitOps controller to Git source]
