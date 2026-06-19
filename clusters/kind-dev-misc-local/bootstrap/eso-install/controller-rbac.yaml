@@ -108,6 +108,19 @@ rules:
       - update
       - patch
       - delete
+  # ESO v2.6.0 controller needs cluster-scope secret access for cache reads and target Secret reconciliation.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
   - apiGroups:
       - ""
     resources:
