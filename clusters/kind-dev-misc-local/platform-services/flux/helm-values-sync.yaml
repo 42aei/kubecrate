@@ -12,4 +12,4 @@ kustomization:
     path: ./clusters/kind-dev-misc-local/entrypoint
     prune: true
     timeout: 5m
-    wait: true
+    wait: false
