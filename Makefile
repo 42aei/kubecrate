@@ -64,7 +64,7 @@ kind-dev-misc-local-await-gitops:
 kind-dev-misc-local-evidence:
 > kubectl --context "$(KIND_CONTEXT)" get nodes
 > kubectl --context "$(KIND_CONTEXT)" get deployments -n "$(FLUX_NAMESPACE)"
-> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $k, $_ := .data}}{{printf "%s\n" $k}}{{end}}'
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $$k, $$_ := .data}}{{printf "%s\n" $$k}}{{end}}'
 > flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'

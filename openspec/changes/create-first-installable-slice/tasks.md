@@ -4,7 +4,7 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 
 ### 1.1 Repository authority alignment (enabling)
 
-- [ ] 1.1.1 Keep this change scoped to the first installable tracer bullet only: runtime files authorized by this OpenSpec change may be added under existing AGENTS.md guardrails, while preserving repository principles, the two-axis model: lifecycle phase vs workload category, the kind-first local path, and point at a cluster and install language.
+- [x] 1.1.1 Keep this change scoped to the first installable tracer bullet only: runtime files authorized by this OpenSpec change may be added under existing AGENTS.md guardrails, while preserving repository principles, the two-axis model: lifecycle phase vs workload category, the kind-first local path, and point at a cluster and install language.
 
 ### 1.2 Minimum kind plumbing (enabling)
 
@@ -30,19 +30,19 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 
 Validation note: static render or build checks are necessary but not sufficient after the bootstrap sequence or later reconciliation. Success for this slice requires the intended cluster context, expected resources, controller health, readiness or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, pause for bounded, symptom-driven diagnosis instead of claiming success.
 
-- [ ] 1.5.1 Prepare the kind cluster using kind plumbing from 1.2.
-- [ ] 1.5.2 Install Flux controllers through the planned Helm-driven bootstrap path against the prepared cluster.
-- [ ] 1.5.3 Run the planned `flux2-sync` workflow in SSH mode so the repository and branch are configured for GitOps-managed operation.
-- [ ] 1.5.4 Retrieve or display the generated public key from `Secret/flux-system`, register it with the Git provider as a deploy key for this repository, and record the registration evidence used in validation.
-- [ ] 1.5.5 Verify Flux controllers are running, `GitRepository/flux-system` is Ready through SSH access, `Kustomization/flux-system` is Ready, and the initial reconciliation completes after deploy-key registration.
+- [x] 1.5.1 Prepare the kind cluster using kind plumbing from 1.2.
+- [x] 1.5.2 Install Flux controllers through the planned Helm-driven bootstrap path against the prepared cluster.
+- [x] 1.5.3 Run the planned `flux2-sync` workflow in SSH mode so the repository and branch are configured for GitOps-managed operation.
+- [x] 1.5.4 Retrieve or display the generated public key from `Secret/flux-system`, register it with the Git provider as a deploy key for this repository, and record the registration evidence used in validation.
+- [x] 1.5.5 Verify Flux controllers are running, `GitRepository/flux-system` is Ready through SSH access, `Kustomization/flux-system` is Ready, and the initial reconciliation completes after deploy-key registration.
 
 Acceptance: Flux controllers are Healthy, `flux2-sync` has produced the required SSH key material in `Secret/flux-system`, the operator has a clear public-key registration step sourced from `identity.pub`, `flux get source git flux-system -n flux-system` and `flux get kustomization flux-system -n flux-system` show Ready, and evidence commands capture the state.
 
 ### 1.6 Flux self-management and `kubecrate-reconciliation-marker` at version X
 
-- [ ] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
-- [ ] 1.6.2 Verify `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value) from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
-- [ ] 1.6.3 Capture baseline evidence: Flux status, `Secret/flux-system` presence, `GitRepository/flux-system` readiness, `Kustomization/flux-system` readiness, generated-public-key registration evidence, and `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` showing version X.
+- [x] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
+- [x] 1.6.2 Verify `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value) from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
+- [x] 1.6.3 Capture baseline evidence: Flux status, `Secret/flux-system` presence, `GitRepository/flux-system` readiness, `Kustomization/flux-system` readiness, generated-public-key registration evidence, and `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` showing version X.
 
 Acceptance: Flux Kustomization for itself shows Ready. `ConfigMap/kubecrate-reconciliation-marker` is present in namespace `kubecrate-system` at version X from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`. The evidence command `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` confirms `v0.1.0`. No bootstrap re-run is needed for Flux or the reconciliation marker proof to be active.
 
