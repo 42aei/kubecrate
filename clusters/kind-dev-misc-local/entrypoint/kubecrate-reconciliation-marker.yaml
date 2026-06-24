@@ -7,4 +7,5 @@ metadata:
     app.kubernetes.io/name: kubecrate-reconciliation-marker
     app.kubernetes.io/part-of: kubecrate
 data:
-  version: v0.2.0
+  purpose: GitOps reconciliation marker
+  version: v0.1.0

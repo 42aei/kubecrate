@@ -1,0 +1,11 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: fluxcd-community
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: flux-system
+    app.kubernetes.io/part-of: kubecrate
+spec:
+  interval: 30m0s
+  url: https://fluxcd-community.github.io/helm-charts

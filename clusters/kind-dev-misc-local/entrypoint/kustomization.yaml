@@ -1,5 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ./bootstrap-loader
-  - ./flux-system
+  - ./kubecrate-system-namespace.yaml
+  - ../platform-services/flux
+  - ./kubecrate-reconciliation-marker.yaml

@@ -8,23 +8,23 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 
 ### 1.2 Minimum kind plumbing (enabling)
 
-- [ ] 1.2.1 Add the minimum repository-owned kind config for `kind-dev-misc-local` so the tracer bullet can prepare a cluster for Flux bootstrap installation and reconciliation-marker validation.
-- [ ] 1.2.2 Add prerequisite guidance or checks for kind, kubectl, helm, flux CLI, and any other tools required for the Flux Helm chart and `flux2-sync` workflow.
-- [ ] 1.2.3 Add setup, teardown, recreate, and evidence commands that support the tracer bullet without becoming Makefile-only orchestration semantics.
+- [x] 1.2.1 Add the minimum repository-owned kind config for `kind-dev-misc-local` so the tracer bullet can prepare a cluster for Flux bootstrap installation and reconciliation-marker validation.
+- [x] 1.2.2 Add prerequisite guidance or checks for kind, kubectl, helm, flux CLI, and any other tools required for the Flux Helm chart and `flux2-sync` workflow.
+- [x] 1.2.3 Add setup, teardown, recreate, and evidence commands that support the tracer bullet without becoming Makefile-only orchestration semantics.
 
 ### 1.3 Minimum runtime layout (enabling)
 
-- [ ] 1.3.1 Create `clusters/kind-dev-misc-local/entrypoint/` as the first GitOps reconciliation root and keep it limited to the direct `kubecrate-system` namespace manifest, the Flux self-management reference, and `kubecrate-reconciliation-marker`, without introducing empty `platform-services/` or `application-services/` skeleton directories.
-- [ ] 1.3.2 Create the minimum Flux durable layout for self-management handoff: `platform-services/flux/base/` for shared manifests and `clusters/kind-dev-misc-local/platform-services/flux/` for the cluster binding, including the cluster-local `helm-values.yaml` consumed by the Flux HelmRelease.
-- [ ] 1.3.3 Create `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` at the cluster entrypoint path with version X (`v0.1.0`) as a validation marker/config proof, not a platform service or application service.
+- [x] 1.3.1 Create `clusters/kind-dev-misc-local/entrypoint/` as the first GitOps reconciliation root and keep it limited to the direct `kubecrate-system` namespace manifest, the Flux self-management reference, and `kubecrate-reconciliation-marker`, without introducing empty `platform-services/` or `application-services/` skeleton directories.
+- [x] 1.3.2 Create the minimum Flux durable layout for self-management handoff: `platform-services/flux/base/` for shared manifests and `clusters/kind-dev-misc-local/platform-services/flux/` for the cluster binding, including the cluster-local `helm-values.yaml` consumed by the Flux HelmRelease.
+- [x] 1.3.3 Create `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` at the cluster entrypoint path with version X (`v0.1.0`) as a validation marker/config proof, not a platform service or application service.
 
 ### 1.4 Flux bootstrap and sync contract (enabling)
 
-- [ ] 1.4.1 Implement the Flux Helm chart bootstrap contract for release `flux-system` in namespace `flux-system`, including the minimum chart reference and values needed for the first tracer bullet and matching self-managed manifests under `platform-services/flux/base/` and `clusters/kind-dev-misc-local/platform-services/flux/`. Treat `flux-system` as the explicit approved Flux exception for this slice, while the general platform service dedicated namespace rule remains `core-<service-name>` for other services.
-- [ ] 1.4.2 Implement the `flux2-sync` contract for this repository and current implementation branch using SSH deploy-key generation, with `Secret/flux-system`, `GitRepository/flux-system`, and `Kustomization/flux-system` as the expected object names in namespace `flux-system`. Do not introduce `core-flux` for the first GitOps controller bootstrap or self-management path.
-- [ ] 1.4.3 Implement the public-key retrieval step from `Secret/flux-system` field `identity.pub` and expose it through bootstrap output or operator guidance so the operator can register it as a deploy key with the Git provider.
-- [ ] 1.4.4 Keep the generated private key in-cluster as Secret material and ensure no committed Helm values or other Git-managed files contain raw credential material.
-- [ ] 1.4.5 Wire `clusters/kind-dev-misc-local/entrypoint/kustomization.yaml` to reconcile the same desired-state path bootstrap prepared by including `kubecrate-system-namespace.yaml`, referencing `../platform-services/flux`, and including `kubecrate-reconciliation-marker.yaml`, preserving Flux self-management handoff.
+- [x] 1.4.1 Implement the Flux Helm chart bootstrap contract for release `flux-system` in namespace `flux-system`, including the minimum chart reference and values needed for the first tracer bullet and matching self-managed manifests under `platform-services/flux/base/` and `clusters/kind-dev-misc-local/platform-services/flux/`. Treat `flux-system` as the explicit approved Flux exception for this slice, while the general platform service dedicated namespace rule remains `core-<service-name>` for other services.
+- [x] 1.4.2 Implement the `flux2-sync` contract for this repository and current implementation branch using SSH deploy-key generation, with `Secret/flux-system`, `GitRepository/flux-system`, and `Kustomization/flux-system` as the expected object names in namespace `flux-system`. Do not introduce `core-flux` for the first GitOps controller bootstrap or self-management path.
+- [x] 1.4.3 Implement the public-key retrieval step from `Secret/flux-system` field `identity.pub` and expose it through bootstrap output or operator guidance so the operator can register it as a deploy key with the Git provider.
+- [x] 1.4.4 Keep the generated private key in-cluster as Secret material and ensure no committed Helm values or other Git-managed files contain raw credential material.
+- [x] 1.4.5 Wire `clusters/kind-dev-misc-local/entrypoint/kustomization.yaml` to reconcile the same desired-state path bootstrap prepared by including `kubecrate-system-namespace.yaml`, referencing `../platform-services/flux`, and including `kubecrate-reconciliation-marker.yaml`, preserving Flux self-management handoff.
 
 ### 1.5 Bootstrap installation execution
 

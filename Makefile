@@ -4,20 +4,20 @@ SHELL := /bin/sh
 
 KIND_CLUSTER_NAME := kind-dev-misc-local
 KIND_CONTEXT := kind-$(KIND_CLUSTER_NAME)
+HELM_CONTEXT_ARGS := --kube-context "$(KIND_CONTEXT)"
 KIND_CONFIG := kind/$(KIND_CLUSTER_NAME)/config.yaml
-BOOTSTRAP_ROOT := clusters/$(KIND_CLUSTER_NAME)/bootstrap
-PLATFORM_SERVICES_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services
-BOOTSTRAP_EXTERNAL_SECRETS_OPERATOR := $(PLATFORM_SERVICES_ROOT)/external-secrets-operator
-EXTERNAL_SECRETS_OPERATOR_CHART_CACHE := platform-services/external-secrets-operator/base/charts
-BOOTSTRAP_STAGE_TWO := $(BOOTSTRAP_ROOT)/stage-2
 ENTRYPOINT_ROOT := clusters/$(KIND_CLUSTER_NAME)/entrypoint
-FLUX_INSTALL_ROOT := $(ENTRYPOINT_ROOT)/flux-system/install
-BOOTSTRAP_LOADER_ROOT := $(ENTRYPOINT_ROOT)/bootstrap-loader
-FLUX_SYNC_ROOT := $(ENTRYPOINT_ROOT)/flux-system/sync
-SEED_SECRET_NAMESPACE := core-external-secrets-operator
+FLUX_PLATFORM_SERVICE_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services/flux
+FLUX_HELM_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values.yaml
+FLUX_RELEASE_NAME := flux-system
+FLUX_SYNC_HELMRELEASE_NAME := flux-system-sync
+FLUX_NAMESPACE := flux-system
+FLUX_CHART := oci://ghcr.io/fluxcd-community/charts/flux2
+FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
+MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -41,27 +41,30 @@ kind-dev-misc-local-recreate:
 > $(MAKE) kind-dev-misc-local-create
 
 kind-dev-misc-local-bootstrap:
-> rm -rf "$(EXTERNAL_SECRETS_OPERATOR_CHART_CACHE)"
-> kubectl kustomize --enable-helm "$(BOOTSTRAP_EXTERNAL_SECRETS_OPERATOR)" | kubectl --context "$(KIND_CONTEXT)" apply --server-side -f -
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/external-secrets -n "$(SEED_SECRET_NAMESPACE)" --timeout=180s
-> python3 -c 'exec("import base64, sys\nrequired = (\"SEED_FLUX_GIT_USERNAME\", \"SEED_FLUX_GIT_PAT\")\ndata = {}\nfor raw in sys.stdin:\n    line = raw.strip()\n    if not line or line.startswith(\"#\") or \"=\" not in line:\n        continue\n    key, value = line.split(\"=\", 1)\n    key = key.strip()\n    if key in required:\n        data[key] = value.strip()\nmissing = [key for key in required if not data.get(key)]\nif missing:\n    sys.stderr.write(\"missing required seed key(s): \" + \", \".join(missing) + \"\\n\")\n    sys.exit(1)\nsys.stdout.write(\"apiVersion: v1\\nkind: Secret\\nmetadata:\\n  name: seed-secrets\\n  namespace: $(SEED_SECRET_NAMESPACE)\\ntype: Opaque\\ndata:\\n\")\nfor key in required:\n    encoded = base64.b64encode(data[key].encode()).decode()\n    sys.stdout.write(\"  \" + key + \": \" + encoded + \"\\n\")\n")' < .env | kubectl --context "$(KIND_CONTEXT)" apply --server-side -f -
-> kubectl --context "$(KIND_CONTEXT)" patch secret/seed-secrets -n "$(SEED_SECRET_NAMESPACE)" --type=merge -p '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":null}}}'
-> kubectl --context "$(KIND_CONTEXT)" apply -k "$(BOOTSTRAP_STAGE_TWO)"
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready clustersecretstores.external-secrets.io/seed-secrets-store --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" apply -k "$(FLUX_INSTALL_ROOT)"
-> kubectl --context "$(KIND_CONTEXT)" apply -k "$(BOOTSTRAP_LOADER_ROOT)"
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready externalsecrets.external-secrets.io/flux-system -n flux-system --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n flux-system --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n flux-system --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" apply -k "$(FLUX_SYNC_ROOT)"
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/flux-system -n flux-system --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/flux-system -n flux-system --timeout=180s
+> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)"
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" apply -k "$(ENTRYPOINT_ROOT)"
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\.pub}' | base64 -d && printf '\n'
+> printf 'After deploy-key registration, run: make kind-dev-misc-local-await-gitops\n'
+
+kind-dev-misc-local-await-gitops:
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> flux --context "$(KIND_CONTEXT)" reconcile source git "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
 
 kind-dev-misc-local-evidence:
 > kubectl --context "$(KIND_CONTEXT)" get nodes
-> kubectl --context "$(KIND_CONTEXT)" get deployments -n "$(SEED_SECRET_NAMESPACE)"
-> kubectl --context "$(KIND_CONTEXT)" get secret seed-secrets -n "$(SEED_SECRET_NAMESPACE)"
-> kubectl --context "$(KIND_CONTEXT)" get clustersecretstore seed-secrets-store
-> kubectl --context "$(KIND_CONTEXT)" get externalsecret flux-system -n flux-system
-> flux --context "$(KIND_CONTEXT)" get all -A
-> kubectl --context "$(KIND_CONTEXT)" get configmap kubecrate-reconciliation-marker -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+> kubectl --context "$(KIND_CONTEXT)" get deployments -n "$(FLUX_NAMESPACE)"
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $k, $_ := .data}}{{printf "%s\n" $k}}{{end}}'
+> flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
+> flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
+> kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'

@@ -1,0 +1,27 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flux-system-sync
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: flux-system-sync
+    app.kubernetes.io/part-of: kubecrate
+spec:
+  interval: 30m0s
+  releaseName: flux-system
+  storageNamespace: kubecrate-system
+  timeout: 5m0s
+  chart:
+    spec:
+      chart: flux2-sync
+      sourceRef:
+        kind: HelmRepository
+        name: fluxcd-community
+        namespace: flux-system
+      version: 1.14.6
+  install:
+    createNamespace: false
+  valuesFrom:
+    - kind: ConfigMap
+      name: flux-sync-values
+      valuesKey: values.yaml
