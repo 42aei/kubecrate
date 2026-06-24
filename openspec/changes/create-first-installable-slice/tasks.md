@@ -4,62 +4,59 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 
 ### 1.1 Repository authority alignment (enabling)
 
-- [x] 1.1.1 Update `AGENTS.md` current phase guardrails so proposal-approved implementation for `openspec/changes/create-first-installable-slice/` may add runtime manifests, installation scripts, and supporting config only in the paths approved by that OpenSpec change, while minimality, the two-axis model, the kind-first local path, no unrelated skeleton directories, and no `.opencode` edits remain in force.
+- [ ] 1.1.1 Keep this change scoped to the first installable tracer bullet only: runtime files authorized by this OpenSpec change may be added under existing AGENTS.md guardrails, while preserving repository principles, the two-axis model: lifecycle phase vs workload category, the kind-first local path, and point at a cluster and install language.
 
 ### 1.2 Minimum kind plumbing (enabling)
 
-- [x] 1.2.1 Create kind cluster configuration for `kind-dev-misc-local` with sufficient resources for ESO, Flux, and the reconciliation marker path.
-- [x] 1.2.2 Add prerequisite documentation or checks verifying kind, kubectl, and other tool versions.
-- [x] 1.2.3 Add Make targets or equivalent setup commands to create, teardown, and recreate the kind cluster from the config.
-- [x] 1.2.4 Add evidence commands that capture cluster state (e.g. `kubectl get` output) for validation.
+- [ ] 1.2.1 Add the minimum repository-owned kind config for `kind-dev-misc-local` so the tracer bullet can prepare a cluster for Flux bootstrap installation and reconciliation-marker validation.
+- [ ] 1.2.2 Add prerequisite guidance or checks for kind, kubectl, helm, flux CLI, and any other tools required for the Flux Helm chart and `flux2-sync` workflow.
+- [ ] 1.2.3 Add setup, teardown, recreate, and evidence commands that support the tracer bullet without becoming Makefile-only orchestration semantics.
 
 ### 1.3 Minimum runtime layout (enabling)
 
-- [x] 1.3.1 Create `clusters/kind-dev-misc-local/entrypoint/` as the first GitOps reconciliation root without introducing empty `platform-services/` or `application-services/` skeleton directories.
-- [x] 1.3.2 Create the cluster entrypoint Kustomization at `clusters/kind-dev-misc-local/entrypoint/kustomization.yaml`.
-- [x] 1.3.3 Create `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` (or an equivalent concrete cluster-owned path) with version X (`v0.1.0`) stored in a ConfigMap or equivalent proof resource.
-- [x] 1.3.4 Ensure the reconciliation marker is clearly documented and labeled as a validation marker/config proof, not a platform service or application service.
+- [ ] 1.3.1 Create `clusters/kind-dev-misc-local/entrypoint/` as the first GitOps reconciliation root and keep it limited to the direct `kubecrate-system` namespace manifest, the Flux self-management reference, and `kubecrate-reconciliation-marker`, without introducing empty `platform-services/` or `application-services/` skeleton directories.
+- [ ] 1.3.2 Create the minimum Flux durable layout for self-management handoff: `platform-services/flux/base/` for shared manifests and `clusters/kind-dev-misc-local/platform-services/flux/` for the cluster binding, including the cluster-local `helm-values.yaml` consumed by the Flux HelmRelease.
+- [ ] 1.3.3 Create `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` at the cluster entrypoint path with version X (`v0.1.0`) as a validation marker/config proof, not a platform service or application service.
 
-### 1.4 Minimum bootstrap manifests (enabling)
+### 1.4 Flux bootstrap and sync contract (enabling)
 
-- [x] 1.4.1 Commit `.env.example` with the minimal Seed Secret contract and usage documentation. Verify `.env` remains in `.gitignore`. No real credential material is committed.
-- [x] 1.4.2 Create the bootstrap Kustomize overlay that references ESO installation manifests (upstream or vendored), materializes the `seed-secrets` Secret in the `core-external-secrets-operator` namespace via a documented wrapper that reads the current supported `.env` keys, and references the cluster entrypoint Flux desired-state path.
-- [x] 1.4.3 Define the ESO ClusterSecretStore (or equivalent) using the Kubernetes provider to read the `seed-secrets` Secret.
-- [x] 1.4.4 Define ESO ExternalSecret resources that project Git credentials from `seed-secrets` for Flux consumption using the `username` and `password` keys Flux HTTPS basic auth expects.
-- [x] 1.4.5 Create the Flux Git source: `GitRepository` resource pointing to this repository's HTTPS remote and the current implementation branch, referencing the ESO-projected credential Secret backed by a fine-grained PAT that is read-capable now and ready for write-back before `ImageUpdateAutomation` is enabled.
-- [x] 1.4.6 Create the Flux desired-state path under the cluster entrypoint: Flux installation manifests (controller, CRDs, RBAC) referenced from the entrypoint Kustomization, with Flux configured to reconcile the entrypoint path itself.
+- [ ] 1.4.1 Implement the Flux Helm chart bootstrap contract for release `flux-system` in namespace `flux-system`, including the minimum chart reference and values needed for the first tracer bullet and matching self-managed manifests under `platform-services/flux/base/` and `clusters/kind-dev-misc-local/platform-services/flux/`. Treat `flux-system` as the explicit approved Flux exception for this slice, while the general platform service dedicated namespace rule remains `core-<service-name>` for other services.
+- [ ] 1.4.2 Implement the `flux2-sync` contract for this repository and current implementation branch using SSH deploy-key generation, with `Secret/flux-system`, `GitRepository/flux-system`, and `Kustomization/flux-system` as the expected object names in namespace `flux-system`. Do not introduce `core-flux` for the first GitOps controller bootstrap or self-management path.
+- [ ] 1.4.3 Implement the public-key retrieval step from `Secret/flux-system` field `identity.pub` and expose it through bootstrap output or operator guidance so the operator can register it as a deploy key with the Git provider.
+- [ ] 1.4.4 Keep the generated private key in-cluster as Secret material and ensure no committed Helm values or other Git-managed files contain raw credential material.
+- [ ] 1.4.5 Wire `clusters/kind-dev-misc-local/entrypoint/kustomization.yaml` to reconcile the same desired-state path bootstrap prepared by including `kubecrate-system-namespace.yaml`, referencing `../platform-services/flux`, and including `kubecrate-reconciliation-marker.yaml`, preserving Flux self-management handoff.
 
 ### 1.5 Bootstrap installation execution
 
-Validation note: static render or build checks are necessary but not sufficient after the bootstrap render/apply sequence or later reconciliation. Success for this slice requires the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, pause for bounded, symptom-driven diagnosis instead of claiming success. Authorization or RBAC checks are examples only when evidence points there, not a mandatory per-ServiceAccount checklist.
+Validation note: static render or build checks are necessary but not sufficient after the bootstrap sequence or later reconciliation. Success for this slice requires the intended cluster context, expected resources, controller health, readiness or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, pause for bounded, symptom-driven diagnosis instead of claiming success.
 
-- [x] 1.5.1 Prepare the kind cluster using kind plumbing from 1.2.
-- [x] 1.5.2 Run the bootstrap render/apply sequence against the prepared cluster, rendering Helm-backed paths with `kubectl kustomize --enable-helm <path> | kubectl apply -f -` and applying the remaining plain-manifest Kustomize paths with `kubectl apply -k`.
-- [x] 1.5.3 Verify ESO is running and the `seed-secrets` Secret exists in the `core-external-secrets-operator` namespace.
-- [x] 1.5.4 Verify ESO ClusterSecretStore is connected and ExternalSecrets are projected (Git credentials synced).
-- [x] 1.5.5 Verify Flux controller is running, has reconciled its initial state, and the `GitRepository` is Ready using the HTTPS remote and projected credentials.
+- [ ] 1.5.1 Prepare the kind cluster using kind plumbing from 1.2.
+- [ ] 1.5.2 Install Flux controllers through the planned Helm-driven bootstrap path against the prepared cluster.
+- [ ] 1.5.3 Run the planned `flux2-sync` workflow in SSH mode so the repository and branch are configured for GitOps-managed operation.
+- [ ] 1.5.4 Retrieve or display the generated public key from `Secret/flux-system`, register it with the Git provider as a deploy key for this repository, and record the registration evidence used in validation.
+- [ ] 1.5.5 Verify Flux controllers are running, `GitRepository/flux-system` is Ready through SSH access, `Kustomization/flux-system` is Ready, and the initial reconciliation completes after deploy-key registration.
 
-Acceptance: ESO status shows Healthy. `kubectl get secret seed-secrets -n core-external-secrets-operator` exists. ESO ExternalSecrets show SecretSynced. `flux get all` shows Flux running with Ready GitRepository and the first reconciliation complete. Evidence commands capture the state.
+Acceptance: Flux controllers are Healthy, `flux2-sync` has produced the required SSH key material in `Secret/flux-system`, the operator has a clear public-key registration step sourced from `identity.pub`, `flux get source git flux-system -n flux-system` and `flux get kustomization flux-system -n flux-system` show Ready, and evidence commands capture the state.
 
 ### 1.6 Flux self-management and `kubecrate-reconciliation-marker` at version X
 
-- [x] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
-- [x] 1.6.2 Verify `kubecrate-reconciliation-marker` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value).
-- [x] 1.6.3 Capture baseline evidence: Flux Kustomization status, `kubecrate-reconciliation-marker` version via `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'`, and resource presence or status.
+- [ ] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
+- [ ] 1.6.2 Verify `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value) from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
+- [ ] 1.6.3 Capture baseline evidence: Flux status, `Secret/flux-system` presence, `GitRepository/flux-system` readiness, `Kustomization/flux-system` readiness, generated-public-key registration evidence, and `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` showing version X.
 
-Acceptance: Flux Kustomization for itself shows Ready. The reconciliation marker is present at version X. The evidence command confirms `v0.1.0`. No bootstrap re-run is needed for Flux or the reconciliation marker proof to be active.
+Acceptance: Flux Kustomization for itself shows Ready. `ConfigMap/kubecrate-reconciliation-marker` is present in namespace `kubecrate-system` at version X from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`. The evidence command `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` confirms `v0.1.0`. No bootstrap re-run is needed for Flux or the reconciliation marker proof to be active.
 
 ### 1.7 GitOps-managed update: `kubecrate-reconciliation-marker` version X→Y
 
-- [x] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y (bump `data.version` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` or the equivalent cluster-owned marker path).
-- [x] 1.7.2 Commit and push the change to the implementation branch. Wait for Flux reconciliation or trigger reconciliation.
-- [x] 1.7.3 Verify Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y.
-- [x] 1.7.4 Capture update evidence: before/after marker version via evidence command, Flux reconciliation logs or events, and updated ConfigMap content.
+- [ ] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
+- [ ] 1.7.2 Push the change to the implementation branch and wait for Flux reconciliation or trigger reconciliation.
+- [ ] 1.7.3 Verify Flux detects the change, reconciles, and `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` reports version Y.
+- [ ] 1.7.4 Capture update evidence: `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` before and after the change, Flux reconciliation logs or events, and updated ConfigMap content.
 
-Acceptance: `kubecrate-reconciliation-marker` is verified at version Y (`v0.2.0`) after Flux reconciliation. Evidence command output shows the version transition from X to Y triggered by the Git commit. Flux events or logs confirm the reconciliation.
+Acceptance: `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` is verified at version Y (`v0.2.0`) after Flux reconciliation from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`. Evidence command output from `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` shows the version transition from X to Y triggered by the Git-managed change. Flux events or logs confirm the reconciliation.
 
-## 2. Repository hygiene
+## 2. Deferred platform services follow-up
 
-- [x] 2.1 Update `docs/backlog/0008-create-first-installable-slice.md` frontmatter status from `proposed` to `started` with a note referencing this OpenSpec change.
-- [x] 2.2 Verify runtime files are added only in proposal-approved paths (`clusters/kind-dev-misc-local/`, bootstrap overlay directory, kind plumbing directory, and any Flux path explicitly referenced by the entrypoint) and no unrelated manifests, scripts, or empty workload-category skeleton directories are introduced.
-- [x] 2.3 Run `openspec status --change "create-first-installable-slice"` and confirm all apply-required artifacts are present.
+- [ ] 2.1 Create or continue a separate branch or later OpenSpec change for External-Secrets Operator as deferred platform services work.
+- [ ] 2.2 Define acceptance criteria for that ESO follow-up so it can introduce or finish External-Secrets Operator without blocking the Flux-first installable slice or first-slice readiness.
+- [ ] 2.3 Keep the first installable slice scoped so the ESO follow-up is explicitly separate from the Flux-first tracer bullet and is not required for bootstrap installation or GitOps-managed operation acceptance in this change.

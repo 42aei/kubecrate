@@ -1,71 +1,59 @@
 ## ADDED Requirements
 
-### Requirement: Kustomize-first bootstrap installation
-Kubecrate SHALL use a Kustomize-first bootstrap installation path, applying plain-manifest Kustomize paths via `kubectl apply -k` and rendering Helm-backed paths via `kubectl kustomize --enable-helm <path> | kubectl apply -f -`. For Helm-backed paths, the local Helm CLI SHALL be available as a Kustomize render dependency. Bootstrap installation SHALL NOT use `helm install` as the bootstrap packaging interface.
+### Requirement: Helm-driven Flux bootstrap installation
+Kubecrate SHALL use a Helm-driven bootstrap installation path for Flux in this first slice. Bootstrap installation SHALL install Flux controllers from the selected chart path, prepare the first Flux desired-state path, and hand off to GitOps-managed operation without introducing a duplicate independent source of truth for Flux configuration.
 
-#### Scenario: Bootstrap execution uses Kustomize render/apply paths
+#### Scenario: Bootstrap execution installs Flux from the chart path and prepares the first desired-state path
 - **WHEN** an operator runs bootstrap installation against a prepared kind cluster
-- **THEN** bootstrap installation renders and applies the Helm-backed External-Secrets Operator path through `kubectl kustomize --enable-helm <path> | kubectl apply -f -`
-- **AND** bootstrap installation applies the remaining plain-manifest Kustomize paths through `kubectl apply -k`
-- **AND** the applied paths reference ESO, Seed Secrets, and the Flux desired-state path
+- **THEN** bootstrap installation installs Flux controllers from the selected Flux chart path
+- **AND** bootstrap installation prepares the same cluster entrypoint path that Flux later reconciles
 - **AND** the bootstrap execution path does not embed a duplicate independent copy of Flux manifests
 
-#### Scenario: Helm-backed bootstrap uses a local render dependency
-- **WHEN** the bootstrap installation interface is defined for a Helm-backed path
-- **THEN** local `helm` is required for Kustomize `--enable-helm` rendering
-- **AND** the operator does not run `helm install` to complete bootstrap installation
+#### Scenario: Helm-driven bootstrap requires local Helm tooling
+- **WHEN** the bootstrap installation interface is defined for a Flux chart path
+- **THEN** local `helm` is required for that bootstrap installation path
+- **AND** the operator does not need a separate platform service credential projection controller to complete the first slice bootstrap contract
 
-### Requirement: ESO is bootstrap-critical and installed before Flux
-Kubecrate SHALL install External-Secrets Operator during bootstrap installation, before Flux, so Flux can consume ESO-projected Git credentials. ESO SHALL be bootstrap-critical for this slice and SHALL NOT be a GitOps-managed management unit.
+### Requirement: Flux SSH deploy-key generation and registration
+Kubecrate SHALL use `flux2-sync` SSH deploy-key generation for the first Git source contract in this slice. Bootstrap installation SHALL create `Secret/flux-system` in namespace `flux-system`, keep the generated private key material in-cluster, and expose operator retrieval of the generated public key from `identity.pub` for deploy-key registration with the Git provider.
 
-#### Scenario: ESO runs before Flux
-- **WHEN** bootstrap installation executes
-- **THEN** ESO is installed and running before Flux controller starts
-- **AND** Flux can reference ESO-projected credentials for Git source access
+#### Scenario: Flux sync secret is created during bootstrap
+- **WHEN** bootstrap installation executes the `flux2-sync` contract in SSH mode
+- **THEN** `Secret/flux-system` exists in namespace `flux-system`
+- **AND** the Secret contains generated SSH identity material for the Flux Git source contract
 
-#### Scenario: ESO is not GitOps-managed in this slice
-- **WHEN** the platform services model is evaluated
-- **THEN** ESO is classified as bootstrap-critical for this slice, not as a GitOps-managed management unit
+#### Scenario: Operator retrieves the generated public key from identity.pub
+- **WHEN** the operator needs to register repository access for Flux
+- **THEN** the generated public key is retrievable from `Secret/flux-system` field `identity.pub`
+- **AND** bootstrap output or operator guidance identifies that field as the source of truth for deploy-key registration
 
-### Requirement: Seed Secrets projection via ESO Kubernetes provider
-Kubecrate SHALL use Seed Secrets as the operator-provided local input path. Only `.env.example` with placeholder values and usage documentation SHALL be committed. The real `.env` file SHALL be in `.gitignore`. Bootstrap installation SHALL materialize one Secret named `seed-secrets` in the `core-external-secrets-operator` namespace via a thin wrapper that consumes only `SEED_FLUX_GIT_USERNAME` and `SEED_FLUX_GIT_PAT` from `.env`; all other `.env` keys SHALL be ignored. ESO SHALL project secrets from `seed-secrets` using the Kubernetes provider or an equivalent local provider that can read a bootstrap-created Kubernetes Secret. The Fake provider SHALL NOT be used for Seed Secrets projection because it does not read the `seed-secrets` Secret.
-
-#### Scenario: Seed Secrets Secret is created during bootstrap
-- **WHEN** bootstrap installation executes
-- **THEN** a Kubernetes Secret named `seed-secrets` is created in the `core-external-secrets-operator` namespace containing the current supported operator-provided credential keys via the documented wrapper
+#### Scenario: Deploy-key registration happens before Flux source readiness
+- **WHEN** the generated public key has not yet been registered with the Git provider as a deploy key
+- **THEN** `GitRepository/flux-system` SHALL NOT be considered ready for GitOps-managed operation
+- **AND** operator registration of that deploy key is required before Flux source readiness is expected
 
 ### Requirement: Platform services namespaces use the core prefix
-Kubecrate SHALL name dedicated Kubernetes namespaces for platform services with the `core-<service-name>` pattern. For this slice, External-Secrets Operator SHALL use `core-external-secrets-operator`.
+Kubecrate SHALL name dedicated Kubernetes namespaces for platform services with the `core-<service-name>` pattern. This first slice SHALL keep Flux in `flux-system` as an explicit tool-specific exception for the GitOps controller bootstrap or self-management path and SHALL NOT introduce `core-flux` for Flux in this slice.
 
-#### Scenario: External-Secrets Operator uses the platform services namespace rule
-- **WHEN** the first installable slice binds External-Secrets Operator into the cluster
-- **THEN** its namespace is `core-external-secrets-operator`
-- **AND** related bootstrap installation resources that must run in that namespace use the same namespace value
-- **AND** no real `.env` file containing credentials is committed to the repository; only `.env.example` with placeholder values is committed
+#### Scenario: Dedicated platform services keep the core namespace rule
+- **WHEN** a future platform service in this model needs a dedicated namespace
+- **THEN** that namespace uses the `core-<service-name>` pattern
 
-#### Scenario: Seed Secrets example file is committed, real env is ignored
-- **WHEN** the repository is examined
-- **THEN** `.env.example` is present with placeholder values and usage documentation
-- **AND** `.env` is listed in `.gitignore`
-- **AND** no real credential material appears in committed files
+#### Scenario: Flux keeps the explicit namespace exception
+- **WHEN** the first installable slice installs or reconciles Flux
+- **THEN** Flux controller, sync, and self-management resources use namespace `flux-system`
+- **AND** the first slice does not use `core-flux` for Flux
 
-#### Scenario: ESO projects from seed-secrets
-- **WHEN** ESO is running with a ClusterSecretStore or SecretStore referencing the `seed-secrets` Secret
-- **THEN** ESO uses the Kubernetes provider or equivalent local provider to read the `seed-secrets` Secret
-- **AND** the Fake provider is not used for this projection path
+### Requirement: External-Secrets Operator is deferred outside this first slice
+Kubecrate SHALL NOT require External-Secrets Operator for bootstrap installation or GitOps-managed operation acceptance in this first slice. External-Secrets Operator remains deferred platform services work outside this slice rather than a rejected long-term option.
 
-#### Scenario: Services consume narrow projected secrets
-- **WHEN** a service or controller needs secret material
-- **THEN** it consumes an ESO-projected ExternalSecret or SecretStore reference, not the raw `seed-secrets` Secret
-
-#### Scenario: Minimal Seed Secret contract documents Flux operator input
-- **WHEN** `.env.example` documents the first installable slice input contract
-- **THEN** it includes the minimal Flux Git credential keys for username and PAT
-- **AND** it explains that the PAT is used as the projected Flux HTTPS basic-auth password
-- **AND** it explains that the Flux GitRepository URL and branch are Git-managed in the Flux desired-state manifest, not Seed Secret inputs
+#### Scenario: First-slice acceptance does not depend on External-Secrets Operator
+- **WHEN** the first installable slice scope is evaluated
+- **THEN** bootstrap installation and GitOps-managed operation acceptance do not require External-Secrets Operator
+- **AND** any later External-Secrets Operator work is treated as deferred follow-up scope
 
 ### Requirement: Flux self-management handoff
-Kubecrate SHALL hand off Flux to self-management after bootstrap installation. Bootstrap installation SHALL apply or reference the same Flux desired-state path that Flux later reconciles. There SHALL NOT be duplicate independent Flux definitions under bootstrap installation and the GitOps desired-state path. Bootstrap installation is a loader or reference, not a second source of truth for Flux configuration.
+Bootstrap installation SHALL hand off Flux to self-management after bootstrap installation. Bootstrap installation SHALL apply or reference the same Flux desired-state path that Flux later reconciles. There SHALL NOT be duplicate independent Flux definitions under bootstrap installation and the GitOps desired-state path. Bootstrap installation is a loader or reference, not a second source of truth for Flux configuration.
 
 #### Scenario: Bootstrap applies the same path Flux reconciles
 - **WHEN** bootstrap installation applies the Flux desired-state path
@@ -77,22 +65,17 @@ Kubecrate SHALL hand off Flux to self-management after bootstrap installation. B
 - **THEN** Flux manages its own configuration, including any future changes to Flux resources in the desired-state path
 - **AND** the operator does not need to re-run bootstrap installation to update Flux configuration
 
-#### Scenario: Flux Git source uses HTTPS remote and current branch
+#### Scenario: Flux Git source uses SSH remote and current branch
 - **WHEN** Flux is configured to reconcile this repository
-- **THEN** the Flux `GitRepository` resource points to this repository's HTTPS remote URL and the current implementation branch
-- **AND** Git credentials are supplied through `seed-secrets` and projected via ESO ExternalSecret into a Secret using `username` and `password` keys for Flux HTTPS basic auth
+- **THEN** the Flux `GitRepository` resource points to this repository's SSH remote URL and the current implementation branch
+- **AND** Git credentials are provided by generated SSH identity material stored in `Secret/flux-system`
 - **AND** validation requires a commit and push to the implementation branch for Flux to detect and reconcile changes
 - **AND** local Git server alternatives are secondary and out of the default path for this slice
 
-#### Scenario: Flux seed credentials are suitable for read now and write-back soon
-- **WHEN** the default Flux Git authentication contract is defined for the kind-first local path
-- **THEN** it uses a fine-grained PAT as the HTTPS basic-auth password value
-- **AND** the PAT is suitable for repository read access immediately and write access before `ImageUpdateAutomation` is enabled
-
-#### Scenario: GitHub App remains a later reconsideration point
+#### Scenario: Deploy-key contract is limited to generated SSH identity material
 - **WHEN** the repository's Git authentication choice is documented for this slice
-- **THEN** the default path is HTTPS plus fine-grained PAT for simplicity now
-- **AND** GitHub App authentication is explicitly listed for reconsideration when bot or app identity, shorter-lived installation tokens, cleaner audit or rotation, stronger org or repo permission boundaries, or multi-repo or multi-org scale matters
+- **THEN** the default path is generated SSH deploy-key material for `flux2-sync`
+- **AND** operator registration of the generated public key is part of the first-slice bootstrap contract
 
 ### Requirement: Concrete runtime layout
 Kubecrate SHALL place the first concrete runtime files under a layout that preserves the two-axis model while allowing cluster-owned validation material to live directly in a concrete cluster path. Each concrete cluster SHALL have an entrypoint at `clusters/<cluster>/entrypoint/` as the first GitOps reconciliation root. The first concrete cluster SHALL be `kind-dev-misc-local`. The first validation proof under this layout SHALL be `kubecrate-reconciliation-marker`, and it SHALL live in a concrete cluster path because it is not a platform service or application service. Real platform services SHALL use `platform-services/<service>/base/` with cluster-specific binding under `clusters/<cluster>/platform-services/<service>/` immediately when introduced. Real application services SHALL use `application-services/<service>/base/` with cluster-specific binding under `clusters/<cluster>/application-services/<service>/` when introduced.
@@ -107,10 +90,11 @@ Kubecrate SHALL place the first concrete runtime files under a layout that prese
 - **THEN** it is not kept only in a cluster-local bootstrap directory
 - **AND** any exception requires an approved change with an explicit removal plan
 
-#### Scenario: Reconciliation marker lives directly under the concrete cluster path
+#### Scenario: Reconciliation marker and namespace manifest live directly under the concrete cluster path
 - **WHEN** the runtime layout is populated for the first installable slice
 - **THEN** `clusters/kind-dev-misc-local/entrypoint/` contains the first GitOps reconciliation root
-- **AND** `clusters/kind-dev-misc-local/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` contains the validation marker/config proof with version X
+- **AND** `clusters/kind-dev-misc-local/entrypoint/kubecrate-system-namespace.yaml` creates namespace `kubecrate-system` directly in the entrypoint
+- **AND** `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` contains `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` with version X
 - **AND** no empty workload-category skeleton directories are required just to host the marker
 
 #### Scenario: Concrete cluster follows naming convention
@@ -136,17 +120,18 @@ Kubecrate SHALL provide repository-owned kind validation plumbing for the kind-f
 - **AND** `point at a cluster and install` expects an already reachable Kubernetes API with usable credentials
 
 ### Requirement: Tracer bullet validation proves GitOps-managed update
-Kubecrate SHALL include a tracer bullet that proves GitOps-managed operation performs an update using `kubecrate-reconciliation-marker`, a Flux-managed validation marker/config proof rather than a platform service or application service. The validation SHALL demonstrate: baseline reconciliation of `kubecrate-reconciliation-marker` at version X (`v0.1.0` or equivalent Git-tracked config value), a Git-managed version bump to version Y (`v0.2.0`), and Flux reconciliation evidence confirming the update. Version X→Y SHALL be defined via a Git-managed config value with evidence commands such as `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'` before and after the change. Validation SHALL be operational and evidence-command based. Static manifest rendering or build validation SHALL be treated as necessary but not sufficient after bootstrap installation applies resources and Flux reconciles them. Validation SHALL confirm the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, this slice SHALL NOT claim success until bounded, symptom-driven diagnosis identifies the blocking layer. Authorization or RBAC checks MAY be used when evidence points there, but SHALL NOT be a mandatory per-ServiceAccount validation step for every resource.
+Kubecrate SHALL include a tracer bullet that proves GitOps-managed operation performs an update using `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system`, a Flux-managed validation marker/config proof rather than a platform service or application service. The validation SHALL demonstrate: baseline reconciliation of `kubecrate-reconciliation-marker` at version X (`v0.1.0` or equivalent Git-tracked config value), a Git-managed version bump to version Y (`v0.2.0`), and Flux reconciliation evidence confirming the update. Version X→Y SHALL be defined via a Git-managed config value in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` with evidence commands such as `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` before and after the change. Validation SHALL be operational and evidence-command based. Static manifest rendering or build validation SHALL be treated as necessary but not sufficient after bootstrap installation applies resources and Flux reconciles them. Validation SHALL confirm the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome. If health is failing or unclear, this slice SHALL NOT claim success until bounded, symptom-driven diagnosis identifies the blocking layer. Authorization or RBAC checks MAY be used when evidence points there, but SHALL NOT be a mandatory per-ServiceAccount validation step for every resource.
 
 #### Scenario: Baseline reconcile succeeds with kubecrate-reconciliation-marker at version X
 - **WHEN** bootstrap installation completes and Flux has reconciled
-- **THEN** evidence confirms Flux is running, ESO is projecting secrets, and `kubecrate-reconciliation-marker` is present at version X (`v0.1.0`)
-- **AND** the evidence command `kubectl get configmap kubecrate-reconciliation-marker -n <ns> -o jsonpath='{.data.version}'` returns the expected value for version X
+- **THEN** evidence confirms Flux is running, `Secret/flux-system` contains generated sync identity material, and `ConfigMap/kubecrate-reconciliation-marker` is present in namespace `kubecrate-system` at version X (`v0.1.0`)
+- **AND** the evidence command `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` returns the expected value for version X
 - **AND** validation confirms the intended cluster context, expected resources, relevant health, readiness, or sync conditions, and no blocking errors in recent events or logs
 
 #### Scenario: Git-managed change triggers Flux update of kubecrate-reconciliation-marker
-- **WHEN** the operator commits a version bump for `kubecrate-reconciliation-marker` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/bootstrap-loader/kubecrate-reconciliation-marker.yaml` and pushes to the implementation branch
-- **THEN** Flux detects the change, reconciles, and `kubecrate-reconciliation-marker` reports version Y
+- **WHEN** the operator commits a version bump for `kubecrate-reconciliation-marker` from `v0.1.0` to `v0.2.0` in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml` and pushes to the implementation branch
+- **THEN** Flux detects the change, reconciles, and `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` reports version Y
+- **AND** the evidence command `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` returns the expected value for version Y
 - **AND** evidence captures the before/after version value via the evidence command and Flux reconciliation status confirming the update
 - **AND** validation checks deeper than render output remain symptom-driven, using layers such as events, logs, networking, or authorization only when the observed evidence points there
 
