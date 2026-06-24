@@ -48,10 +48,10 @@ Acceptance: Flux Kustomization for itself shows Ready. `ConfigMap/kubecrate-reco
 
 ### 1.7 GitOps-managed update: `kubecrate-reconciliation-marker` version X→Y
 
-- [ ] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
-- [ ] 1.7.2 Push the change to the implementation branch and wait for Flux reconciliation or trigger reconciliation.
-- [ ] 1.7.3 Verify Flux detects the change, reconciles, and `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` reports version Y.
-- [ ] 1.7.4 Capture update evidence: `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` before and after the change, Flux reconciliation logs or events, and updated ConfigMap content.
+- [x] 1.7.1 Change the Git-managed `kubecrate-reconciliation-marker` version from X to Y in `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
+- [x] 1.7.2 Push the change to the implementation branch and wait for Flux reconciliation or trigger reconciliation.
+- [x] 1.7.3 Verify Flux detects the change, reconciles, and `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` reports version Y.
+- [x] 1.7.4 Capture update evidence: `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` before and after the change, Flux reconciliation logs or events, and updated ConfigMap content.
 
 Acceptance: `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` is verified at version Y (`v0.2.0`) after Flux reconciliation from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`. Evidence command output from `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` shows the version transition from X to Y triggered by the Git-managed change. Flux events or logs confirm the reconciliation.
 
