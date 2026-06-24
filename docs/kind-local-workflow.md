@@ -74,7 +74,7 @@ Bootstrap installation then consumes these conceptual inputs:
 - Kubernetes access to the reachable cluster API
 - permissions for the operator or calling tool to perform bootstrap installation
 - GitOps source information
-- operator-supplied Seed Secrets trust material if a bootstrap-critical service needs it
+- bootstrap trust material or GitOps source credentials required by the selected bootstrap path
 
 These inputs are still tool-neutral. The local reference workflow does not require a Kubecrate-specific interface.
 
