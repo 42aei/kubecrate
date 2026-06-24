@@ -65,29 +65,29 @@ Flux uses a self-managing handoff model for the first slice. Bootstrap installat
 
 #### Bootstrap trust: operator-provided inputs
 
-Bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs needed to start bootstrap-critical services. In the first slice, that trust material enters through Seed Secrets and ESO projection for the GitOps controller, External-Secrets Operator, and any other bootstrap-critical service that needs projected credentials.
+Bootstrap installation is responsible for receiving, collecting, or generating the trust inputs needed to start bootstrap-critical services. In the first slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path: the chart creates `Secret/flux-system`, and the operator registers the generated public key as a read-only deploy key with the Git provider.
 
 Bootstrap-critical services may be installed during bootstrap installation and then handed off to GitOps-managed operation. Whether a service is bootstrap-installed or first installed under GitOps-managed operation depends on its operational needs. This document states the input rule without prematurely classifying every service. When a later change introduces a concrete service, that change resolves whether the service follows the bootstrap-install-handoff path or the direct GitOps-managed path.
 
-### External-Secrets Operator (bootstrap-critical platform service)
+### External-Secrets Operator (deferred platform service)
 
-**External-Secrets Operator (ESO)** is bootstrap-critical for the first installable slice. ESO is installed before the GitOps controller during bootstrap installation because the GitOps controller itself needs a projected Git credential before it can start GitOps-managed operation.
+**External-Secrets Operator (ESO)** is deferred outside the first installable slice. The first slice proves Flux bootstrap installation and GitOps-managed operation without requiring ESO projection first.
 
-ESO is still a platform service. The bootstrap-critical classification is about lifecycle phase, not workload category.
+ESO remains a platform service candidate. A later change can introduce it with its own bootstrap or GitOps-managed acceptance criteria when the secret-management need is concrete.
 
-Kubecrate uses **Seed Secrets** for the initial trust material. Bootstrap installation reads an operator-provided local `.env` file, materializes it as a Secret named `seed-secrets` in the `core-external-secrets-operator` namespace, and lets ESO project service-specific Secrets from that source.
+Kubecrate does not require Seed Secrets for the first Flux tracer bullet. The broader first-secret problem remains open for later secret-management work.
 
-Services and controllers should not consume the raw `seed-secrets` Secret directly. Each service should define or receive an ESO projection that writes a narrow Secret in the namespace it actually uses. For example, the GitOps controller should consume a Git credential Secret written into `flux-system`, not `seed-secrets` itself.
+When ESO is introduced later, services and controllers should consume narrow projected Secrets in the namespaces they actually use rather than broad bootstrap input Secrets.
 
-This pattern does not eliminate the first-secret problem. It standardizes how operator-supplied trust material enters the cluster and how that material is narrowed before services consume it.
+The deferred ESO path should standardize how operator-supplied trust material enters the cluster and how that material is narrowed before services consume it.
 
-#### Local ESO provider direction for Seed Secrets
+#### Local ESO provider direction
 
-For the first installable slice, the Seed Secrets path needs an ESO provider that can read the bootstrap-created `seed-secrets` Kubernetes Secret and project narrower Secrets from it.
+When the local ESO path is introduced, it needs a provider that can read operator-supplied or bootstrap-created local trust material and project narrower Secrets from it.
 
-The **Fake provider** can still be used as a simple ESO smoke or demo path, but it does not validate the Seed Secrets flow because it does not read `seed-secrets`.
+The **Fake provider** can still be used as a simple ESO smoke or demo path, but it does not validate a real local trust-material flow by itself.
 
-The kind-first local path should therefore use the **ESO Kubernetes provider**, or an equivalent local provider with the same capability, as the Seed Secrets baseline.
+The kind-first local path should therefore use the **ESO Kubernetes provider**, or an equivalent local provider with the same capability, when that deferred secret-management path is implemented.
 
 Real providers (AWS Secrets Manager, GCP Secret Manager, Vault, or others) can be introduced later as provider-specific needs arise, without changing the management-unit contract or the source structure.
 
@@ -99,6 +99,7 @@ The following platform services are deferred to later changes. The project postu
 - **Certificate management** — deferred. Required before TLS-terminated ingress is available, but not needed for the first installable slice.
 - **Observability** — deferred. Required for operational visibility, but not needed to validate the management-unit contract.
 - **Policy** — deferred. Required for governance and compliance, but not needed for the first management-unit implementation.
+- **External-Secrets Operator** — deferred. Required when Kubecrate needs a real secret projection platform service, but not needed for the first Flux SSH deploy-key tracer bullet.
 
 These services are deferred, not excluded. Each can be introduced in a later change when its operational need is clear.
 
@@ -170,7 +171,7 @@ The following packaging formats are identified as candidates that can satisfy th
 | **Kustomize** | A Kustomize overlay can be a management unit. Patches and overlays provide cluster-specific binding. |
 | **Controller wrappers** | Flux HelmRelease or Kustomization objects, or Argo CD Application objects, can wrap either format and provide additional reconciliation features. |
 
-The first bootstrap path is Kustomize-first, using `kubectl apply -k` for plain manifests or `kubectl kustomize --enable-helm <path> | kubectl apply -f -` when a platform service is sourced from an official Helm chart. Local `helm` is required for that Kustomize render path, but bootstrap still does not use `helm install`. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
+The first bootstrap path installs Flux controllers with Helm, then hands off to GitOps-managed HelmRelease resources for Flux self-management and `flux2-sync`. Helm remains an acceptable packaging format inside GitOps-managed operation, including HelmRelease for Helm-native platform services.
 
 ### Forcing function
 
@@ -182,7 +183,7 @@ The following decisions are explicitly deferred. Each includes the rationale and
 
 | Decision | Rationale | Forcing function |
 | --- | --- | --- |
-| **Additional platform services** (ingress, certificate management, observability, policy) | The project posture is minimal over comprehensive. External-Secrets Operator validates the bootstrap-critical Seed Secrets and secret projection path, but it does not by itself prove the broader GitOps-managed platform services model. Additional services stay deferred unless the first installable slice explicitly needs one tiny extra GitOps-managed platform service to complete the first tracer bullet. | A later change that introduces a specific platform service when its operational need is clear. |
+| **Additional platform services** (ingress, certificate management, observability, policy, secret projection) | The project posture is minimal over comprehensive. The first installable slice proves Flux bootstrap installation and GitOps-managed operation before adding more platform services. Additional services stay deferred unless a concrete operational need is clear. | A later change that introduces a specific platform service when its operational need is clear. |
 | **Shared profile layers or reusable environment overlays** | The first installable slice uses concrete cluster directories first. Shared layers can be reconsidered later if duplication becomes a clear operational problem. | A later change that has enough duplication evidence to justify a more layered source structure. |
 
 No deferred decision is indefinite or unresolvable. Each has a clear forcing function tied to a concrete future change.

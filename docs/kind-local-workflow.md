@@ -111,7 +111,7 @@ This document does not define:
 - a final packaging choice for bootstrap installation
 - the long-term controller-agnostic contract beyond the first-slice Flux direction
 
-The first installable slice uses Flux and a Kustomize-first bootstrap path, but this workflow document does not redefine the broader controller-agnostic contract.
+The first installable slice uses Flux and a Helm-driven bootstrap path for the GitOps controller, but this workflow document does not redefine the broader controller-agnostic contract.
 
 Repository-owned kind validation plumbing is expected to be substantial enough to make the local path repeatable. That includes kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands. Those pieces support the kind-first local path, but they still remain outside the bootstrap installation lifecycle.
 

@@ -1,4 +1,3 @@
 .ralph/
 .env
 .env.local
-platform-services/external-secrets-operator/base/charts/

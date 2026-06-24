@@ -61,15 +61,15 @@ The operator or calling tool provides three conceptual input categories:
 
 These inputs are tool-neutral. The contract does not require a kind-specific, Terraform-specific, Ansible-specific, or bespoke Kubecrate interface.
 
-### Seed Secrets
+### Bootstrap trust material
 
-Kubecrate uses the term **Seed Secrets** for the initial operator-supplied trust material used during bootstrap installation.
+Kubecrate uses the term **bootstrap trust material** for the initial operator-supplied or bootstrap-generated trust material used during bootstrap installation.
 
-For the first installable slice, the operator provides a local `.env` file outside version control. Bootstrap installation reads that local file and materializes a Kubernetes Secret named `seed-secrets` in the External-Secrets Operator namespace.
+For the first installable slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path. Bootstrap installation creates the in-cluster `Secret/flux-system`, the operator registers the generated public key as a read-only deploy key with the Git provider, and Flux then uses that Secret to reconcile the configured Git source.
 
-That Secret is not the long-term consumption point for platform services or application services. Instead, External-Secrets Operator uses Seed Secrets as bootstrap trust material and projects narrowly scoped Secrets into the namespaces that need them. In the first installable slice, this includes the Git credential Secret in `flux-system` before Flux starts.
+The generated private key stays in-cluster as Secret material and must not be committed or printed. Later changes may introduce External-Secrets Operator or another secret projection model for additional platform services, but that is not required for the first installable Flux tracer bullet.
 
-Seed Secrets standardizes how Kubecrate handles the first-secret problem during bootstrap installation. It does not remove that problem or replace a real external secret source.
+This deploy-key flow is a first-slice bootstrap mechanism. It does not close the broader secret-management question or replace future external secret sources.
 
 ## GitOps source structure roles
 
@@ -89,7 +89,7 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 | Topic | Status | Contract position |
 | --- | --- | --- |
-| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path is Kustomize-first, using `kubectl apply -k` for plain manifests or `kubectl kustomize --enable-helm <path> | kubectl apply -f -` when a platform service is sourced from an official Helm chart. For Helm-backed paths, local `helm` is required as a Kustomize render dependency. |
+| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path uses Helm to install Flux controllers and uses GitOps-managed HelmRelease resources for ongoing Flux self-management. |
 | GitOps source directory names and repository boundaries | Partially decided | The contract still treats source roles as the durable requirement, but the first installable slice uses concrete cluster directories that bind reusable service definitions and place the first runtime files in this repository. |
 | Platform service selection after handoff | Deferred decision | The contract defines where platform services fit. It does not define the final set of platform services beyond bootstrap-supporting resources required for handoff. |
 
@@ -97,17 +97,17 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 The first installable slice uses Flux as the first GitOps controller while the broader contract remains controller-agnostic.
 
-The first bootstrap path is Kustomize-first and should apply or reference the same Flux desired-state path that Flux later reconciles. When a platform service uses an official Helm chart, Kustomize renders that chart with `--enable-helm`. That render path requires local `helm`, but bootstrap still does not use `helm install` as its interface.
+The first bootstrap path installs Flux controllers with the Flux Helm chart, then applies the same concrete cluster entrypoint path that Flux later reconciles. Bootstrap installation is allowed to use Helm for this first controller install while keeping the ongoing desired state in GitOps-managed manifests.
 
 Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
 
 The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint. When a real platform service is introduced, its reusable base lives at `platform-services/<service>/base/` and its concrete cluster binding lives at `clusters/<cluster>/platform-services/<service>/` immediately.
 
-External-Secrets Operator is bootstrap-critical and is installed before Flux because Flux needs projected Git credentials.
+External-Secrets Operator is deferred outside the first installable slice. Flux Git credentials for this slice come from the `flux2-sync` SSH deploy-key generation path.
 
-Seed Secrets are materialized as `seed-secrets` in the `core-external-secrets-operator` namespace and projected into narrow service-specific Secrets before consumers start.
+The `flux2-sync` chart creates `Secret/flux-system` with SSH key material. The operator registers the generated public key as a read-only deploy key with the Git provider before Flux can reconcile the private repository.
 
-For the Seed Secrets flow, the local baseline must use an ESO provider that can read the bootstrap-created `seed-secrets` Kubernetes Secret. The ESO Kubernetes provider is the first expected local baseline. The Fake provider can still serve as a simple ESO smoke path, but not as Seed Secrets validation.
+Future secret projection work, including External-Secrets Operator, remains deferred platform services scope with its own acceptance criteria.
 
 Repository-owned kind setup plumbing can be part of the local validation harness for the kind-first local path, but it remains outside the bootstrap installation boundary.
 
@@ -130,19 +130,18 @@ flowchart TD
     A[Operator or calling tool]
     B[Kubernetes API reachable]
     C[Credentials and permissions can apply required bootstrap resources]
-    D[Install External-Secrets Operator as bootstrap-critical]
-    E[Create seed-secrets in the core-external-secrets-operator namespace from local operator inputs]
-    F[Project service-specific Secrets from Seed Secrets]
-    G[Install GitOps controller]
-    H[Bind GitOps controller to Git source]
-    I[Establish initial reconciliation structure for platform services and application services]
+    D[Install GitOps controller with Helm]
+    E[Create flux2-sync SSH credential Secret]
+    F[Register generated public key as read-only deploy key]
+    G[Bind GitOps controller to Git source]
+    H[Establish initial reconciliation structure for platform services and application services]
     J{Handoff condition met}
     K[GitOps-managed operation]
     L[Reconcile platform services through GitOps]
     M[Reconcile application services through GitOps]
     N[Continue ongoing management through GitOps]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    A --> B --> C --> D --> E --> F --> G --> H --> J
     J -->|GitOps controller running\nbound to Git source\nable to reconcile initial structure| K
     K --> L --> N
     K --> M --> N
