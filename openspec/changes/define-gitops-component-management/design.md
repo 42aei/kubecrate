@@ -56,29 +56,26 @@ Alternatives considered:
 
 ### Minimal initial platform services set
 
-The first installable slice requires bootstrap installation to hand off into GitOps-managed operation. After handoff, the minimal initial set distinguishes the bootstrap-required controller from the first GitOps-managed platform service:
+The first installable slice requires bootstrap installation to hand off into GitOps-managed operation. After handoff, the minimal initial set contract distinguishes the bootstrap-required controller from later GitOps-managed platform service selection:
 
 **Bootstrap-required (installed during bootstrap, not as management units under this change):**
 
 - **GitOps controller** — installed during bootstrap installation (not as a GitOps-managed unit) because it is required for handoff. This change decides the controller is bootstrap-required for handoff into GitOps-managed operation. Consistent with the kind-local-workflow authority, the bootstrap-installed GitOps controller and supporting bootstrap resources are expected to come under GitOps-managed operation after handoff. This change defers only the concrete implementation details of how those bootstrap resources are brought under GitOps-managed operation.
 
-  Bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs needed to start bootstrap-required services. This includes the GitOps controller, External-Secrets Operator if ESO is bootstrap-required, and any other bootstrap-required service. Bootstrap-required services may be installed during bootstrap and then handed off to GitOps-managed operation. This design states the input rule without prematurely classifying every service.
+  Bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs needed to start bootstrap-required services. This includes the GitOps controller, any platform service later classified as bootstrap-required, and any other bootstrap-required service. Bootstrap-required services may be installed during bootstrap and then handed off to GitOps-managed operation. This design states the input rule without prematurely classifying every service.
 
-**First GitOps-managed platform service:**
+**First GitOps-managed platform service selection:**
 
-- **External-Secrets Operator (ESO)** — the first GitOps-managed platform service under the management-unit contract defined in this change. ESO provides the secret-sync infrastructure that the first installable baseline requires.
+The durable contract in this change is that the first GitOps-managed platform service is selected by a later implementation change that satisfies the management-unit contract.
 
-External-Secrets Operator is a platform service under the project's two-axis model. The operator provides the trust material for the backing secret store; application teams declare which secrets their workloads need through the operator's documented interface.
+The earlier planning candidate of External-Secrets Operator with a Fake provider local baseline is superseded by the Flux-first first installable slice baseline, which uses Flux controllers plus `flux2-sync` SSH deploy-key GitOps source sync as the concrete first installable slice. External-Secrets Operator remains deferred candidate work for a separate future change with its own acceptance criteria, not an active requirement of this completed planning change.
 
-For the kind-first local path, the Fake provider is the recommended local secret-handling baseline because it requires no external secret store credentials and keeps the local development path simple. Real providers (AWS Secrets Manager, GCP Secret Manager, Vault, etc.) can be introduced later as provider-specific needs arise, without changing the management-unit contract or the source structure.
-
-Additional platform services (ingress, certificate management, observability, policy) are deferred until later changes. The project posture of minimal over comprehensive applies: start with the smallest set of platform services needed to demonstrate a working GitOps-managed lifecycle, and grow only when there is a clear operational reason.
+Additional platform services (including any External-Secrets Operator follow-up, ingress, certificate management, observability, and policy) are deferred until later changes. The project posture of minimal over comprehensive applies: start with the smallest set of platform services needed to demonstrate a working GitOps-managed lifecycle, and grow only when there is a clear operational reason.
 
 Alternatives considered:
 
-- Select ingress, cert-manager, or observability as first platform services. Rejected for this change because secret handling is a more foundational platform capability for the first working slice, and selecting multiple services at once would over-scope the first installable slice.
-- Defer ESO selection to a later change. Rejected because the management-unit contract needs at least one concrete platform service to validate the per-service, per-environment rollout model.
-- Require a real secret store provider from the start. Rejected because it adds external dependencies to the kind-first local path, contradicting the goal of a simple local reference workflow.
+- Select a concrete first GitOps-managed platform service in this planning change. Superseded because the Flux-first first installable slice now provides the concrete baseline while this change remains responsible for the management-unit contract and source-structure contract.
+- Keep External-Secrets Operator with a Fake provider as the active baseline. Superseded because that candidate now belongs in a separate future change with its own acceptance criteria.
 
 ### Source-structure contract: conceptual roles
 
@@ -142,7 +139,6 @@ The forcing function for a controller choice is the first installable slice that
 
 ## Risks / Trade-offs
 
-- [Risk] External-Secrets Operator with only the Fake provider may be insufficient when real secret store credentials are needed. → Mitigation: the Fake provider keeps the kind-first local path simple and requires no external secret store credentials. Real providers are deferred until a later change that introduces a concrete secret store need.
+- [Risk] A historical reader could mistake the earlier External-Secrets Operator candidate for the active baseline. → Mitigation: mark that candidate as superseded by the Flux-first first installable slice and defer any External-Secrets Operator work to a separate future change with its own acceptance criteria.
 - [Risk] The management-unit contract is too abstract to guide the first implementation. → Mitigation: include concrete acceptance criteria in the spec that any implementation MUST satisfy.
 - [Risk] Contract-first packaging posture leads to indecision that blocks implementation. → Mitigation: the first management-unit implementation change is the forcing function; this change documents the contract so the implementation change has clear constraints.
-- [Risk] The Fake provider for ESO is mistaken for a production recommendation. → Mitigation: explicitly scope Fake to the kind-first local path as the local secret-handling baseline; note that real providers are introduced later.

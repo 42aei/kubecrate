@@ -38,12 +38,13 @@ Kubecrate SHALL define the minimal initial set of platform services for the firs
 #### Scenario: Bootstrap trust inputs are operator-provided
 - **WHEN** bootstrap-required services need secret or trust material to start
 - **THEN** bootstrap installation is responsible for receiving and collecting operator-provided secret and trust inputs
-- **AND** this includes the GitOps controller, External-Secrets Operator if ESO is bootstrap-required, and any other bootstrap-required service
+- **AND** this includes the GitOps controller, any platform service later classified as bootstrap-required, and any other bootstrap-required service
 - **AND** bootstrap-required services may be installed during bootstrap and then handed off to GitOps-managed operation
 
-#### Scenario: External-Secrets Operator is the first GitOps-managed platform service
+#### Scenario: First GitOps-managed platform service selection is deferred from this planning change
 - **WHEN** the initial platform services set is described
-- **THEN** External-Secrets Operator is selected as the first GitOps-managed platform service, with the Fake provider as the kind-first local path secret-handling baseline
+- **THEN** this planning change preserves the management-unit contract without requiring a specific first GitOps-managed platform service implementation
+- **AND** any earlier External-Secrets Operator with Fake provider candidate is treated as superseded by the Flux-first first installable slice baseline and deferred to a separate future change with its own acceptance criteria
 
 #### Scenario: Additional platform services are deferred
 - **WHEN** the initial platform services set is documented
