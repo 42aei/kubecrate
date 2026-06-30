@@ -11,6 +11,7 @@ That remains intentional. The docs carry the project model, language, and contra
 - `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
 - `gitops-component-management.md` defines the management-unit contract, the minimal initial set of GitOps-managed platform services, the source-structure contract, and the packaging posture.
 - `kind-local-workflow.md` defines the local reference workflow for the kind-first local path.
+- `ai-repository-guide.md` maps source-of-truth documents, backlog-to-OpenSpec readiness, and validation expectations for AI-assisted work.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
 
@@ -24,8 +25,9 @@ If you are new to the project, start with:
 4. `bootstrap-installation-contract.md`
 5. `gitops-component-management.md`
 6. `kind-local-workflow.md`
-7. `roadmap.md`
-8. the backlog items for near-term slices
+7. `ai-repository-guide.md`
+8. `roadmap.md`
+9. the backlog items for near-term slices
 
 ## Current boundaries
 
