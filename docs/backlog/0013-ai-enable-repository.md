@@ -1,7 +1,7 @@
 ---
 task_id: "0013"
 title: "AI-enable repository structure and conventions"
-status: "started"
+status: "done"
 depends_on: []
 ---
 
