@@ -10,9 +10,9 @@ Acceptance checks:
 - `docs/README.md` links to the map.
 - AGENTS.md, if changed, remains concise and does not duplicate the full source-of-truth map.
 
-## 2. Backlog and OpenSpec readiness guidance
+## 2. Backlog and OpenSpec classification guidance
 
-- [x] 2.1 Document how agents should evaluate backlog items before creating OpenSpec changes, preserving the required readiness verdicts: `ready for OpenSpec`, `not ready`, and `unclear`.
+- [x] 2.1 Document how agents should classify backlog items before creating OpenSpec changes, preserving the required readiness verdicts: `ready for OpenSpec`, `not ready`, and `unclear`, without forcing a separate backlog grooming process when the next action is already clear.
 - [x] 2.2 Add a lightweight example of a backlog item that should stay as discussion and one that is ready to become an OpenSpec proposal.
 - [x] 2.3 Keep backlog entries lightweight; do not add a heavy required template.
 

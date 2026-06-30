@@ -12,13 +12,14 @@ Kubecrate SHALL provide concise AI-facing guidance that identifies the authorita
 - **WHEN** the AI-facing guidance references an existing document
 - **THEN** it links or points to that source instead of duplicating the full content of that source
 
-### Requirement: Preserve lightweight backlog-to-OpenSpec readiness flow
-Kubecrate SHALL document how AI agents evaluate backlog items before creating OpenSpec changes while preserving lightweight backlog entries and the required readiness verdicts.
+### Requirement: Preserve lightweight backlog-to-OpenSpec classification
+Kubecrate SHALL document how AI agents classify backlog items before creating OpenSpec changes while preserving lightweight backlog entries and the required readiness verdicts. This classification SHALL NOT force a separate backlog grooming process when the next action is already clear.
 
 #### Scenario: Proposed backlog item is evaluated before OpenSpec creation
 - **WHEN** a backlog item has status `proposed`
 - **THEN** the guidance treats it as a candidate for evaluation, not permission to create an OpenSpec change
 - **AND** the agent first returns one of: `ready for OpenSpec`, `not ready`, or `unclear`
+- **AND** a `ready for OpenSpec` verdict may be followed by creating or expanding the OpenSpec change in the same work when the user asked the agent to proceed
 
 #### Scenario: Underspecified backlog item defaults to unclear
 - **WHEN** a backlog item lacks concrete scope or acceptance criteria

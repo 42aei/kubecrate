@@ -24,15 +24,17 @@ Existing concrete runtime paths include:
 
 Do not infer new runtime directories from these examples. New runtime manifests, scripts, config, or directories require an approved OpenSpec change that explicitly authorizes them.
 
-## Backlog-to-OpenSpec readiness
+## Backlog-to-OpenSpec classification
 
 Backlog items are lightweight raw captures. A backlog item with `status: "proposed"` is only a candidate for evaluation, not permission to create an OpenSpec change.
 
-Before creating or expanding an OpenSpec change from backlog work, return one readiness verdict:
+When asked what should come next from the backlog, classify the item first:
 
 - `ready for OpenSpec` — the item is large and concrete enough for a scoped change, with a clear operator-visible or user-visible outcome and acceptance criteria.
 - `not ready` — the item is too small, stale, superseded, or better handled as discussion or routine documentation cleanup.
 - `unclear` — the item may be useful, but scope, acceptance criteria, or the outcome are missing. Default to `unclear` when in doubt and identify the next decision or outcome to clarify.
+
+This classification is a guardrail, not a mandatory grooming phase. If the next action is already clear and the item is ready, an agent may create or expand the OpenSpec change as part of the same work rather than stopping for a separate backlog grooming pass.
 
 Keep backlog entries lightweight. Do not add a heavy required template just to make an idea look ready.
 
