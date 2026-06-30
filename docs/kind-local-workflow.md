@@ -74,7 +74,7 @@ Bootstrap installation then consumes these conceptual inputs:
 - Kubernetes access to the reachable cluster API
 - permissions for the operator or calling tool to perform bootstrap installation
 - GitOps source information
-- operator-supplied Seed Secrets trust material if a bootstrap-critical service needs it
+- bootstrap trust material or GitOps source credentials required by the selected bootstrap path
 
 These inputs are still tool-neutral. The local reference workflow does not require a Kubecrate-specific interface.
 
@@ -111,7 +111,7 @@ This document does not define:
 - a final packaging choice for bootstrap installation
 - the long-term controller-agnostic contract beyond the first-slice Flux direction
 
-The first installable slice uses Flux and a Kustomize-first bootstrap path, but this workflow document does not redefine the broader controller-agnostic contract.
+The first installable slice uses Flux and a Helm-driven bootstrap path for the GitOps controller, but this workflow document does not redefine the broader controller-agnostic contract.
 
 Repository-owned kind validation plumbing is expected to be substantial enough to make the local path repeatable. That includes kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands. Those pieces support the kind-first local path, but they still remain outside the bootstrap installation lifecycle.
 

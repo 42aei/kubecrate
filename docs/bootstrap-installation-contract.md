@@ -37,6 +37,20 @@ This is the handoff condition into GitOps-managed operation.
 
 Bootstrap installation may include the GitOps controller and supporting bootstrap resources required to reach that handoff condition. It does not require final platform service selection before handoff. After handoff, platform services and application services are managed through GitOps unless a later decision documents a bootstrap-managed exception.
 
+## Validation expectations for applied or reconciled resources
+
+Static rendering, schema, and build validation are necessary, but they do not prove that bootstrap installation or GitOps-managed operation is healthy after Kubernetes resources are applied or reconciled.
+
+Operator-visible validation should confirm:
+
+- the intended cluster context is targeted,
+- the expected resources exist,
+- the relevant controllers and workloads report healthy, readiness, or sync conditions,
+- recent events or logs do not show blocking errors, and
+- the intended operator-visible outcome is present.
+
+If those checks fail or stay inconclusive, the result is not yet a successful bootstrap installation or GitOps-managed operation outcome. Investigation should stay symptom-driven and focus on the layer showing evidence of failure, such as reconciliation status, events, logs, networking, or authorization, rather than treating any single deep check as universally mandatory.
+
 ## Operator inputs
 
 The operator or calling tool provides three conceptual input categories:
@@ -47,15 +61,15 @@ The operator or calling tool provides three conceptual input categories:
 
 These inputs are tool-neutral. The contract does not require a kind-specific, Terraform-specific, Ansible-specific, or bespoke Kubecrate interface.
 
-### Seed Secrets
+### Bootstrap trust material
 
-Kubecrate uses the term **Seed Secrets** for the initial operator-supplied trust material used during bootstrap installation.
+Kubecrate uses the term **bootstrap trust material** for the initial operator-supplied or bootstrap-generated trust material used during bootstrap installation.
 
-For the first installable slice, the operator provides a local `.env` file outside version control. Bootstrap installation reads that local file and materializes a Kubernetes Secret named `seed-secrets` in the External-Secrets Operator namespace.
+For the first installable slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path. Bootstrap installation creates the in-cluster `Secret/flux-system`, the operator registers the generated public key as a read-only deploy key with the Git provider, and Flux then uses that Secret to reconcile the configured Git source.
 
-That Secret is not the long-term consumption point for platform services or application services. Instead, External-Secrets Operator uses Seed Secrets as bootstrap trust material and projects narrowly scoped Secrets into the namespaces that need them. In the first installable slice, this includes the Git credential Secret in `flux-system` before Flux starts.
+The generated private key stays in-cluster as Secret material and must not be committed or printed. Later changes may introduce External-Secrets Operator or another secret projection model for additional platform services, but that is not required for the first installable Flux tracer bullet.
 
-Seed Secrets standardizes how Kubecrate handles the first-secret problem during bootstrap installation. It does not remove that problem or replace a real external secret source.
+This deploy-key flow is a first-slice bootstrap mechanism. It does not close the broader secret-management question or replace future external secret sources.
 
 ## GitOps source structure roles
 
@@ -75,7 +89,7 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 | Topic | Status | Contract position |
 | --- | --- | --- |
-| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path is Kustomize-first, likely `kubectl apply -k` or a very thin wrapper around it. |
+| Bootstrap packaging compatibility | Partially decided | The durable contract stays tool-neutral and consumable by common Kubernetes automation tools. The first bootstrap path uses Helm to install Flux controllers and uses GitOps-managed HelmRelease resources for ongoing Flux self-management. |
 | GitOps source directory names and repository boundaries | Partially decided | The contract still treats source roles as the durable requirement, but the first installable slice uses concrete cluster directories that bind reusable service definitions and place the first runtime files in this repository. |
 | Platform service selection after handoff | Deferred decision | The contract defines where platform services fit. It does not define the final set of platform services beyond bootstrap-supporting resources required for handoff. |
 
@@ -83,17 +97,17 @@ Common patterns already exist across controllers. Flux documentation often shows
 
 The first installable slice uses Flux as the first GitOps controller while the broader contract remains controller-agnostic.
 
-The first bootstrap path is Kustomize-first and should apply or reference the same Flux desired-state path that Flux later reconciles.
+The first bootstrap path installs Flux controllers with the Flux Helm chart, then applies the same concrete cluster entrypoint path that Flux later reconciles. Bootstrap installation is allowed to use Helm for this first controller install while keeping the ongoing desired state in GitOps-managed manifests.
 
 Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
 
-The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
+The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint. When a real platform service is introduced, its reusable base lives at `platform-services/<service>/base/` and its concrete cluster binding lives at `clusters/<cluster>/platform-services/<service>/` immediately.
 
-External-Secrets Operator is bootstrap-critical and is installed before Flux because Flux needs projected Git credentials.
+External-Secrets Operator is deferred outside the first installable slice. Flux Git credentials for this slice come from the `flux2-sync` SSH deploy-key generation path.
 
-Seed Secrets are materialized as `seed-secrets` in the ESO namespace and projected into narrow service-specific Secrets before consumers start.
+The `flux2-sync` chart creates `Secret/flux-system` with SSH key material. The operator registers the generated public key as a read-only deploy key with the Git provider before Flux can reconcile the private repository.
 
-For the Seed Secrets flow, the local baseline must use an ESO provider that can read the bootstrap-created `seed-secrets` Kubernetes Secret. The ESO Kubernetes provider is the first expected local baseline. The Fake provider can still serve as a simple ESO smoke path, but not as Seed Secrets validation.
+Future secret projection work, including External-Secrets Operator, remains deferred platform services scope with its own acceptance criteria.
 
 Repository-owned kind setup plumbing can be part of the local validation harness for the kind-first local path, but it remains outside the bootstrap installation boundary.
 
@@ -104,7 +118,7 @@ This bootstrap installation contract explicitly excludes:
 - **Cluster creation**. Bootstrap installation starts with a reachable Kubernetes API. Cluster creation tools and workflows are outside this contract.
 - **Runnable manifests**. This document defines the contract. Kubernetes manifests, Helm charts, and other runnable artifacts are outside this document.
 - **Installation scripts**. The contract is tool-neutral. Specific scripts, commands, or CLI interfaces are out of scope.
-- **Final repository paths**. The GitOps source structure roles are conceptual. The first installable slice gives the first concrete layout shape, but later changes can still refine path details or how environments are represented when there is a clear operational reason.
+- **Final repository paths**. The GitOps source structure roles remain the durable requirement. The first installable slice fixes the initial concrete service layout (`platform-services/<service>/base/` plus `clusters/<cluster>/platform-services/<service>/` for real platform services), while later changes can still refine broader repository boundaries or environment representation when there is a clear operational reason.
 - **Final platform service selection**. The contract defines where platform services fit. It does not define the complete set of platform services installed after handoff.
 
 ## Lifecycle diagram
@@ -116,19 +130,18 @@ flowchart TD
     A[Operator or calling tool]
     B[Kubernetes API reachable]
     C[Credentials and permissions can apply required bootstrap resources]
-    D[Install External-Secrets Operator as bootstrap-critical]
-    E[Create seed-secrets in the ESO namespace from local operator inputs]
-    F[Project service-specific Secrets from Seed Secrets]
-    G[Install GitOps controller]
-    H[Bind GitOps controller to Git source]
-    I[Establish initial reconciliation structure for platform services and application services]
+    D[Install GitOps controller with Helm]
+    E[Create flux2-sync SSH credential Secret]
+    F[Register generated public key as read-only deploy key]
+    G[Bind GitOps controller to Git source]
+    H[Establish initial reconciliation structure for platform services and application services]
     J{Handoff condition met}
     K[GitOps-managed operation]
     L[Reconcile platform services through GitOps]
     M[Reconcile application services through GitOps]
     N[Continue ongoing management through GitOps]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    A --> B --> C --> D --> E --> F --> G --> H --> J
     J -->|GitOps controller running\nbound to Git source\nable to reconcile initial structure| K
     K --> L --> N
     K --> M --> N

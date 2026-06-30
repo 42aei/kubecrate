@@ -5,7 +5,7 @@ Kubecrate needs to define its minimal initial set of GitOps-managed platform ser
 ## What Changes
 
 - Define each platform service as a separately targetable GitOps-managed management unit that supports environment-specific rollout and wave-like promotion.
-- Define the minimal initial platform services set: GitOps controller (bootstrap-required for handoff), External-Secrets Operator (first GitOps-managed platform service, with Fake provider as the kind-first local path secret-handling baseline).
+- Define the minimal initial platform services set contract in a planning-safe way: GitOps controller (bootstrap-required for handoff), with any previously discussed External-Secrets Operator candidate selection explicitly treated as superseded by the Flux-first first installable slice and deferred to a later change.
 - Define the source-structure contract conceptually: what a management unit must satisfy, what a source layout must express (platform services, application services, environment binding), and what ordering/ownership boundaries must be preserved. Defer the repository boundary question raised by backlog 0010 (one-stop-shop vs template/example repos) to the first installable slice or source-layout implementation.
 - Explicitly decide packaging posture: contract-first stance; concrete packaging (Helm chart, Kustomize overlay, or controller wrapper such as Flux/Argo) can be chosen later provided the choice satisfies the management-unit contract.
 - Defer the GitOps controller choice unless an OpenSpec instruction for a later change requires it.

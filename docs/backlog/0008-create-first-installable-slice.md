@@ -1,7 +1,7 @@
 ---
 task_id: "0008"
 title: "Create first kind-first installable bootstrap-to-GitOps slice"
-status: "proposed"
+status: "started"
 depends_on: ["0003", "0004", "0007", "0010"]
 ---
 
@@ -22,10 +22,10 @@ Kind cluster creation and preparation that validates the local environment is re
 The planning discussion already resolved the following 0008 design direction. The OpenSpec proposal should treat these as accepted inputs, not open questions.
 
 - **GitOps controller** — 0008 uses **Flux** as the first concrete GitOps controller.
-- **Bootstrap packaging / interface** — 0008 uses a **Kustomize-first** bootstrap path, likely `kubectl apply -k` or a very thin wrapper around it. Helm is not the Kubecrate bootstrap package for this first slice. HelmRelease remains appropriate inside GitOps-managed operation for Helm-native platform services.
-- **Seed Secrets and ESO** — 0008 uses **Seed Secrets** as the operator-provided local input path. A real `.env` file must not be committed. Bootstrap installation materializes one Secret named `seed-secrets` in the ESO namespace. ESO is bootstrap-critical for 0008 and is installed before Flux so Flux can consume projected Git credentials. Services and controllers consume narrow ESO-projected Secrets, not the raw `seed-secrets` Secret. The Fake provider does not validate this path because it does not read `seed-secrets`. The first Seed Secrets projection should therefore use the ESO Kubernetes provider or an equivalent local provider that can read the bootstrap-created Kubernetes Secret.
+- **Bootstrap packaging / interface** — 0008 uses a **Flux Helm bootstrap** path for the first tracer bullet. Bootstrap installation installs Flux controllers with the Flux Helm chart, then lets Flux reconcile the same desired-state path it later owns. HelmRelease remains the durable GitOps-managed representation for Helm-native platform services after handoff.
+- **Git credential bootstrap** — 0008 uses the `flux2-sync` chart's SSH deploy-key generation path for the first tracer bullet. The chart creates `Secret/flux-system` in `flux-system`; the operator registers the generated public key as a read-only deploy key with the Git provider. External-Secrets Operator and Seed Secrets are deferred platform services work, not prerequisites for this first installable slice.
 - **Flux self-management handoff** — 0008 uses a self-managing controller model. Bootstrap installation applies or loads the same Flux desired-state path that Flux later reconciles. There must not be duplicate independent Flux definitions under bootstrap installation and platform services. Bootstrap installation is a loader or reference, not a second source of truth.
-- **Runtime layout direction** — Reusable platform service definitions live under `platform-services/<service>/base`. Concrete cluster enablement, configuration, and version binding live under `clusters/<cluster>/platform-services/<service>.yaml` or an equivalent cluster binding path. `clusters/<cluster>/entrypoint` is the first GitOps reconciliation root for a concrete cluster. Do not make `platform-services/<service>/kind` the default pattern. Introduce reusable variants only if later duplication justifies them.
+- **Runtime layout direction** — Reusable platform service definitions live under `platform-services/<service>/base/`. Concrete cluster enablement, configuration, and version binding live under `clusters/<cluster>/platform-services/<service>/`. `clusters/<cluster>/entrypoint` is the first GitOps reconciliation root for a concrete cluster. When a real platform service is introduced, it uses that base-plus-binding layout immediately. Temporary cluster-local platform service implementations are forbidden unless an approved change explicitly allows a removal plan.
 - **Repository boundary** — 0008 uses this repository for the first concrete runtime files needed by the tracer bullet. Template or example repository indirection is not part of the first slice.
 - **Concrete cluster model** — Concrete cluster directories are the first runtime model. The first naming convention is `<provider>-<environment>-<workload>-<location>`, for example `gcp-prod-web-eu1`, `gcp-prod-web-us1`, `gcp-prod-storage-eu1`, `gcp-staging-web-eu1`, `gcp-staging-storage-eu1`, `aws-prod-web-eu1`, and `kind-dev-misc-local`. This preserves environment as a capability through concrete cluster identity rather than replacing environment with clusters only. It is a pragmatic first convention, not an immutable taxonomy.
 - **Kind plumbing** — Kind cluster creation and preparation remain outside bootstrap installation, but repository-owned kind validation plumbing is a substantial part of 0008 local validation scope. The slice should define kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands needed to prove the kind-first local path.
@@ -39,25 +39,27 @@ The proposal still needs to turn the accepted direction into a reviewable slice.
 
 The following are candidate tasks for the OpenSpec proposal. They are listed here as starting points; the proposal may refine, reorder, or merge them.
 
-1. Define the smallest concrete runtime files that express the accepted Flux, Seed Secrets, and cluster binding direction.
-2. Define the bootstrap installation path for a prepared kind cluster using the accepted Kustomize-first interface.
+1. Define the smallest concrete runtime files that express the accepted Flux, `flux2-sync`, and cluster binding direction.
+2. Define the bootstrap installation path for a prepared kind cluster using the accepted Flux Helm bootstrap interface.
 3. Define the Flux self-management handoff so bootstrap installation references the same desired-state path that Flux later reconciles.
 4. Define the local validation and evidence contract, including repository-owned kind setup plumbing needed for the kind-first local path.
-5. Implement bootstrap installation against a prepared kind cluster with Flux and bootstrap-critical ESO.
-6. Implement the first tracer bullet secret-handling path, including Seed Secrets projection for Flux and any first GitOps-managed platform service needed to prove the slice.
+5. Implement bootstrap installation against a prepared kind cluster with Flux controllers and `flux2-sync` SSH deploy-key generation.
+6. Implement the first tracer bullet Git access path and the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof needed to prove the slice. The marker is not a platform service or application service.
 7. Validate the end-to-end slice, including a GitOps-driven update.
 
 ## Acceptance direction
 
 - A reviewer can exercise `point at a cluster and install` on the kind-first local path by targeting a prepared kind cluster from a defined starting point.
 - Repository-owned kind validation plumbing exists for local proof, including kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands, but bootstrap installation still starts only from a cluster with a reachable Kubernetes API and usable credentials.
-- Against a prepared kind cluster, the slice produces bootstrap-critical ESO, projected Seed Secrets for Flux, a running Flux controller, and the first GitOps-managed platform service needed by the tracer bullet.
+- Against a prepared kind cluster, the slice produces Flux controllers, an SSH-backed `flux2-sync` Git source, a read-only deploy-key registration step, and the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof needed by the tracer bullet. The marker is not a platform service or application service.
 - Flux becomes self-managing after handoff without duplicate independent Flux definitions in bootstrap installation and platform services.
 - Runtime files follow the accepted first model: reusable platform service definitions plus concrete cluster binding rooted at a concrete cluster entrypoint.
 - Validation evidence proves reconciliation works and that a Git-managed change causes Flux to update the tracer bullet.
 
 ## Notes
 
+- Active OpenSpec change: `openspec/changes/create-first-installable-slice/`.
+- For 0008, the active OpenSpec change supersedes older wording that treated the tracer bullet as workload-category content and replaces it with the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof. The marker is not a platform service or application service.
 - This is a vertical slice, not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are deferred (see 0011). Wave-like promotion policy and gating are deferred (see 0012), but environment-specific configuration and future wave-like promotion remain preserved capabilities.
 - The management-unit contract and source-structure contract from the define-gitops-component-management change are binding inputs.
 - The kind-first local path (0003), repository placement rules (0004), minimal component set (0007), and GitOps source structure (0010) are all completed prerequisites.

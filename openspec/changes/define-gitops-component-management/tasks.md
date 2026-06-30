@@ -14,14 +14,14 @@ Acceptance checks:
 ## 2. Minimal platform services set selection
 
 - [x] 2.1 Document that the GitOps controller is installed during bootstrap installation and hands off into GitOps-managed operation. The controller is not classified as a GitOps-managed management unit under this change's contract. The bootstrap-installed controller and supporting resources are expected to come under GitOps-managed operation after handoff; only the concrete mechanics of how are deferred.
-- [x] 2.2 Name External-Secrets Operator as the first GitOps-managed platform service.
-- [x] 2.3 Recommend the Fake provider as the local secret-handling baseline for the kind-first local path.
+- [x] 2.2 Record that any earlier External-Secrets Operator first-platform-service candidate is superseded and deferred to a separate future change.
+- [x] 2.3 Align the completed planning change with the Flux-first first installable slice baseline by keeping External-Secrets Operator and Fake provider language non-active.
 - [x] 2.4 Explicitly defer additional platform services (ingress, certificate management, observability, policy) to later changes.
 
 Acceptance checks:
 - The spec identifies the GitOps controller as bootstrap-installed for handoff, not classified as a management unit, with the expectation that bootstrap resources come under GitOps-managed operation after handoff (mechanics deferred).
-- The spec names External-Secrets Operator as the first GitOps-managed platform service.
-- The spec recommends the Fake provider for the kind-first local path and notes real providers can be introduced later.
+- The spec does not name External-Secrets Operator or Fake provider as an active first GitOps-managed platform service baseline.
+- The spec makes any earlier External-Secrets Operator or Fake provider selection explicit superseded or deferred language only.
 - The spec defers additional platform services without implying they are out of scope permanently.
 
 ## 3. Source-structure contract

@@ -1,8 +1,8 @@
 # Documentation
 
-This repository starts with docs before implementation.
+This repository started with docs before implementation.
 
-That is intentional. The first goal is to make the project model, language, and direction clear before adding manifests, scripts, or component structure.
+That remains intentional. The docs carry the project model, language, and contracts, and the repository now also includes the first installable slice for the kind-first local path.
 
 ## Documents in this folder
 
@@ -29,6 +29,6 @@ If you are new to the project, start with:
 
 ## Current boundaries
 
-This docs set is for the first Kubecrate architecture and planning pass.
+This docs set still defines the architecture and contract boundary for Kubecrate.
 
-It defines intent and direction. It is not implementation-ready, and it does not yet define final manifests, component wiring, or installation mechanics.
+Read it alongside the first runtime files for the first installable slice on the kind-first local path.
