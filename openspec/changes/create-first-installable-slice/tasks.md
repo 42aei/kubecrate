@@ -57,6 +57,6 @@ Acceptance: `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-
 
 ## 2. Deferred platform services follow-up
 
-- [ ] 2.1 Create or continue a separate branch or later OpenSpec change for External-Secrets Operator as deferred platform services work.
-- [ ] 2.2 Define acceptance criteria for that ESO follow-up so it can introduce or finish External-Secrets Operator without blocking the Flux-first installable slice or first-slice readiness.
-- [ ] 2.3 Keep the first installable slice scoped so the ESO follow-up is explicitly separate from the Flux-first tracer bullet and is not required for bootstrap installation or GitOps-managed operation acceptance in this change.
+- [x] 2.1 Record External-Secrets Operator as deferred platform services work outside the Flux-first installable slice. Follow-up work belongs under backlog 0011 or a future service-specific backlog item, not this first-slice change.
+- [x] 2.2 Keep External-Secrets Operator acceptance criteria out of this slice so the first-slice acceptance remains limited to the Flux bootstrap, SSH deploy-key registration, Flux self-management handoff, and `kubecrate-reconciliation-marker` proof.
+- [x] 2.3 Keep the first installable slice scoped so the ESO follow-up is explicitly separate from the Flux-first tracer bullet and is not required for bootstrap installation or GitOps-managed operation acceptance in this change.

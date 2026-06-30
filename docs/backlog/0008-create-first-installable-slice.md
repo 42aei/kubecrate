@@ -1,7 +1,7 @@
 ---
 task_id: "0008"
 title: "Create first kind-first installable bootstrap-to-GitOps slice"
-status: "started"
+status: "done"
 depends_on: ["0003", "0004", "0007", "0010"]
 ---
 
@@ -58,9 +58,10 @@ The following are candidate tasks for the OpenSpec proposal. They are listed her
 
 ## Notes
 
-- Active OpenSpec change: `openspec/changes/create-first-installable-slice/`.
-- For 0008, the active OpenSpec change supersedes older wording that treated the tracer bullet as workload-category content and replaces it with the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof. The marker is not a platform service or application service.
+- Completed OpenSpec change: `openspec/changes/create-first-installable-slice/`.
+- Outcome: the first installable slice now provides a Flux Helm bootstrap path for the kind-first local path, a `flux2-sync` SSH deploy-key registration flow, Flux self-management handoff, and the Flux-managed `kubecrate-reconciliation-marker` validation proof. The marker is not a platform service or application service.
+- For 0008, the OpenSpec change supersedes older wording that treated the tracer bullet as workload-category content and replaces it with the Flux-managed `kubecrate-reconciliation-marker` validation marker/config proof. The marker is not a platform service or application service.
 - This is a vertical slice, not a broad horizontal platform foundation. Ingress, certificate management, observability, and policy are deferred (see 0011). Wave-like promotion policy and gating are deferred (see 0012), but environment-specific configuration and future wave-like promotion remain preserved capabilities.
 - The management-unit contract and source-structure contract from the define-gitops-component-management change are binding inputs.
 - The kind-first local path (0003), repository placement rules (0004), minimal component set (0007), and GitOps source structure (0010) are all completed prerequisites.
-- Explicitly identify which previously deferred decisions this slice now resolves for 0008 and which broader contracts remain intentionally controller-agnostic.
+- External-Secrets Operator remains deferred platform services work outside 0008. Evaluate it through 0011 or a future service-specific backlog item when there is a clear operator-visible reason and acceptance criteria.

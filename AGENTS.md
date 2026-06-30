@@ -87,6 +87,7 @@ Do not collapse these axes together in docs or tasks.
 For this architecture and planning pass:
 
 - focus on repository docs and backlog definition
+- use `docs/ai-repository-guide.md` as the concise source-of-truth map, backlog-to-OpenSpec readiness guide, and validation checklist for AI-assisted repository work
 - proposal-approved implementation for `openspec/changes/create-first-installable-slice/` may add runtime manifests, installation scripts, and supporting config only in the paths approved by that OpenSpec change
 - outside that approved exception, do not add Kubernetes manifests, installation scripts, or runtime/config expansion
 - do not add unrelated or empty technical skeleton directories beyond `docs/backlog`

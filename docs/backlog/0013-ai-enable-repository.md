@@ -1,7 +1,7 @@
 ---
 task_id: "0013"
 title: "AI-enable repository structure and conventions"
-status: "proposed"
+status: "done"
 depends_on: []
 ---
 
@@ -18,3 +18,9 @@ Make the repository AI-friendly so that AI assistants produce reliable, low-hall
 - AI-friendliness should not introduce redundant documentation that duplicates the source of truth or adds maintenance burden. The goal is to make the documented structure enforceable in practice, not just easier to read.
 - Preserve the two-axis model (lifecycle phase: bootstrap installation / GitOps-managed operation; workload category: platform services / application services) and required project language in any AI-facing additions.
 - This item is lightweight and scoped to repository structure and conventions. It does not prescribe specific agent workflows, toolchains, or MCP configurations.
+
+## OpenSpec
+
+Active OpenSpec change: `openspec/changes/ai-enable-repository-structure/`.
+
+This change should define the smallest reviewable AI-facing documentation and convention improvements before implementation. It should avoid introducing new agent tool configurations or workflow-specific automation.
