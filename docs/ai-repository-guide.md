@@ -44,6 +44,8 @@ A backlog note should stay as discussion when it says only: "Consider another pl
 
 A backlog note may be ready for OpenSpec when it says: "Introduce one concrete platform service under GitOps-managed operation for the kind-first local path, with a reusable base under `platform-services/<service>/base/`, a concrete binding under `clusters/kind-dev-misc-local/platform-services/<service>/`, and acceptance checks that prove static rendering plus the required operational evidence." That has a concrete slice, preserves the two-axis model, and can produce reviewable tasks.
 
+For platform service backlog items, readiness should also consider whether there is a clear AI-runnable end-to-end validation path. Prefer a minimal application service fixture that consumes the platform service through its documented interface, so the change proves real use rather than only installation.
+
 ## Validation checklist
 
 Validation depends on the kind of change.
@@ -76,3 +78,5 @@ Before claiming success for a change that applies or reconciles Kubernetes resou
 - the operator-visible outcome.
 
 If those checks are failing or inconclusive, do not claim success. Keep deeper diagnosis symptom-driven and tied to the failing layer.
+
+For platform service changes, operational validation should include an end-to-end consumption proof where practical. A small application service fixture can prove the capability: loading a projected Secret, serving through ingress, using an issued certificate, emitting observable signals, or triggering expected policy behavior.

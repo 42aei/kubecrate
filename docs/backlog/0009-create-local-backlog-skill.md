@@ -1,7 +1,7 @@
 ---
 task_id: "0009"
 title: "Create local backlog skill"
-status: "proposed"
+status: "discarded"
 depends_on: ["0004"]
 ---
 
@@ -18,3 +18,5 @@ Keep the format light and aligned with the repository language, especially aroun
 This is a docs/backlog capture for a future workflow aid. No .opencode implementation belongs in the current architecture and planning pass.
 
 Note: Routine status hygiene for backlog items is now covered by an AGENTS.md rule. This item remains deferred as a potential future local workflow aid or skill if that later becomes useful.
+
+Discarded because the workflow aid is not currently needed and routine backlog status hygiene is already covered by AGENTS.md.

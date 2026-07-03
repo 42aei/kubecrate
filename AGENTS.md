@@ -56,6 +56,8 @@ Do not collapse these axes together in docs or tasks.
 - Each OpenSpec change should produce a reviewable increment.
 - Avoid horizontal layer-only slices unless there is a clear justification.
 - Tie each slice to a user-visible or operator-visible outcome where possible.
+- Each platform service slice should include an AI-runnable validation path with an end-to-end proof. Prefer a small application service fixture, such as nginx or a minimal Go/Node app, that consumes the platform service through its documented interface and proves the operator-visible outcome.
+- Platform service validation should prove real consumption, not only installation. Examples: a secret projection service is validated by an application service loading a projected Secret; ingress is validated by reaching an application service through the ingress path; certificate management is validated by a certificate issued and used for TLS; observability is validated by application or platform signals appearing in the expected collector or dashboard path.
 
 ## Repository placement rules
 

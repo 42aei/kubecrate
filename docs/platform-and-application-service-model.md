@@ -45,6 +45,20 @@ The table below maps common concerns to platform and application scope.
 - **Service classification is independent of lifecycle phase.** A service remains platform or application scope whether it is introduced during bootstrap installation or later reconciled through GitOps-managed operation.
 - **When in doubt, keep platform scope minimal.** Start with the smallest set of platform services needed to host applications reliably, and grow platform scope only when there is a clear operational reason.
 
+## Platform service validation
+
+Each platform service should have an AI-runnable end-to-end validation path. Static rendering and controller readiness are necessary, but a platform service is not proven by installation alone. It should be validated through a small application service fixture that consumes the capability through the same interface a real application service would use.
+
+The fixture should stay minimal, such as nginx or a small Go/Node application, and should exist only when a proposal-approved slice needs it. It should prove the operator-visible outcome for the specific platform service:
+
+- secret handling: the application service loads a projected Secret;
+- ingress: the application service is reachable through the ingress path;
+- certificate management: TLS is issued and used for the application service endpoint;
+- observability: expected metrics, logs, traces, or health signals from the fixture or platform service are visible in the chosen collection path;
+- policy: allowed and denied application service behavior is observable and explainable.
+
+The fixture is an application service because it consumes platform services. The platform service remains operator-owned, while the fixture proves that application services can use the platform capability without knowing the platform service internals.
+
 ## Examples with nuance
 
 ### Ingress controller (platform service)
