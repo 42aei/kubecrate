@@ -10,10 +10,10 @@ data:
   config.json: |
     {
       "app": "kubecrate-status",
-      "version": "v0.4.0",
+      "version": "v0.4.1",
       "source": "live-kubernetes-api",
       "title": "Kubecrate status",
-      "description": "Configured checks are evaluated from live Kubernetes API output for the kind-first local path.",
+      "description": "Configured checks follow this Kubecrate deployment and are evaluated from live Kubernetes API output in the current cluster.",
       "checks": [
         {
           "id": "base-app-health",
@@ -116,7 +116,7 @@ data:
           "enabled": false,
           "capability": "HTTP reachability through the cluster ingress path.",
           "area": "Gateway or ingress controller, HTTPRoute or Ingress, Service backend wiring",
-          "summary": "Ingress is not installed by this slice; use kubectl port-forward for the initial validation path.",
+          "summary": "Ingress is not configured for this deployment; use the configured access path, service, or port-forward while ingress is unavailable.",
           "troubleshooting": "When enabled, inspect gateway listener readiness, route attachment status, Service endpoints, DNS or host mapping, and gateway controller logs."
         },
         {
@@ -126,7 +126,7 @@ data:
           "enabled": false,
           "capability": "TLS certificate issuance and use by the application access path.",
           "area": "cert-manager Certificate, Issuer or ClusterIssuer, TLS Secret, gateway TLS binding",
-          "summary": "Certificate management is reserved for a later platform service slice and is not required for this base app.",
+          "summary": "Certificate management is not configured for this deployment and is only required when the active access path uses TLS.",
           "troubleshooting": "When enabled, inspect Certificate readiness, issuer events, ACME or CA errors, TLS Secret contents, and the gateway or ingress TLS reference."
         },
         {

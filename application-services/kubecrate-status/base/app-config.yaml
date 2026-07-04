@@ -247,7 +247,7 @@ data:
       <main class="container">
         <section class="hero">
           <div>
-            <div class="brand"><span class="brand-logo">{LOGO_SVG}</span><span>Kubecrate · kind-first local path · live Kubernetes API</span></div>
+            <div class="brand"><span class="brand-logo">{LOGO_SVG}</span><span>Kubecrate · deployment status · live Kubernetes API</span></div>
             <h1>{escape(payload['title'])}</h1>
             <p>{escape(payload['description'])}</p>
             <div class="hero-actions" style="margin-top:18px">{color_label(payload['overallStatus'])}<span class="pill">Version {escape(payload['version'])}</span><span class="pill">Source {escape(payload['source'])}</span><span class="pill">JSON /status.json</span></div>
@@ -256,13 +256,13 @@ data:
         </section>
         <section class="overview">
           <article class="surface-card panel"><div><h2>Command overview</h2><p>Scan readiness first. Colored labels stay visible so state is not carried by text alone.</p></div><div class="metrics"><div class="metric"><span>Passing</span><strong>{summary['green']}</strong></div><div class="metric"><span>Failing</span><strong>{summary['red']}</strong></div><div class="metric"><span>Enabled</span><strong>{summary['enabled']}</strong></div><div class="metric"><span>Total</span><strong>{summary['total']}</strong></div></div><div class="chart-grid">{''.join(chart_rows)}</div></article>
-          <article class="surface-card panel"><div><h2>GitOps path</h2><p>Agent workbench view of the reconciliation chain.</p></div><div class="pipeline"><span class="node">GitRepository</span><span class="node">Kustomization</span><span class="node">Flux Helm</span><span class="node">Sync Helm</span><span class="node">kubecrate-status</span></div><p class="footer-note">When any enabled check turns red, expand its card below for observed API output and next action.</p></article>
+          <article class="surface-card panel"><div><h2>GitOps path</h2><p>Agent workbench view of the active Kubecrate reconciliation chain.</p></div><div class="pipeline"><span class="node">GitRepository</span><span class="node">Kustomization</span><span class="node">Flux Helm</span><span class="node">Sync Helm</span><span class="node">kubecrate-status</span></div><p class="footer-note">When any enabled check turns red, expand its card below for observed API output and next action.</p></article>
         </section>
         <section class="workbench">
-          <aside class="surface-card sidebar"><div><h2>Agent workbench</h2><p>Filter by status, then expand a check for evidence and remediation context.</p></div><div class="filters" aria-label="Check filters"><button class="filter-button active" data-filter="all" type="button">All</button><button class="filter-button" data-filter="green" type="button">Passing</button><button class="filter-button" data-filter="red" type="button">Failing</button><button class="filter-button" data-filter="not_configured" type="button">Reserved</button></div><p class="footer-note">Monitored resources are configured through the kubecrate-status-config ConfigMap.</p></aside>
+          <aside class="surface-card sidebar"><div><h2>Agent workbench</h2><p>Filter by status, then expand a check for evidence and remediation context.</p></div><div class="filters" aria-label="Check filters"><button class="filter-button active" data-filter="all" type="button">All</button><button class="filter-button" data-filter="green" type="button">Passing</button><button class="filter-button" data-filter="red" type="button">Failing</button><button class="filter-button" data-filter="not_configured" type="button">Reserved</button></div><p class="footer-note">Monitored resources are configured through the kubecrate-status-config ConfigMap so the app can follow Kubecrate into any cluster.</p></aside>
           <section class="checks" aria-label="Kubecrate status checks">{''.join(cards)}</section>
         </section>
-        <p class="footer-note">Generated at {escape(payload['generatedAt'])}. UI hard rule: shadcn/ui framework/component language with shadcn chart-module patterns for graphs and interactive overview modules.</p>
+        <p class="footer-note">Generated at {escape(payload['generatedAt'])}. UI hard rule: shadcn/ui framework/component language with shadcn chart-module patterns for graphs and interactive overview modules. Cluster scope is deployment-agnostic and configured by ConfigMap.</p>
       </main>
       <script>
         document.querySelectorAll('.filter-button').forEach((button) => button.addEventListener('click', () => {{

@@ -1,4 +1,4 @@
-# kind-first local setup guide
+# kind reference setup guide
 
 This guide is the general setup path for the Kubecrate `kind-dev-misc-local` reference environment. It is written for AI agents and users who need to create a local kind cluster, hand off to Flux, deploy application services, and collect evidence.
 
@@ -6,7 +6,7 @@ Use this alongside `AGENTS.md`, `docs/ai-repository-guide.md`, `docs/kind-local-
 
 ## What this setup proves
 
-A successful setup proves that the kind-first local path can reach GitOps-managed operation:
+A successful setup proves that this cluster binding can reach GitOps-managed operation:
 
 - a local kind cluster exists and is reachable,
 - Flux controllers are installed,

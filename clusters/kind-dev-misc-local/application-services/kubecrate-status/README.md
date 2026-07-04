@@ -1,6 +1,6 @@
 # Kubecrate status app on kind-dev-misc-local
 
-This cluster binding enables the `kubecrate-status` application service through GitOps-managed operation on the kind-first local path.
+This cluster binding enables the `kubecrate-status` application service through GitOps-managed operation on this cluster binding.
 
 AI-runnable validation after reconciliation:
 
@@ -13,4 +13,4 @@ curl -fsS http://127.0.0.1:18080/status.json | python3 -m json.tool
 curl -fsS http://127.0.0.1:18080/ >/tmp/kubecrate-status.html
 ```
 
-The app intentionally uses port-forwarding until a later ingress slice enables an ingress reachability check.
+The app is deployment-agnostic: it monitors the resources declared in kubecrate-status-config and can follow Kubecrate into any cluster. This kind reference binding uses port-forwarding until a later ingress slice enables an ingress reachability check.
