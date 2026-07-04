@@ -24,6 +24,9 @@ spec:
           image: python:3.13-alpine
           imagePullPolicy: IfNotPresent
           command: ["python", "/app/app.py"]
+          env:
+            - name: VALIDATION_STATUS_CONFIG
+              value: /config/config.json
           ports:
             - name: http
               containerPort: 8080
@@ -56,6 +59,9 @@ spec:
             - name: app
               mountPath: /app
               readOnly: true
+            - name: config
+              mountPath: /config
+              readOnly: true
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -66,3 +72,6 @@ spec:
         - name: app
           configMap:
             name: validation-status-app
+        - name: config
+          configMap:
+            name: validation-status-config

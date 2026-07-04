@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: validation-status-config
+  labels:
+    app.kubernetes.io/name: validation-status
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: application-services
+data:
+  config.json: |
+    {
+      "app": "kubecrate-validation-status",
+      "version": "v0.3.0",
+      "source": "live-kubernetes-api",
+      "title": "Kubecrate validation status",
+      "description": "Configured checks are evaluated from live Kubernetes API output for the kind-first local path.",
+      "checks": [
+        {
+          "id": "base-app-health",
+          "name": "Base app health",
+          "type": "deployment_service_endpoints",
+          "enabled": true,
+          "capability": "The validation application service is running and has a Kubernetes Service with ready endpoints.",
+          "area": "application service workload and Kubernetes Service",
+          "troubleshooting": "Inspect the validation-status Deployment, Pods, Service endpoints, and recent Pod logs before investigating platform services.",
+          "deployment": {"namespace": "validation-status", "name": "validation-status"},
+          "service": {"namespace": "validation-status", "name": "validation-status"},
+          "endpoints": {"namespace": "validation-status", "name": "validation-status"}
+        },
+        {
+          "id": "flux-source-ready",
+          "name": "Flux Git source ready",
+          "type": "condition",
+          "enabled": true,
+          "capability": "Flux source-controller can authenticate to GitHub and fetch the configured Git source.",
+          "area": "Flux GitRepository, SSH deploy key, known_hosts, repository and branch access",
+          "troubleshooting": "If red, inspect GitRepository status, source-controller logs, the flux-system Secret identity/known_hosts keys, and the GitHub deploy key or SSH key registration.",
+          "resource": {
+            "apiPath": "/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-system/gitrepositories/flux-system",
+            "conditionType": "Ready",
+            "observedFields": {
+              "ready": "status.conditions[type=Ready].status",
+              "reason": "status.conditions[type=Ready].reason",
+              "revision": "status.artifact.revision"
+            }
+          }
+        },
+        {
+          "id": "flux-kustomization-ready",
+          "name": "Flux Kustomization ready",
+          "type": "condition",
+          "enabled": true,
+          "capability": "Flux kustomize-controller can apply the GitOps-managed operation entrypoint.",
+          "area": "Flux Kustomization, entrypoint kustomization, reconciled Kubernetes resources",
+          "troubleshooting": "If red, inspect Kustomization events, kustomize-controller logs, static rendering, and any resources failing server-side apply or health checks.",
+          "resource": {
+            "apiPath": "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-system/kustomizations/flux-system",
+            "conditionType": "Ready",
+            "observedFields": {
+              "ready": "status.conditions[type=Ready].status",
+              "reason": "status.conditions[type=Ready].reason",
+              "lastAppliedRevision": "status.lastAppliedRevision"
+            }
+          }
+        },
+        {
+          "id": "flux-system-ready",
+          "name": "Flux controllers HelmRelease ready",
+          "type": "condition",
+          "enabled": true,
+          "capability": "Flux controllers are installed and healthy as the bootstrap-to-GitOps handoff foundation.",
+          "area": "Flux HelmRelease, Helm chart source, release storage, controller health",
+          "troubleshooting": "If red, inspect HelmRelease status, helm-controller logs, HelmChart readiness, chart values, and release storage namespace.",
+          "resource": {
+            "apiPath": "/apis/helm.toolkit.fluxcd.io/v2/namespaces/flux-system/helmreleases/flux-system",
+            "conditionType": "Ready",
+            "observedFields": {
+              "ready": "status.conditions[type=Ready].status",
+              "reason": "status.conditions[type=Ready].reason",
+              "lastAttemptedRevision": "status.lastAttemptedRevision"
+            }
+          }
+        },
+        {
+          "id": "flux-system-sync-ready",
+          "name": "Flux sync HelmRelease ready",
+          "type": "condition",
+          "enabled": true,
+          "capability": "The Flux sync chart is installed and has created the GitRepository and Kustomization that drive GitOps-managed operation.",
+          "area": "Flux HelmRelease, Helm chart source, release storage, controller health",
+          "troubleshooting": "If red, inspect HelmRelease status, helm-controller logs, HelmChart readiness, chart values, and release storage namespace.",
+          "resource": {
+            "apiPath": "/apis/helm.toolkit.fluxcd.io/v2/namespaces/flux-system/helmreleases/flux-system-sync",
+            "conditionType": "Ready",
+            "observedFields": {
+              "ready": "status.conditions[type=Ready].status",
+              "reason": "status.conditions[type=Ready].reason",
+              "lastAttemptedRevision": "status.lastAttemptedRevision"
+            }
+          }
+        },
+        {
+          "id": "secret-loading",
+          "name": "Secret loading",
+          "type": "not_configured",
+          "enabled": false,
+          "capability": "Application service consumption of projected Kubernetes Secret data.",
+          "area": "External-Secrets Operator, Secret projection, Pod environment or volume wiring",
+          "summary": "Secret consumption is reserved for a later platform service slice and is not enabled in this base fixture.",
+          "troubleshooting": "When enabled, inspect ExternalSecret reconciliation, the generated Secret, Pod mounts or environment variables, and application logs for missing keys."
+        },
+        {
+          "id": "ingress-reachability",
+          "name": "Ingress reachability",
+          "type": "not_configured",
+          "enabled": false,
+          "capability": "HTTP reachability through the cluster ingress path.",
+          "area": "Gateway or ingress controller, HTTPRoute or Ingress, Service backend wiring",
+          "summary": "Ingress is not installed by this slice; use kubectl port-forward for the initial validation path.",
+          "troubleshooting": "When enabled, inspect gateway listener readiness, route attachment status, Service endpoints, DNS or host mapping, and gateway controller logs."
+        },
+        {
+          "id": "certificate-tls-status",
+          "name": "Certificate/TLS status",
+          "type": "not_configured",
+          "enabled": false,
+          "capability": "TLS certificate issuance and use by the application access path.",
+          "area": "cert-manager Certificate, Issuer or ClusterIssuer, TLS Secret, gateway TLS binding",
+          "summary": "Certificate management is reserved for a later platform service slice and is not required for this base app.",
+          "troubleshooting": "When enabled, inspect Certificate readiness, issuer events, ACME or CA errors, TLS Secret contents, and the gateway or ingress TLS reference."
+        },
+        {
+          "id": "observability-signal-path",
+          "name": "Observability signal path",
+          "type": "not_configured",
+          "enabled": false,
+          "capability": "Application signals can reach the configured observability path.",
+          "area": "metrics, logs, traces, collectors, dashboards, and backend ingestion",
+          "summary": "No observability backend is installed by this slice, so signal validation is intentionally not configured.",
+          "troubleshooting": "When enabled, inspect application scrape annotations or exporters, collector pipelines, backend ingestion status, and dashboard queries."
+        },
+        {
+          "id": "policy-behavior",
+          "name": "Policy behavior",
+          "type": "not_configured",
+          "enabled": false,
+          "capability": "Expected policy admission or mutation behavior is visible to the application service fixture.",
+          "area": "policy engine, admission controller, policy definitions, and resource events",
+          "summary": "Policy validation is reserved for a later platform service slice and is not active in this base fixture.",
+          "troubleshooting": "When enabled, inspect policy reports, admission events, controller logs, and whether the fixture resource matches the policy selectors."
+        }
+      ]
+    }
