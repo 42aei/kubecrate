@@ -13,6 +13,8 @@ spec:
       app.kubernetes.io/name: validation-status
   template:
     metadata:
+      annotations:
+        validation-status.kubecrate.io/config-revision: "overview-v1"
       labels:
         app.kubernetes.io/name: validation-status
         app.kubernetes.io/part-of: kubecrate
