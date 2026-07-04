@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: validation-status
+  labels:
+    app.kubernetes.io/name: validation-status
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: application-services

@@ -2,10 +2,10 @@ secret:
   create: true
 gitRepository:
   spec:
-    url: ssh://git@github.com/anderskovitdk/kubecrate.git
+    url: ssh://git@github.com/42aei/kubecrate.git
     interval: 1m
     ref:
-      branch: pivot/flux-sync-ssh-bootstrap
+      branch: hermes/validation-status-flux-inspection
 kustomization:
   spec:
     interval: 1m
