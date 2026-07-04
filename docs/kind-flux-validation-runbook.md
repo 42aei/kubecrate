@@ -185,7 +185,13 @@ Validate JSON:
 curl -fsS http://127.0.0.1:18080/status.json | python3 -m json.tool
 ```
 
-The UI should use shadcn/ui conventions for cards, badges, borders, muted text, and dark theme styling. The implementation is static HTML/CSS for now, but visual changes should follow https://ui.shadcn.com/ component language.
+## Validation UI hard rule
+
+The validation app UI must be based on the shadcn/ui framework and component language: cards, badges, buttons, muted text, borders, dark theme tokens, accessible focus/ARIA behavior, and responsive layout conventions must follow <https://ui.shadcn.com/>.
+
+Graphs and interactive overview modules must be based on shadcn/ui chart modules from <https://ui.shadcn.com/docs/components/chart> / <https://ui.shadcn.com/charts>. In the current static ConfigMap-hosted implementation, the chart-like overview must mirror those shadcn/ui chart primitives and naming in plain HTML/CSS/JS; once the app moves to a bundled React frontend, use the actual shadcn/ui `ChartContainer`, `ChartTooltip`, `ChartLegend`, and Recharts-backed modules directly.
+
+Do not introduce an unrelated frontend kit for this app. If a future agent wants to use a different chart library, it must first update the architectural docs and get explicit approval.
 
 ## Evidence to report
 
