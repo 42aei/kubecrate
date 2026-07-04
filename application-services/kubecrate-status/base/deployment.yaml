@@ -1,33 +1,33 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: validation-status
+  name: kubecrate-status
   labels:
-    app.kubernetes.io/name: validation-status
+    app.kubernetes.io/name: kubecrate-status
     app.kubernetes.io/part-of: kubecrate
     kubecrate.io/workload-category: application-services
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: validation-status
+      app.kubernetes.io/name: kubecrate-status
   template:
     metadata:
       annotations:
-        validation-status.kubecrate.io/config-revision: "overview-v1"
+        kubecrate-status.kubecrate.io/config-revision: "hybrid-v1"
       labels:
-        app.kubernetes.io/name: validation-status
+        app.kubernetes.io/name: kubecrate-status
         app.kubernetes.io/part-of: kubecrate
         kubecrate.io/workload-category: application-services
     spec:
-      serviceAccountName: validation-status
+      serviceAccountName: kubecrate-status
       containers:
         - name: app
           image: python:3.13-alpine
           imagePullPolicy: IfNotPresent
           command: ["python", "/app/app.py"]
           env:
-            - name: VALIDATION_STATUS_CONFIG
+            - name: KUBECRATE_STATUS_CONFIG
               value: /config/config.json
           ports:
             - name: http
@@ -73,7 +73,7 @@ spec:
       volumes:
         - name: app
           configMap:
-            name: validation-status-app
+            name: kubecrate-status-app
         - name: config
           configMap:
-            name: validation-status-config
+            name: kubecrate-status-config

@@ -1,15 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: validation-status
+  name: kubecrate-status
   labels:
-    app.kubernetes.io/name: validation-status
+    app.kubernetes.io/name: kubecrate-status
     app.kubernetes.io/part-of: kubecrate
     kubecrate.io/workload-category: application-services
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: validation-status
+    app.kubernetes.io/name: kubecrate-status
   ports:
     - name: http
       port: 80

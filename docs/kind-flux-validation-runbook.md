@@ -13,7 +13,7 @@ A successful setup proves that the kind-first local path can reach GitOps-manage
 - Flux can authenticate to GitHub and fetch the configured branch,
 - Flux can reconcile `clusters/kind-dev-misc-local/entrypoint`,
 - configured platform services and application services are applied by Flux, and
-- the `validation-status` application service reports live Kubernetes API status for the configured resources.
+- the `kubecrate-status` application service reports live Kubernetes API status for the configured resources.
 
 ## Required tools
 
@@ -145,12 +145,12 @@ If `GitRepository/flux-system` reports `ssh: unable to authenticate`, check:
 4. `known_hosts` exists in the Secret, and
 5. the configured branch exists and is readable.
 
-## Configure validation-status checks
+## Configure kubecrate-status checks
 
 The validation app is configured by ConfigMap, not by hardcoded monitored resources in the app code:
 
 ```text
-application-services/validation-status/base/status-config.yaml
+application-services/kubecrate-status/base/status-config.yaml
 ```
 
 Each enabled check declares the Kubernetes API resource path or workload tuple it monitors. The app reads the mounted `/config/config.json`, calls the Kubernetes API with its ServiceAccount, and reports status in `/status.json` and the UI.
@@ -158,7 +158,7 @@ Each enabled check declares the Kubernetes API resource path or workload tuple i
 When adding monitored resources:
 
 1. Add or edit a check in `status-config.yaml`.
-2. Ensure `application-services/validation-status/base/rbac.yaml` grants only the required `get` access for the configured resource type.
+2. Ensure `application-services/kubecrate-status/base/rbac.yaml` grants only the required `get` access for the configured resource type.
 3. Keep future platform service checks `not_configured` until the slice has real consumption validation.
 4. Run static rendering and live reconciliation before claiming success.
 
@@ -167,16 +167,16 @@ When adding monitored resources:
 Check the workload:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n validation-status get deploy,svc,pod,endpoints -o wide
-kubectl --context kind-kind-dev-misc-local -n validation-status wait \
-  --for=condition=Available deployment/validation-status --timeout=180s
+kubectl --context kind-kind-dev-misc-local -n kubecrate-status get deploy,svc,pod,endpoints -o wide
+kubectl --context kind-kind-dev-misc-local -n kubecrate-status wait \
+  --for=condition=Available deployment/kubecrate-status --timeout=180s
 ```
 
 Port-forward for local inspection:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n validation-status \
-  port-forward --address 0.0.0.0 svc/validation-status 18080:80
+kubectl --context kind-kind-dev-misc-local -n kubecrate-status \
+  port-forward --address 0.0.0.0 svc/kubecrate-status 18080:80
 ```
 
 Validate JSON:
@@ -199,7 +199,7 @@ Report:
 
 - branch and revision Flux reconciled,
 - Flux ready states,
-- validation-status Deployment/Service/Endpoint evidence,
+- kubecrate-status Deployment/Service/Endpoint evidence,
 - `/status.json` overall status and enabled check states,
 - UI visual inspection evidence,
 - the inspection URL, and

@@ -3,5 +3,5 @@ kind: Kustomization
 resources:
   - ./kubecrate-system-namespace.yaml
   - ../platform-services/flux
-  - ../application-services/validation-status
+  - ../application-services/kubecrate-status
   - ./kubecrate-reconciliation-marker.yaml

@@ -1,6 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: validation-status
+namespace: kubecrate-status
 resources:
   - ./namespace.yaml
-  - ../../../../application-services/validation-status/base
+  - ../../../../application-services/kubecrate-status/base
