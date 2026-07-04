@@ -9,94 +9,170 @@ metadata:
 data:
   app.py: |
     import json
+    import os
+    import ssl
+    import urllib.error
+    import urllib.request
     from datetime import datetime, timezone
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from html import escape
 
     APP_NAME = "kubecrate-validation-status"
-    VERSION = "v0.1.0"
+    VERSION = "v0.2.0"
+    NAMESPACE = os.getenv("POD_NAMESPACE", "validation-status")
+    FLUX_NAMESPACE = os.getenv("FLUX_NAMESPACE", "flux-system")
+    API_SERVER = os.getenv("KUBERNETES_SERVICE_HOST")
+    API_PORT = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
-    CHECKS = [
-        {
+    def _api_get(path):
+        if not API_SERVER:
+            raise RuntimeError("KUBERNETES_SERVICE_HOST is not set")
+        with open(TOKEN_PATH, "r", encoding="utf-8") as token_file:
+            token = token_file.read().strip()
+        url = f"https://{API_SERVER}:{API_PORT}{path}"
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        with urllib.request.urlopen(req, context=ctx, timeout=4) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _condition(resource, condition_type):
+        for condition in resource.get("status", {}).get("conditions", []):
+            if condition.get("type") == condition_type:
+                return condition
+        return {}
+
+    def _green_or_red(ok):
+        return "green" if ok else "red"
+
+    def _check_base_app_health():
+        deployment = _api_get(f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/validation-status")
+        service = _api_get(f"/api/v1/namespaces/{NAMESPACE}/services/validation-status")
+        endpoints = _api_get(f"/api/v1/namespaces/{NAMESPACE}/endpoints/validation-status")
+        available = deployment.get("status", {}).get("availableReplicas", 0)
+        desired = deployment.get("spec", {}).get("replicas", 1)
+        subsets = endpoints.get("subsets", [])
+        endpoint_count = sum(len(subset.get("addresses", [])) for subset in subsets)
+        ok = available >= desired and service.get("spec", {}).get("clusterIP") not in (None, "", "None") and endpoint_count > 0
+        return {
             "id": "base-app-health",
             "name": "Base app health",
-            "state": "green",
-            "capability": "The validation application service is running and can answer status requests.",
+            "state": _green_or_red(ok),
+            "capability": "The validation application service is running and has a Kubernetes Service with ready endpoints.",
             "area": "application service workload and Kubernetes Service",
             "enabled": True,
-            "summary": "The status app process is healthy and serving the UI and JSON contract.",
-            "troubleshooting": "If this is not green, inspect the validation-status Deployment, Pods, Service endpoints, and recent Pod logs before investigating platform services.",
-        },
-        {
-            "id": "secret-loading",
-            "name": "Secret loading",
-            "state": "not_configured",
-            "capability": "Application service consumption of projected Kubernetes Secret data.",
-            "area": "External-Secrets Operator, Secret projection, Pod environment or volume wiring",
-            "enabled": False,
-            "summary": "Secret consumption is reserved for a later platform service slice and is not enabled in this base fixture.",
-            "troubleshooting": "When enabled, inspect ExternalSecret reconciliation, the generated Secret, Pod mounts or environment variables, and application logs for missing keys.",
-        },
-        {
-            "id": "ingress-reachability",
-            "name": "Ingress reachability",
-            "state": "not_configured",
-            "capability": "HTTP reachability through the cluster ingress path.",
-            "area": "Gateway or ingress controller, HTTPRoute or Ingress, Service backend wiring",
-            "enabled": False,
-            "summary": "Ingress is not installed by this slice; use kubectl port-forward for the initial validation path.",
-            "troubleshooting": "When enabled, inspect gateway listener readiness, route attachment status, Service endpoints, DNS or host mapping, and gateway controller logs.",
-        },
-        {
-            "id": "certificate-tls-status",
-            "name": "Certificate/TLS status",
-            "state": "not_configured",
-            "capability": "TLS certificate issuance and use by the application access path.",
-            "area": "cert-manager Certificate, Issuer or ClusterIssuer, TLS Secret, gateway TLS binding",
-            "enabled": False,
-            "summary": "Certificate management is reserved for a later platform service slice and is not required for this base app.",
-            "troubleshooting": "When enabled, inspect Certificate readiness, issuer events, ACME or CA errors, TLS Secret contents, and the gateway or ingress TLS reference.",
-        },
-        {
-            "id": "observability-signal-path",
-            "name": "Observability signal path",
-            "state": "not_configured",
-            "capability": "Application signals can reach the configured observability path.",
-            "area": "metrics, logs, traces, collectors, dashboards, and backend ingestion",
-            "enabled": False,
-            "summary": "No observability backend is installed by this slice, so signal validation is intentionally not configured.",
-            "troubleshooting": "When enabled, inspect application scrape annotations or exporters, collector pipelines, backend ingestion status, and dashboard queries.",
-        },
-        {
-            "id": "policy-behavior",
-            "name": "Policy behavior",
-            "state": "not_configured",
-            "capability": "Expected policy admission or mutation behavior is visible to the application service fixture.",
-            "area": "policy engine, admission controller, policy definitions, and resource events",
-            "enabled": False,
-            "summary": "Policy validation is reserved for a later platform service slice and is not active in this base fixture.",
-            "troubleshooting": "When enabled, inspect policy reports, admission events, controller logs, and whether the fixture resource matches the policy selectors.",
-        },
-    ]
-
-    def status_payload():
-        return {
-            "app": APP_NAME,
-            "version": VERSION,
-            "overallStatus": "green",
-            "generatedAt": datetime.now(timezone.utc).isoformat(),
-            "checks": CHECKS,
+            "summary": f"Deployment availability {available}/{desired}; Service clusterIP {service.get('spec', {}).get('clusterIP', 'missing')}; ready endpoints {endpoint_count}.",
+            "troubleshooting": "Inspect the validation-status Deployment, Pods, Service endpoints, and recent Pod logs before investigating platform services.",
+            "observed": {"availableReplicas": available, "desiredReplicas": desired, "endpointCount": endpoint_count},
         }
 
+    def _check_flux_source():
+        repo = _api_get(f"/apis/source.toolkit.fluxcd.io/v1/namespaces/{FLUX_NAMESPACE}/gitrepositories/flux-system")
+        ready = _condition(repo, "Ready")
+        ok = ready.get("status") == "True"
+        revision = repo.get("status", {}).get("artifact", {}).get("revision") or repo.get("status", {}).get("lastHandledReconcileAt", "unknown")
+        return {
+            "id": "flux-source-ready",
+            "name": "Flux Git source ready",
+            "state": _green_or_red(ok),
+            "capability": "Flux source-controller can authenticate to GitHub and fetch the configured Git source.",
+            "area": "Flux GitRepository, SSH deploy key, known_hosts, repository and branch access",
+            "enabled": True,
+            "summary": ready.get("message", "GitRepository Ready condition is missing."),
+            "troubleshooting": "If red, inspect GitRepository status, source-controller logs, the flux-system Secret identity/known_hosts keys, and the GitHub deploy key registration.",
+            "observed": {"ready": ready.get("status"), "reason": ready.get("reason"), "revision": revision},
+        }
+
+    def _check_flux_kustomization():
+        kustomization = _api_get(f"/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{FLUX_NAMESPACE}/kustomizations/flux-system")
+        ready = _condition(kustomization, "Ready")
+        ok = ready.get("status") == "True"
+        revision = kustomization.get("status", {}).get("lastAppliedRevision", "unknown")
+        return {
+            "id": "flux-kustomization-ready",
+            "name": "Flux Kustomization ready",
+            "state": _green_or_red(ok),
+            "capability": "Flux kustomize-controller can apply the GitOps-managed operation entrypoint.",
+            "area": "Flux Kustomization, entrypoint kustomization, reconciled Kubernetes resources",
+            "enabled": True,
+            "summary": ready.get("message", "Kustomization Ready condition is missing."),
+            "troubleshooting": "If red, inspect Kustomization events, kustomize-controller logs, static rendering, and any resources failing server-side apply or health checks.",
+            "observed": {"ready": ready.get("status"), "reason": ready.get("reason"), "lastAppliedRevision": revision},
+        }
+
+    def _check_flux_helmrelease(name, title, capability):
+        hr = _api_get(f"/apis/helm.toolkit.fluxcd.io/v2/namespaces/{FLUX_NAMESPACE}/helmreleases/{name}")
+        ready = _condition(hr, "Ready")
+        ok = ready.get("status") == "True"
+        return {
+            "id": f"{name}-ready",
+            "name": title,
+            "state": _green_or_red(ok),
+            "capability": capability,
+            "area": "Flux HelmRelease, Helm chart source, release storage, controller health",
+            "enabled": True,
+            "summary": ready.get("message", "HelmRelease Ready condition is missing."),
+            "troubleshooting": "If red, inspect HelmRelease status, helm-controller logs, HelmChart readiness, chart values, and release storage namespace.",
+            "observed": {"ready": ready.get("status"), "reason": ready.get("reason"), "lastAttemptedRevision": hr.get("status", {}).get("lastAttemptedRevision")},
+        }
+
+    def _not_configured(id_, name, capability, area, summary, troubleshooting):
+        return {"id": id_, "name": name, "state": "not_configured", "capability": capability, "area": area, "enabled": False, "summary": summary, "troubleshooting": troubleshooting}
+
+    def live_checks():
+        builders = [
+            _check_base_app_health,
+            _check_flux_source,
+            _check_flux_kustomization,
+            lambda: _check_flux_helmrelease("flux-system", "Flux controllers HelmRelease ready", "Flux controllers are installed and healthy as the bootstrap-to-GitOps handoff foundation."),
+            lambda: _check_flux_helmrelease("flux-system-sync", "Flux sync HelmRelease ready", "The Flux sync chart is installed and has created the GitRepository and Kustomization that drive GitOps-managed operation."),
+        ]
+        checks = []
+        for build in builders:
+            try:
+                checks.append(build())
+            except Exception as exc:
+                checks.append({
+                    "id": getattr(build, "__name__", "live-kubernetes-api-check").replace("_check_", "").replace("_", "-"),
+                    "name": "Live Kubernetes API check failed",
+                    "state": "red",
+                    "capability": "The validation app can read the Kubernetes API for its reported status checks.",
+                    "area": "Kubernetes API access, ServiceAccount token, RBAC, and Flux custom resources",
+                    "enabled": True,
+                    "summary": f"Failed to read required Kubernetes API output: {type(exc).__name__}: {exc}",
+                    "troubleshooting": "Inspect the validation-status ServiceAccount/RBAC, API server reachability, CRD availability, and application Pod logs.",
+                    "observed": {"error": f"{type(exc).__name__}: {exc}"},
+                })
+        checks.extend([
+            _not_configured("secret-loading", "Secret loading", "Application service consumption of projected Kubernetes Secret data.", "External-Secrets Operator, Secret projection, Pod environment or volume wiring", "Secret consumption is reserved for a later platform service slice and is not enabled in this base fixture.", "When enabled, inspect ExternalSecret reconciliation, the generated Secret, Pod mounts or environment variables, and application logs for missing keys."),
+            _not_configured("ingress-reachability", "Ingress reachability", "HTTP reachability through the cluster ingress path.", "Gateway or ingress controller, HTTPRoute or Ingress, Service backend wiring", "Ingress is not installed by this slice; use kubectl port-forward for the initial validation path.", "When enabled, inspect gateway listener readiness, route attachment status, Service endpoints, DNS or host mapping, and gateway controller logs."),
+            _not_configured("certificate-tls-status", "Certificate/TLS status", "TLS certificate issuance and use by the application access path.", "cert-manager Certificate, Issuer or ClusterIssuer, TLS Secret, gateway TLS binding", "Certificate management is reserved for a later platform service slice and is not required for this base app.", "When enabled, inspect Certificate readiness, issuer events, ACME or CA errors, TLS Secret contents, and the gateway or ingress TLS reference."),
+            _not_configured("observability-signal-path", "Observability signal path", "Application signals can reach the configured observability path.", "metrics, logs, traces, collectors, dashboards, and backend ingestion", "No observability backend is installed by this slice, so signal validation is intentionally not configured.", "When enabled, inspect application scrape annotations or exporters, collector pipelines, backend ingestion status, and dashboard queries."),
+            _not_configured("policy-behavior", "Policy behavior", "Expected policy admission or mutation behavior is visible to the application service fixture.", "policy engine, admission controller, policy definitions, and resource events", "Policy validation is reserved for a later platform service slice and is not active in this base fixture.", "When enabled, inspect policy reports, admission events, controller logs, and whether the fixture resource matches the policy selectors."),
+        ])
+        return checks
+
+    def status_payload():
+        checks = live_checks()
+        enabled_states = [check["state"] for check in checks if check.get("enabled")]
+        overall = "red" if any(state == "red" for state in enabled_states) else "green"
+        return {"app": APP_NAME, "version": VERSION, "overallStatus": overall, "generatedAt": datetime.now(timezone.utc).isoformat(), "source": "live-kubernetes-api", "checks": checks}
+
     def render_html(payload):
+        icons = {"green": "✓", "red": "✕", "yellow": "!", "not_configured": "○"}
         cards = []
         for check in payload["checks"]:
             state = check["state"]
             enabled = "enabled" if check["enabled"] else "not enabled"
+            observed = check.get("observed") or {}
+            observed_html = ""
+            if observed:
+                observed_html = "<div><dt>Observed</dt><dd><code>" + escape(json.dumps(observed, sort_keys=True)) + "</code></dd></div>"
             cards.append(f"""
             <article class="check check-{escape(state)}">
               <div class="check-heading">
-                <h2>{escape(check['name'])}</h2>
+                <h2><span class="icon" aria-hidden="true">{icons.get(state, '?')}</span>{escape(check['name'])}</h2>
                 <span class="state">{escape(state.replace('_', ' '))}</span>
               </div>
               <p class="summary">{escape(check['summary'])}</p>
@@ -104,6 +180,7 @@ data:
                 <div><dt>Capability</dt><dd>{escape(check['capability'])}</dd></div>
                 <div><dt>Area</dt><dd>{escape(check['area'])}</dd></div>
                 <div><dt>Enabled</dt><dd>{escape(enabled)}</dd></div>
+                {observed_html}
                 <div><dt>Troubleshooting</dt><dd>{escape(check['troubleshooting'])}</dd></div>
               </dl>
             </article>
@@ -115,32 +192,14 @@ data:
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Kubecrate validation status</title>
       <style>
-        :root {{
-          color-scheme: dark;
-          --bg: #0f172a;
-          --panel: #111827;
-          --panel-2: #1e293b;
-          --text: #e5e7eb;
-          --muted: #94a3b8;
-          --green: #22c55e;
-          --amber: #f59e0b;
-          --red: #ef4444;
-          --blue: #38bdf8;
-          --line: rgba(148, 163, 184, 0.25);
-        }}
+        :root {{ color-scheme: dark; --bg: #0f172a; --panel: #111827; --panel-2: #1e293b; --text: #e5e7eb; --muted: #94a3b8; --green: #22c55e; --amber: #f59e0b; --red: #ef4444; --blue: #38bdf8; --line: rgba(148, 163, 184, 0.25); }}
         * {{ box-sizing: border-box; }}
-        body {{
-          margin: 0;
-          font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 32rem), var(--bg);
-          color: var(--text);
-          line-height: 1.5;
-        }}
-        main {{ width: min(1120px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 3rem; }}
+        body {{ margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 32rem), var(--bg); color: var(--text); line-height: 1.5; }}
+        main {{ width: min(1180px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 3rem; }}
         .hero {{ display: grid; gap: 1rem; padding: 1.5rem; border: 1px solid var(--line); border-radius: 1.5rem; background: linear-gradient(135deg, rgba(17, 24, 39, 0.94), rgba(30, 41, 59, 0.82)); box-shadow: 0 24px 80px rgba(0,0,0,0.32); }}
         .eyebrow {{ color: var(--blue); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.78rem; }}
         h1 {{ margin: 0; font-size: clamp(2rem, 5vw, 4rem); letter-spacing: -0.05em; }}
-        .hero p {{ margin: 0; color: var(--muted); max-width: 72ch; }}
+        .hero p {{ margin: 0; color: var(--muted); max-width: 76ch; }}
         .status-row {{ display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.5rem; }}
         .pill {{ display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.55rem 0.8rem; border-radius: 999px; background: rgba(15, 23, 42, 0.86); border: 1px solid var(--line); color: var(--muted); }}
         .pill strong {{ color: var(--text); }}
@@ -148,62 +207,28 @@ data:
         .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }}
         .check {{ border: 1px solid var(--line); border-radius: 1.15rem; padding: 1rem; background: rgba(17, 24, 39, 0.9); }}
         .check-heading {{ display: flex; align-items: start; justify-content: space-between; gap: 1rem; }}
-        h2 {{ margin: 0; font-size: 1.05rem; }}
+        h2 {{ display:flex; align-items:center; gap:0.55rem; margin: 0; font-size: 1.05rem; }}
+        .icon {{ display:inline-grid; place-items:center; width:1.45rem; height:1.45rem; border-radius:999px; font-weight:900; background:rgba(148,163,184,0.14); }}
+        .check-green .icon {{ color: var(--green); }} .check-red .icon {{ color: var(--red); }} .check-not_configured .icon {{ color: var(--blue); }}
         .state {{ white-space: nowrap; border-radius: 999px; padding: 0.28rem 0.58rem; font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }}
-        .check-green .state {{ color: #052e16; background: var(--green); }}
-        .check-yellow .state {{ color: #451a03; background: var(--amber); }}
-        .check-red .state {{ color: #450a0a; background: var(--red); }}
-        .check-not_configured .state {{ color: #082f49; background: var(--blue); }}
+        .check-green .state {{ color: #052e16; background: var(--green); }} .check-yellow .state {{ color: #451a03; background: var(--amber); }} .check-red .state {{ color: #450a0a; background: var(--red); }} .check-not_configured .state {{ color: #082f49; background: var(--blue); }}
         .summary {{ color: var(--text); margin: 0.8rem 0; }}
-        dl {{ display: grid; gap: 0.65rem; margin: 0; }}
-        dt {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }}
-        dd {{ margin: 0.12rem 0 0; color: #dbeafe; }}
-        .footer {{ color: var(--muted); margin-top: 1rem; font-size: 0.9rem; }}
-        a {{ color: var(--blue); }}
-        @media (max-width: 760px) {{ main {{ width: min(100% - 1rem, 1120px); padding-top: 0.5rem; }} .grid {{ grid-template-columns: 1fr; }} .hero {{ border-radius: 1rem; }} }}
+        dl {{ display: grid; gap: 0.65rem; margin: 0; }} dt {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }} dd {{ margin: 0.12rem 0 0; color: #dbeafe; }} code {{ white-space: normal; overflow-wrap: anywhere; color:#bfdbfe; }}
+        .footer {{ color: var(--muted); margin-top: 1rem; font-size: 0.9rem; }} a {{ color: var(--blue); }}
+        @media (max-width: 760px) {{ main {{ width: min(100% - 1rem, 1180px); padding-top: 0.5rem; }} .grid {{ grid-template-columns: 1fr; }} .hero {{ border-radius: 1rem; }} .check-heading {{ flex-direction: column; }} }}
       </style>
     </head>
-    <body>
-      <main>
-        <section class="hero">
-          <div class="eyebrow">application services · kind-first local path</div>
-          <h1>Kubecrate validation status</h1>
-          <p>This fixture proves that an application service can participate in GitOps-managed operation and exposes a stable status contract for future platform service validation slices.</p>
-          <div class="status-row">
-            <span class="pill"><span class="dot"></span>Overall <strong>{escape(payload['overallStatus'])}</strong></span>
-            <span class="pill">Version <strong>{escape(payload['version'])}</strong></span>
-            <span class="pill">JSON <strong>/status.json</strong></span>
-          </div>
-        </section>
-        <section class="grid" aria-label="Validation checks">
-          {''.join(cards)}
-        </section>
-        <p class="footer">Generated at {escape(payload['generatedAt'])}. Future platform service checks intentionally report not configured until their slice enables them.</p>
-      </main>
-    </body>
-    </html>"""
+    <body><main><section class="hero"><div class="eyebrow">application services · kind-first local path · live Kubernetes API</div><h1>Kubecrate validation status</h1><p>This fixture proves that an application service can participate in GitOps-managed operation. Enabled checks are computed from live Kubernetes API output, including Flux source, HelmRelease, and Kustomization status.</p><div class="status-row"><span class="pill"><span class="dot"></span>Overall <strong>{escape(payload['overallStatus'])}</strong></span><span class="pill">Version <strong>{escape(payload['version'])}</strong></span><span class="pill">Source <strong>{escape(payload['source'])}</strong></span><span class="pill">JSON <strong>/status.json</strong></span></div></section><section class="grid" aria-label="Validation checks">{''.join(cards)}</section><p class="footer">Generated at {escape(payload['generatedAt'])}. Future platform service checks intentionally report not configured until their slice enables them.</p></main></body></html>"""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path in ("/status.json", "/status"):
                 body = json.dumps(status_payload(), indent=2).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             if self.path in ("/", "/index.html"):
                 body = render_html(status_payload()).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            self.send_response(404)
-            self.end_headers()
-
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            self.send_response(404); self.end_headers()
         def log_message(self, format, *args):
             print("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args), flush=True)
 
