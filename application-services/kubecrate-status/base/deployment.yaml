@@ -14,7 +14,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubecrate-status.kubecrate.io/config-revision: "hybrid-v1"
+        kubecrate-status.kubecrate.io/config-revision: "cluster-agnostic-v041"
       labels:
         app.kubernetes.io/name: kubecrate-status
         app.kubernetes.io/part-of: kubecrate
