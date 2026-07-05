@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubecrate-status
+  labels:
+    app.kubernetes.io/name: kubecrate-status
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: application-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubecrate-status
+  template:
+    metadata:
+      annotations:
+        kubecrate-status.kubecrate.io/config-revision: "check-modules-v060"
+      labels:
+        app.kubernetes.io/name: kubecrate-status
+        app.kubernetes.io/part-of: kubecrate
+        kubecrate.io/workload-category: application-services
+    spec:
+      serviceAccountName: kubecrate-status
+      containers:
+        - name: app
+          image: python:3.13-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/app/app.py"]
+          env:
+            - name: KUBECRATE_STATUS_CONFIG
+              value: /config/config.json
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /status.json
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /status.json
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+            - name: check-modules
+              mountPath: /app/check-modules
+              readOnly: true
+            - name: config
+              mountPath: /config
+              readOnly: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: app
+          configMap:
+            name: kubecrate-status-app
+        - name: check-modules
+          configMap:
+            name: kubecrate-status-check-modules
+        - name: config
+          configMap:
+            name: kubecrate-status-config

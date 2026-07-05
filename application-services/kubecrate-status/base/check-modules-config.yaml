@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecrate-status-check-modules
+  labels:
+    app.kubernetes.io/name: kubecrate-status
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: application-services
+data:
+  kubernetes_layers.py: |
+    import os
+    import urllib.error
+    import urllib.request
+
+    @register_layer("condition")
+    def condition_layer(layer):
+        try:
+            resource = api_get(layer["apiPath"])
+            ready = condition(resource, layer.get("conditionType", "Ready"))
+            ok = ready.get("status") == "True"
+            return layer_result(
+                layer,
+                green_or_red(ok),
+                ready.get("message") or ready.get("reason") or f"{layer.get('conditionType', 'Ready')} condition is missing.",
+                {key: path_lookup(resource, expression) for key, expression in layer.get("observedFields", {}).items()},
+            )
+        except urllib.error.HTTPError as exc:
+            inaccessible = exc.code in (401, 403)
+            missing = exc.code == 404
+            observed = {"httpStatus": exc.code, "apiPath": layer["apiPath"], "observable": not inaccessible}
+            summary = f"{layer.get('name', layer['apiPath'])} is not observable from the status app service account (HTTP {exc.code})."
+            if missing:
+                summary = f"{layer.get('name', layer['apiPath'])} was not found through the Kubernetes API (HTTP 404)."
+            result = layer_result(layer, "yellow" if inaccessible else "red", summary, observed)
+            if inaccessible:
+                result["requiredForGreen"] = False
+            return result
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect {layer.get('name', layer['apiPath'])}: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
+
+    @register_layer("target_secret")
+    def target_secret_layer(layer):
+        keys = layer.get("keys", [])
+        try:
+            secret = api_get(layer["apiPath"])
+            data = secret.get("data", {})
+            missing_keys = [key for key in keys if key not in data]
+            ok = not missing_keys
+            return layer_result(layer, green_or_red(ok), "Target Secret exists with the expected smoke key." if ok else f"Target Secret exists but is missing keys: {', '.join(missing_keys)}.", {"namespace": secret.get("metadata", {}).get("namespace"), "name": secret.get("metadata", {}).get("name"), "keysPresent": [key for key in keys if key in data]})
+        except urllib.error.HTTPError as exc:
+            missing = exc.code == 404
+            inaccessible = exc.code in (401, 403)
+            result = layer_result(layer, diagnostic_state(False, missing=missing or inaccessible), "Target Secret does not exist yet; check ExternalSecret readiness and ESO reconciliation." if missing else f"Target Secret is not observable from the status app service account (HTTP {exc.code}).", {"httpStatus": exc.code, "apiPath": layer["apiPath"], "observable": not inaccessible})
+            if inaccessible:
+                result["requiredForGreen"] = False
+            return result
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect target Secret: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
+
+    @register_layer("volume_mount")
+    def volume_mount_layer(layer):
+        mount_path = layer["path"]
+        expected_files = layer.get("expectedFiles", [])
+        try:
+            entries = set(os.listdir(mount_path))
+            missing_files = [name for name in expected_files if name not in entries]
+            ok = not missing_files
+            return layer_result(layer, green_or_red(ok), "Projected Secret volume is mounted with the expected file." if ok else f"Projected Secret volume is mounted but missing files: {', '.join(missing_files)}.", {"path": mount_path, "mounted": True, "expectedFilesPresent": [name for name in expected_files if name in entries]})
+        except FileNotFoundError:
+            return layer_result(layer, "yellow", "Projected Secret volume mount path is missing; check Deployment volume and volumeMount wiring.", {"path": mount_path, "mounted": False, "reason": "not_found"})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Application could not inspect projected Secret volume: {type(exc).__name__}: {exc}", {"path": mount_path, "mounted": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    @register_layer("file")
+    def file_layer(layer):
+        path = layer["path"]
+        expected = layer.get("expectedValue")
+        try:
+            with open(path, "r", encoding="utf-8") as secret_file:
+                value = secret_file.read().strip()
+            matches = expected is None or value == expected
+            return layer_result(layer, green_or_red(matches), "Application read the projected Secret value from its mounted file." if matches else "Application read the mounted Secret file, but it did not match the expected smoke marker.", {"path": path, "readable": True, "matchesExpectedFixture": matches})
+        except FileNotFoundError:
+            return layer_result(layer, "yellow", "Projected Secret file is missing from the application mount; check target Secret creation and application volume wiring.", {"path": path, "readable": False, "reason": "not_found"})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Application could not read the projected Secret file: {type(exc).__name__}: {exc}", {"path": path, "readable": False, "error": f"{type(exc).__name__}: {exc}"})
+
+  network_layers.py: |
+    import urllib.error
+    import urllib.request
+
+    @register_layer("service_endpoints")
+    def service_endpoints_layer(layer):
+        try:
+            endpoints = api_get(layer["apiPath"])
+            endpoint_count = sum(len(subset.get("addresses", [])) for subset in endpoints.get("subsets", []))
+            ok = endpoint_count > 0
+            return layer_result(layer, green_or_red(ok), f"Service endpoints ready addresses: {endpoint_count}.", {"endpointCount": endpoint_count})
+        except urllib.error.HTTPError as exc:
+            return layer_result(layer, "red", f"Service endpoints are not observable through the Kubernetes API (HTTP {exc.code}).", {"httpStatus": exc.code, "apiPath": layer["apiPath"]})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect Service endpoints: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
+
+    @register_layer("http_probe")
+    def http_probe_layer(layer):
+        url = layer["url"]
+        headers = layer.get("headers", {})
+        expected_status = int(layer.get("expectedStatus", 200))
+        expected_body = layer.get("expectedBodyContains")
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=4) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                status = response.getcode()
+            body_matches = expected_body is None or expected_body in body
+            ok = status == expected_status and body_matches
+            summary = f"HTTP probe returned {status}."
+            if expected_body is not None:
+                summary += " Expected response marker was present." if body_matches else " Expected response marker was missing."
+            return layer_result(layer, green_or_red(ok), summary, {"url": url, "httpStatus": status, "hostHeader": headers.get("Host"), "bodyMatched": body_matches})
+        except urllib.error.HTTPError as exc:
+            return layer_result(layer, "red", f"HTTP probe reached ingress but returned HTTP {exc.code}; check route backend and application health.", {"url": url, "httpStatus": exc.code, "hostHeader": headers.get("Host")})
+        except Exception as exc:
+            return layer_result(layer, "red", f"HTTP probe could not reach ingress path: {type(exc).__name__}: {exc}", {"url": url, "hostHeader": headers.get("Host"), "error": f"{type(exc).__name__}: {exc}"})
+
+    @register_layer("gateway_listener")
+    def gateway_listener_layer(layer):
+        try:
+            resource = api_get(layer["apiPath"])
+            listeners = resource.get("status", {}).get("listeners", [])
+            listener = next((item for item in listeners if item.get("name") == layer.get("listenerName")), {})
+            conditions = listener.get("conditions", [])
+            accepted = next((item for item in conditions if item.get("type") == "Accepted"), {})
+            programmed = next((item for item in conditions if item.get("type") == "Programmed"), {})
+            ok = accepted.get("status") == "True" and programmed.get("status") == "True"
+            summary = f"Gateway listener {layer.get('listenerName')} Accepted={accepted.get('status', 'missing')} Programmed={programmed.get('status', 'missing')}."
+            return layer_result(layer, green_or_red(ok), summary, {"listenerName": layer.get("listenerName"), "accepted": accepted.get("status"), "programmed": programmed.get("status"), "attachedRoutes": listener.get("attachedRoutes")})
+        except urllib.error.HTTPError as exc:
+            return layer_result(layer, "red", f"Gateway listener resource is not observable through the Kubernetes API (HTTP {exc.code}).", {"httpStatus": exc.code, "apiPath": layer["apiPath"]})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect Gateway listener readiness: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
+
+    @register_layer("httproute_attachment")
+    def httproute_attachment_layer(layer):
+        try:
+            resource = api_get(layer["apiPath"])
+            parents = resource.get("status", {}).get("parents", [])
+            parent = next((item for item in parents if item.get("parentRef", {}).get("name") == layer.get("parentName")), {})
+            conditions = parent.get("conditions", [])
+            accepted = next((item for item in conditions if item.get("type") == "Accepted"), {})
+            resolved = next((item for item in conditions if item.get("type") == "ResolvedRefs"), {})
+            ok = accepted.get("status") == "True" and resolved.get("status") == "True"
+            summary = f"HTTPRoute parent {layer.get('parentName')} Accepted={accepted.get('status', 'missing')} ResolvedRefs={resolved.get('status', 'missing')}."
+            return layer_result(layer, green_or_red(ok), summary, {"parentName": layer.get("parentName"), "accepted": accepted.get("status"), "resolvedRefs": resolved.get("status")})
+        except urllib.error.HTTPError as exc:
+            return layer_result(layer, "red", f"HTTPRoute is not observable through the Kubernetes API (HTTP {exc.code}).", {"httpStatus": exc.code, "apiPath": layer["apiPath"]})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect HTTPRoute attachment: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
