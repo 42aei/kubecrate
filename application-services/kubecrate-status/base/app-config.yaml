@@ -1,0 +1,414 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecrate-status-app
+  labels:
+    app.kubernetes.io/name: kubecrate-status
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: application-services
+data:
+  app.py: |
+    import json
+    import os
+    import ssl
+    import urllib.error
+    import urllib.request
+    from datetime import datetime, timezone
+    from html import escape
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    CONFIG_PATH = os.getenv("KUBECRATE_STATUS_CONFIG", "/config/config.json")
+    API_SERVER = os.getenv("KUBERNETES_SERVICE_HOST")
+    API_PORT = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Kubecrate logo"><defs><linearGradient id="g" x1="8" y1="6" x2="58" y2="60" gradientUnits="userSpaceOnUse"><stop stop-color="#38bdf8"/><stop offset="0.55" stop-color="#22c55e"/><stop offset="1" stop-color="#a3e635"/></linearGradient></defs><path d="M32 5 55 18v28L32 59 9 46V18L32 5Z" fill="#020617" stroke="url(#g)" stroke-width="3"/><path d="M14 20 32 30l18-10M32 30v23" stroke="#64748b" stroke-width="2" fill="none"/><circle cx="32" cy="28" r="10" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/><circle cx="32" cy="28" r="3" fill="#22c55e"/><g stroke="#e2e8f0" stroke-width="1.8" stroke-linecap="round"><path d="M32 15v5M32 36v5M19 28h5M40 28h5M23 19l3.5 3.5M37.5 33.5 41 37M41 19l-3.5 3.5M26.5 33.5 23 37"/></g></svg>"""
+
+    STATE_META = {
+        "green": {"label": "Passing", "icon": "✓", "accent": "#22c55e", "badge": "badge-green"},
+        "red": {"label": "Failing", "icon": "✕", "accent": "#ef4444", "badge": "badge-red"},
+        "yellow": {"label": "Warning", "icon": "!", "accent": "#f59e0b", "badge": "badge-yellow"},
+        "not_configured": {"label": "Reserved", "icon": "○", "accent": "#38bdf8", "badge": "badge-not_configured"},
+    }
+
+    def load_config():
+        with open(CONFIG_PATH, "r", encoding="utf-8") as config_file:
+            return json.load(config_file)
+
+    def api_get(path):
+        if not API_SERVER:
+            raise RuntimeError("KUBERNETES_SERVICE_HOST is not set")
+        with open(TOKEN_PATH, "r", encoding="utf-8") as token_file:
+            token = token_file.read().strip()
+        url = f"https://{API_SERVER}:{API_PORT}{path}"
+        ctx = ssl.create_default_context(cafile=CA_PATH)
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        with urllib.request.urlopen(req, context=ctx, timeout=4) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def condition(resource, condition_type):
+        for item in resource.get("status", {}).get("conditions", []):
+            if item.get("type") == condition_type:
+                return item
+        return {}
+
+    def path_lookup(data, expression):
+        current = data
+        for part in expression.split("."):
+            if "[" in part and part.endswith("]"):
+                field, selector = part[:-1].split("[", 1)
+                current = current.get(field, []) if isinstance(current, dict) else []
+                key, expected = selector.split("=", 1)
+                current = next((item for item in current if item.get(key) == expected), {})
+            elif isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+        return current
+
+    def green_or_red(ok):
+        return "green" if ok else "red"
+
+    def diagnostic_state(ok, missing=False):
+        if ok:
+            return "green"
+        return "yellow" if missing else "red"
+
+    def base_result(check):
+        return {
+            "id": check["id"],
+            "name": check["name"],
+            "capability": check["capability"],
+            "area": check["area"],
+            "enabled": bool(check.get("enabled", True)),
+            "troubleshooting": check["troubleshooting"],
+        }
+
+    def not_configured(check):
+        result = base_result(check)
+        result.update({
+            "state": "not_configured",
+            "enabled": False,
+            "summary": check.get("summary", "This check is reserved and not enabled for the current slice."),
+        })
+        return result
+
+    def deployment_service_endpoints(check):
+        dep_cfg = check["deployment"]
+        svc_cfg = check["service"]
+        ep_cfg = check["endpoints"]
+        deployment = api_get(f"/apis/apps/v1/namespaces/{dep_cfg['namespace']}/deployments/{dep_cfg['name']}")
+        service = api_get(f"/api/v1/namespaces/{svc_cfg['namespace']}/services/{svc_cfg['name']}")
+        endpoints = api_get(f"/api/v1/namespaces/{ep_cfg['namespace']}/endpoints/{ep_cfg['name']}")
+        available = deployment.get("status", {}).get("availableReplicas", 0)
+        desired = deployment.get("spec", {}).get("replicas", 1)
+        endpoint_count = sum(len(subset.get("addresses", [])) for subset in endpoints.get("subsets", []))
+        cluster_ip = service.get("spec", {}).get("clusterIP")
+        ok = available >= desired and cluster_ip not in (None, "", "None") and endpoint_count > 0
+        result = base_result(check)
+        result.update({
+            "state": green_or_red(ok),
+            "summary": f"Deployment availability {available}/{desired}; Service clusterIP {cluster_ip or 'missing'}; ready endpoints {endpoint_count}.",
+            "observed": {"availableReplicas": available, "desiredReplicas": desired, "endpointCount": endpoint_count, "clusterIP": cluster_ip},
+        })
+        return result
+
+    def condition_check(check):
+        resource_cfg = check["resource"]
+        resource = api_get(resource_cfg["apiPath"])
+        ready = condition(resource, resource_cfg.get("conditionType", "Ready"))
+        observed = {key: path_lookup(resource, expression) for key, expression in resource_cfg.get("observedFields", {}).items()}
+        ok = ready.get("status") == "True"
+        result = base_result(check)
+        result.update({
+            "state": green_or_red(ok),
+            "summary": ready.get("message", f"{resource_cfg.get('conditionType', 'Ready')} condition is missing."),
+            "observed": observed,
+        })
+        return result
+
+    def layer_result(layer, state, summary, observed=None):
+        return {
+            "name": layer.get("name", layer.get("apiPath", layer.get("id", "diagnostic layer"))),
+            "state": state,
+            "summary": summary,
+            "observed": observed or {},
+            "likelyFailureArea": layer.get("failureArea", layer.get("name", layer.get("id", "diagnostic layer"))),
+            "requiredForGreen": bool(layer.get("requiredForGreen", True)),
+        }
+
+    def condition_layer(layer):
+        try:
+            resource = api_get(layer["apiPath"])
+            ready = condition(resource, layer.get("conditionType", "Ready"))
+            ok = ready.get("status") == "True"
+            return layer_result(
+                layer,
+                green_or_red(ok),
+                ready.get("message") or ready.get("reason") or f"{layer.get('conditionType', 'Ready')} condition is missing.",
+                {key: path_lookup(resource, expression) for key, expression in layer.get("observedFields", {}).items()},
+            )
+        except urllib.error.HTTPError as exc:
+            inaccessible = exc.code in (401, 403)
+            missing = exc.code == 404
+            observed = {"httpStatus": exc.code, "apiPath": layer["apiPath"], "observable": not inaccessible}
+            summary = f"{layer.get('name', layer['apiPath'])} is not observable from the status app service account (HTTP {exc.code})."
+            if missing:
+                summary = f"{layer.get('name', layer['apiPath'])} was not found through the Kubernetes API (HTTP 404)."
+            result = layer_result(layer, "yellow" if inaccessible else "red", summary, observed)
+            if inaccessible:
+                result["requiredForGreen"] = False
+            return result
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect {layer.get('name', layer['apiPath'])}: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
+
+    def target_secret_layer(layer):
+        keys = layer.get("keys", [])
+        try:
+            secret = api_get(layer["apiPath"])
+            data = secret.get("data", {})
+            missing_keys = [key for key in keys if key not in data]
+            ok = not missing_keys
+            return layer_result(layer, green_or_red(ok), "Target Secret exists with the expected smoke key." if ok else f"Target Secret exists but is missing keys: {', '.join(missing_keys)}.", {"namespace": secret.get("metadata", {}).get("namespace"), "name": secret.get("metadata", {}).get("name"), "keysPresent": [key for key in keys if key in data]})
+        except urllib.error.HTTPError as exc:
+            missing = exc.code == 404
+            inaccessible = exc.code in (401, 403)
+            result = layer_result(layer, diagnostic_state(False, missing=missing or inaccessible), "Target Secret does not exist yet; check ExternalSecret readiness and ESO reconciliation." if missing else f"Target Secret is not observable from the status app service account (HTTP {exc.code}).", {"httpStatus": exc.code, "apiPath": layer["apiPath"], "observable": not inaccessible})
+            if inaccessible:
+                result["requiredForGreen"] = False
+            return result
+        except Exception as exc:
+            return layer_result(layer, "red", f"Could not inspect target Secret: {type(exc).__name__}: {exc}", {"error": f"{type(exc).__name__}: {exc}", "apiPath": layer["apiPath"]})
+
+    def volume_mount_layer(layer):
+        mount_path = layer["path"]
+        expected_files = layer.get("expectedFiles", [])
+        try:
+            entries = set(os.listdir(mount_path))
+            missing_files = [name for name in expected_files if name not in entries]
+            ok = not missing_files
+            return layer_result(layer, green_or_red(ok), "Projected Secret volume is mounted with the expected file." if ok else f"Projected Secret volume is mounted but missing files: {', '.join(missing_files)}.", {"path": mount_path, "mounted": True, "expectedFilesPresent": [name for name in expected_files if name in entries]})
+        except FileNotFoundError:
+            return layer_result(layer, "yellow", "Projected Secret volume mount path is missing; check Deployment volume and volumeMount wiring.", {"path": mount_path, "mounted": False, "reason": "not_found"})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Application could not inspect projected Secret volume: {type(exc).__name__}: {exc}", {"path": mount_path, "mounted": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    def file_layer(layer):
+        path = layer["path"]
+        expected = layer.get("expectedValue")
+        try:
+            with open(path, "r", encoding="utf-8") as secret_file:
+                value = secret_file.read().strip()
+            matches = expected is None or value == expected
+            return layer_result(layer, green_or_red(matches), "Application read the projected Secret value from its mounted file." if matches else "Application read the mounted Secret file, but it did not match the expected smoke marker.", {"path": path, "readable": True, "matchesExpectedFixture": matches})
+        except FileNotFoundError:
+            return layer_result(layer, "yellow", "Projected Secret file is missing from the application mount; check target Secret creation and application volume wiring.", {"path": path, "readable": False, "reason": "not_found"})
+        except Exception as exc:
+            return layer_result(layer, "red", f"Application could not read the projected Secret file: {type(exc).__name__}: {exc}", {"path": path, "readable": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    def secret_loading_check(check):
+        layers = {}
+        for layer in check.get("diagnosticLayers", []):
+            layer_type = layer.get("type", "condition")
+            if layer_type == "target_secret":
+                layers[layer["id"]] = target_secret_layer(layer)
+            elif layer_type == "volume_mount":
+                layers[layer["id"]] = volume_mount_layer(layer)
+            elif layer_type == "file":
+                layers[layer["id"]] = file_layer(layer)
+            else:
+                layers[layer["id"]] = condition_layer(layer)
+        blocking_layers = {layer_id: layer for layer_id, layer in layers.items() if layer.get("requiredForGreen", True)}
+        advisory_layers = {layer_id: layer for layer_id, layer in layers.items() if not layer.get("requiredForGreen", True)}
+        ok = bool(blocking_layers) and all(layer.get("state") == "green" for layer in blocking_layers.values())
+        has_red = any(layer.get("state") == "red" for layer in blocking_layers.values())
+        blocking = [f"{layer.get('likelyFailureArea', layer_id)} ({layer.get('name', layer_id)}): {layer['summary']}" for layer_id, layer in blocking_layers.items() if layer.get("state") != "green"]
+        advisory = [f"{layer.get('likelyFailureArea', layer_id)} ({layer.get('name', layer_id)}): {layer['summary']}" for layer_id, layer in advisory_layers.items() if layer.get("state") != "green"]
+        summary = "ESO projected Secret is reconciled, mounted, and readable by the kubecrate status app."
+        if ok and advisory:
+            summary += " Some cluster-level diagnostics were not observable from the app service account: " + "; ".join(advisory)
+        elif not ok:
+            summary = "Secret-loading is not green; likely failure areas: " + ("; ".join(blocking) if blocking else "diagnostic layers were not observed.")
+        result = base_result(check)
+        result.update({
+            "state": "green" if ok else ("red" if has_red else "yellow"),
+            "summary": summary,
+            "observed": {"layers": layers},
+        })
+        return result
+
+    CHECK_TYPES = {"deployment_service_endpoints": deployment_service_endpoints, "condition": condition_check, "secret_loading": secret_loading_check, "not_configured": not_configured}
+
+    def evaluate_check(check):
+        if not check.get("enabled", True) or check.get("type") == "not_configured":
+            return not_configured(check)
+        try:
+            return CHECK_TYPES[check["type"]](check)
+        except KeyError:
+            raise RuntimeError(f"unknown check type: {check.get('type')}")
+
+    def live_checks(config):
+        checks = []
+        for check in config.get("checks", []):
+            try:
+                checks.append(evaluate_check(check))
+            except Exception as exc:
+                failed = base_result(check)
+                failed.update({"state": "red", "summary": f"Failed to evaluate configured Kubernetes API check: {type(exc).__name__}: {exc}", "observed": {"error": f"{type(exc).__name__}: {exc}"}})
+                checks.append(failed)
+        return checks
+
+    def status_payload():
+        config = load_config()
+        checks = live_checks(config)
+        enabled = [check for check in checks if check.get("enabled")]
+        counts = {
+            "green": sum(1 for check in checks if check["state"] == "green"),
+            "red": sum(1 for check in checks if check["state"] == "red"),
+            "yellow": sum(1 for check in checks if check["state"] == "yellow"),
+            "not_configured": sum(1 for check in checks if check["state"] == "not_configured"),
+            "enabled": len(enabled),
+            "total": len(checks),
+        }
+        overall = "red" if any(check["state"] == "red" for check in enabled) else ("yellow" if any(check["state"] == "yellow" for check in enabled) else "green")
+        health_score = round((counts["green"] / counts["enabled"]) * 100) if counts["enabled"] else 0
+        return {
+            "app": config.get("app", "kubecrate-status"),
+            "version": config.get("version", "v0.4.0"),
+            "overallStatus": overall,
+            "healthScore": health_score,
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "source": config.get("source", "live-kubernetes-api"),
+            "title": config.get("title", "Kubecrate status"),
+            "description": config.get("description", "Configured checks are evaluated from live Kubernetes API output."),
+            "summary": counts,
+            "checks": checks,
+        }
+
+    def pct(value, total):
+        return round((value / total) * 100) if total else 0
+
+    def color_label(state):
+        meta = STATE_META.get(state, STATE_META["yellow"])
+        return f"<span class='state-label {meta['badge']}'><span class='state-dot'></span>{escape(meta['label'])}</span>"
+
+    def render_html(payload):
+        summary = payload["summary"]
+        total = summary["total"] or 1
+        chart_rows = []
+        for state in ("green", "red", "yellow", "not_configured"):
+            meta = STATE_META[state]
+            value = summary[state]
+            width = pct(value, total)
+            chart_rows.append(f"""
+              <div class="chart-row" data-state="{state}">
+                <div class="chart-label"><span>{color_label(state)}</span><strong>{value} / {summary['total']}</strong></div>
+                <div class="chart-track" role="img" aria-label="{escape(meta['label'])}: {value} of {summary['total']} checks"><span class="chart-fill chart-{state}" style="width:{width}%"></span></div>
+              </div>
+            """)
+        cards = []
+        for check in payload["checks"]:
+            state = check["state"]
+            icon = STATE_META.get(state, STATE_META["yellow"])["icon"]
+            enabled = "enabled" if check["enabled"] else "reserved"
+            observed = check.get("observed") or {}
+            observed_html = ""
+            if observed:
+                observed_html = "<div class='detail-block'><dt>Observed</dt><dd><code>" + escape(json.dumps(observed, sort_keys=True)) + "</code></dd></div>"
+            cards.append(f"""
+            <article class="check-card surface-card" data-state="{escape(state)}">
+              <button class="card-toggle" type="button" aria-expanded="false">
+                <span class="check-icon icon-{escape(state)}" aria-hidden="true">{escape(icon)}</span>
+                <span class="check-copy"><strong>{escape(check['name'])}</strong><small>{escape(check['summary'])}</small></span>
+                {color_label(state)}
+              </button>
+              <div class="card-details" hidden>
+                <dl>
+                  <div class="detail-block"><dt>Capability</dt><dd>{escape(check['capability'])}</dd></div>
+                  <div class="detail-block"><dt>Area</dt><dd>{escape(check['area'])}</dd></div>
+                  <div class="detail-block"><dt>Mode</dt><dd>{escape(enabled)}</dd></div>
+                  {observed_html}
+                  <div class="detail-block"><dt>Next action</dt><dd>{escape(check['troubleshooting'])}</dd></div>
+                </dl>
+              </div>
+            </article>
+            """)
+        return f"""<!doctype html>
+    <html lang="en" class="dark">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>{escape(payload['title'])}</title>
+      <style>
+        :root {{ --bg:#020617; --fg:#f8fafc; --muted:#94a3b8; --muted2:#64748b; --card:rgba(15,23,42,.78); --card2:rgba(2,6,23,.72); --border:rgba(148,163,184,.22); --green:#22c55e; --red:#ef4444; --yellow:#f59e0b; --sky:#38bdf8; --ring:rgba(148,163,184,.18); }}
+        * {{ box-sizing:border-box; }} body {{ margin:0; min-height:100vh; color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:radial-gradient(circle at 12% 0%, rgba(34,197,94,.18), transparent 25rem), radial-gradient(circle at 88% 8%, rgba(56,189,248,.16), transparent 24rem), var(--bg); }}
+        .container {{ width:min(1260px, calc(100% - 32px)); margin:0 auto; padding:28px 0 56px; display:grid; gap:18px; }}
+        .surface-card,.hero {{ border:1px solid var(--border); background:linear-gradient(135deg,var(--card),var(--card2)); border-radius:20px; box-shadow:0 22px 70px rgba(0,0,0,.28); backdrop-filter:blur(18px); }}
+        .hero {{ min-height:278px; padding:28px; display:grid; grid-template-columns:1fr 330px; gap:24px; align-items:end; overflow:hidden; position:relative; }}
+        .brand {{ display:flex; align-items:center; gap:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.14em; font-size:12px; font-weight:800; }} .brand-logo {{ width:46px; height:46px; display:grid; place-items:center; border-radius:14px; background:rgba(2,6,23,.7); border:1px solid var(--border); }} .brand-logo svg {{ width:34px; height:34px; }}
+        h1 {{ margin:16px 0 12px; font-size:clamp(38px,6vw,78px); line-height:.9; letter-spacing:-.07em; }} h2,h3,p,dl,dd {{ margin:0; }} p {{ color:var(--muted); line-height:1.55; }}
+        .hero-actions,.filters {{ display:flex; gap:8px; flex-wrap:wrap; }} .pill,.filter-button,.state-label {{ display:inline-flex; align-items:center; gap:7px; border:1px solid var(--border); border-radius:999px; padding:7px 11px; font-size:12px; font-weight:850; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap; }} .pill {{ background:rgba(2,6,23,.62); color:#e2e8f0; }}
+        .state-label {{ padding:6px 10px; }} .state-dot {{ width:8px; height:8px; border-radius:999px; background:currentColor; box-shadow:0 0 0 3px color-mix(in srgb,currentColor 18%,transparent); }} .badge-green {{ background:rgba(34,197,94,.14); border-color:rgba(34,197,94,.48); color:#86efac; }} .badge-red {{ background:rgba(239,68,68,.14); border-color:rgba(239,68,68,.48); color:#fca5a5; }} .badge-yellow {{ background:rgba(245,158,11,.14); border-color:rgba(245,158,11,.5); color:#fcd34d; }} .badge-not_configured {{ background:rgba(56,189,248,.14); border-color:rgba(56,189,248,.48); color:#7dd3fc; }}
+        .hero-score {{ padding:20px; align-self:stretch; display:grid; place-items:center; text-align:center; }} .score-ring {{ width:190px; height:190px; border-radius:50%; display:grid; place-items:center; background:conic-gradient(var(--green) calc(var(--score) * 1%), rgba(30,41,59,.9) 0); }} .score-ring > div {{ width:142px; height:142px; display:grid; place-items:center; border-radius:50%; background:#020617; border:1px solid var(--border); }} .score-ring strong {{ display:block; font-size:44px; letter-spacing:-.06em; }}
+        .overview {{ display:grid; grid-template-columns:1.05fr .95fr; gap:18px; }} .panel {{ padding:20px; display:grid; gap:16px; }} .metrics {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }} .metric {{ padding:14px; border-radius:14px; border:1px solid var(--border); background:rgba(2,6,23,.5); }} .metric span {{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.1em; font-weight:800; }} .metric strong {{ display:block; font-size:34px; letter-spacing:-.05em; margin-top:4px; }}
+        .chart-grid {{ display:grid; gap:11px; }} .chart-label {{ display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; }} .chart-track {{ height:10px; border-radius:999px; overflow:hidden; background:#1e293b; border:1px solid var(--ring); }} .chart-fill {{ display:block; height:100%; min-width:2px; border-radius:999px; }} .chart-green {{ background:var(--green); }} .chart-red {{ background:var(--red); }} .chart-yellow {{ background:var(--yellow); }} .chart-not_configured {{ background:var(--sky); }}
+        .workbench {{ display:grid; grid-template-columns:310px 1fr; gap:18px; }} .sidebar {{ padding:18px; align-self:start; position:sticky; top:18px; display:grid; gap:16px; }} .filter-button {{ cursor:pointer; color:#e2e8f0; background:rgba(2,6,23,.6); }} .filter-button.active {{ background:#f8fafc; color:#020617; border-color:#f8fafc; }}
+        .checks {{ display:grid; gap:10px; }} .card-toggle {{ width:100%; border:0; background:transparent; color:inherit; cursor:pointer; padding:16px; display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:center; text-align:left; }} .check-icon {{ width:32px; height:32px; border-radius:999px; display:grid; place-items:center; border:1px solid var(--border); font-weight:900; }} .icon-green {{ color:#86efac; background:rgba(34,197,94,.12); }} .icon-red {{ color:#fca5a5; background:rgba(239,68,68,.12); }} .icon-yellow {{ color:#fcd34d; background:rgba(245,158,11,.12); }} .icon-not_configured {{ color:#7dd3fc; background:rgba(56,189,248,.12); }} .check-copy {{ min-width:0; display:grid; gap:3px; }} .check-copy strong {{ font-size:15px; }} .check-copy small {{ color:var(--muted); overflow-wrap:anywhere; line-height:1.35; }}
+        .card-details {{ padding:0 16px 16px 60px; }} dl {{ display:grid; gap:10px; }} .detail-block {{ display:grid; gap:3px; }} dt {{ color:var(--muted2); font-size:11px; text-transform:uppercase; letter-spacing:.1em; font-weight:850; }} dd {{ color:#cbd5e1; font-size:13px; line-height:1.45; }} code {{ display:block; max-width:100%; overflow-wrap:anywhere; white-space:normal; color:#bae6fd; background:rgba(2,6,23,.6); border:1px solid var(--border); border-radius:10px; padding:8px; }}
+        .pipeline {{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; }} .node {{ border:1px solid var(--border); border-radius:14px; background:rgba(2,6,23,.62); padding:10px 12px; color:#cbd5e1; font-size:13px; }} .node:not(:last-child)::after {{ content:'→'; margin-left:10px; color:var(--green); }} .footer-note {{ color:var(--muted2); font-size:13px; }} .check-card[hidden] {{ display:none; }}
+        @media (max-width: 900px) {{ .hero,.overview,.workbench,.metrics {{ grid-template-columns:1fr; }} .container {{ width:min(100% - 16px, 1260px); padding-top:8px; }} .sidebar {{ position:static; }} .card-toggle {{ grid-template-columns:auto 1fr; }} .card-toggle .state-label {{ grid-column:2; justify-self:start; }} .card-details {{ padding-left:16px; }} }}
+      </style>
+    </head>
+    <body>
+      <main class="container">
+        <section class="hero">
+          <div>
+            <div class="brand"><span class="brand-logo">{LOGO_SVG}</span><span>Kubecrate · deployment status · live Kubernetes API</span></div>
+            <h1>{escape(payload['title'])}</h1>
+            <p>{escape(payload['description'])}</p>
+            <div class="hero-actions" style="margin-top:18px">{color_label(payload['overallStatus'])}<span class="pill">Version {escape(payload['version'])}</span><span class="pill">Source {escape(payload['source'])}</span><span class="pill">JSON /status.json</span></div>
+          </div>
+          <aside class="hero-score surface-card" aria-label="Health score"><div class="score-ring" style="--score:{payload['healthScore']}"><div><strong>{payload['healthScore']}%</strong><span class="state-label badge-green">health</span></div></div><p>{summary['green']} passing · {summary['red']} failing · {summary['not_configured']} reserved</p></aside>
+        </section>
+        <section class="overview">
+          <article class="surface-card panel"><div><h2>Command overview</h2><p>Scan readiness first. Colored labels stay visible so state is not carried by text alone.</p></div><div class="metrics"><div class="metric"><span>Passing</span><strong>{summary['green']}</strong></div><div class="metric"><span>Failing</span><strong>{summary['red']}</strong></div><div class="metric"><span>Enabled</span><strong>{summary['enabled']}</strong></div><div class="metric"><span>Total</span><strong>{summary['total']}</strong></div></div><div class="chart-grid">{''.join(chart_rows)}</div></article>
+          <article class="surface-card panel"><div><h2>GitOps path</h2><p>Agent workbench view of the active Kubecrate reconciliation chain.</p></div><div class="pipeline"><span class="node">GitRepository</span><span class="node">Kustomization</span><span class="node">Flux Helm</span><span class="node">Sync Helm</span><span class="node">kubecrate-status</span></div><p class="footer-note">When any enabled check turns red, expand its card below for observed API output and next action.</p></article>
+        </section>
+        <section class="workbench">
+          <aside class="surface-card sidebar"><div><h2>Agent workbench</h2><p>Filter by status, then expand a check for evidence and remediation context.</p></div><div class="filters" aria-label="Check filters"><button class="filter-button active" data-filter="all" type="button">All</button><button class="filter-button" data-filter="green" type="button">Passing</button><button class="filter-button" data-filter="red" type="button">Failing</button><button class="filter-button" data-filter="not_configured" type="button">Reserved</button></div><p class="footer-note">Monitored resources are configured through the kubecrate-status-config ConfigMap so the app can follow Kubecrate into any cluster.</p></aside>
+          <section class="checks" aria-label="Kubecrate status checks">{''.join(cards)}</section>
+        </section>
+        <p class="footer-note">Generated at {escape(payload['generatedAt'])}. UI hard rule: shadcn/ui framework/component language with shadcn chart-module patterns for graphs and interactive overview modules. Cluster scope is deployment-agnostic and configured by ConfigMap.</p>
+      </main>
+      <script>
+        document.querySelectorAll('.filter-button').forEach((button) => button.addEventListener('click', () => {{
+          const filter = button.dataset.filter;
+          document.querySelectorAll('.filter-button').forEach((b) => b.classList.toggle('active', b === button));
+          document.querySelectorAll('.check-card').forEach((card) => {{ card.hidden = filter !== 'all' && card.dataset.state !== filter; }});
+        }}));
+        document.querySelectorAll('.card-toggle').forEach((button) => button.addEventListener('click', () => {{
+          const expanded = button.getAttribute('aria-expanded') === 'true';
+          button.setAttribute('aria-expanded', String(!expanded));
+          button.closest('.check-card').querySelector('.card-details').hidden = expanded;
+        }}));
+      </script>
+    </body>
+    </html>"""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ("/status.json", "/status"):
+                body = json.dumps(status_payload(), indent=2).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if self.path == "/logo.svg":
+                body = LOGO_SVG.encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "image/svg+xml; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if self.path in ("/", "/index.html"):
+                body = render_html(status_payload()).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            self.send_response(404); self.end_headers()
+        def log_message(self, format, *args):
+            print("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args), flush=True)
+
+    if __name__ == "__main__":
+        HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()

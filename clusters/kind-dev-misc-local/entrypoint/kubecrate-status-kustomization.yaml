@@ -1,0 +1,25 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kubecrate-status
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: kubecrate-status
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: application-services
+spec:
+  dependsOn:
+    - name: external-secrets-operator-smoke
+  interval: 1m0s
+  path: ./clusters/kind-dev-misc-local/application-services/kubecrate-status
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  wait: true
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: kubecrate-status
+      namespace: kubecrate-status

@@ -14,6 +14,7 @@ FLUX_SYNC_HELMRELEASE_NAME := flux-system-sync
 FLUX_NAMESPACE := flux-system
 FLUX_CHART := oci://ghcr.io/fluxcd-community/charts/flux2
 FLUX_CHART_VERSION := 2.18.4
+FLUX_SYNC_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync.yaml
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
@@ -55,10 +56,12 @@ kind-dev-misc-local-await-gitops:
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> expected_url="$$(python3 -c 'import re,sys; text=open(sys.argv[1]).read(); print(re.search(r"(?m)^    url: (\S+)", text).group(1))' "$(FLUX_SYNC_VALUES)")"; expected_branch="$$(python3 -c 'import re,sys; text=open(sys.argv[1]).read(); print(re.search(r"(?m)^      branch: (\S+)", text).group(1))' "$(FLUX_SYNC_VALUES)")"; live_url="$$(kubectl --context "$(KIND_CONTEXT)" get gitrepository "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.spec.url}' 2>/dev/null || true)"; live_branch="$$(kubectl --context "$(KIND_CONTEXT)" get gitrepository "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.spec.ref.branch}' 2>/dev/null || true)"; if [ "$${live_url}" != "$${expected_url}" ] || [ "$${live_branch}" != "$${expected_branch}" ]; then printf 'GitRepository/flux-system is not reconciling the reviewed implementation source.\nexpected url: %s\nlive url: %s\nexpected branch: %s\nlive branch: %s\n' "$${expected_url}" "$${live_url}" "$${expected_branch}" "$${live_branch}" >&2; exit 1; fi
 > flux --context "$(KIND_CONTEXT)" reconcile source git "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> for kustomization in external-secrets-operator external-secrets-operator-smoke kubecrate-status; do kubectl --context "$(KIND_CONTEXT)" get kustomizations.kustomize.toolkit.fluxcd.io/"$${kustomization}" -n "$(FLUX_NAMESPACE)" >/dev/null || { printf 'missing expected child Flux Kustomization: %s\n' "$${kustomization}" >&2; exit 1; }; done
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
 
 kind-dev-misc-local-evidence:
