@@ -1,7 +1,7 @@
 ---
 task_id: "0015"
 title: "Introduce External-Secrets Operator secret projection"
-status: "proposed"
+status: "started"
 depends_on: ["0011", "0014"]
 ---
 
@@ -20,3 +20,9 @@ Introduce External-Secrets Operator as the post-baseline secret projection platf
 - The kind-first local path should use the ESO Kubernetes provider or an equivalent local provider that proves projection from operator-supplied/local Kubernetes Secret material. The Fake provider may be useful for smoke/demo behavior, but it must not be the only proof if it does not validate the real local trust-material flow.
 - ESO remains a platform service under the two-axis model. If the OpenSpec proposal chooses any bootstrap installation behavior, it must explain why that lifecycle handling is required and how handoff into GitOps-managed operation is preserved.
 - Use `core-external-secrets-operator` as the dedicated namespace if ESO needs one, preserving the `core-<service-name>` rule.
+
+## OpenSpec
+
+Active OpenSpec change: `openspec/changes/introduce-external-secrets-operator-smoke/`.
+
+This change scopes the ESO work as a kind-first, GitOps-managed platform services smoke slice that proves projected Secret consumption through the kubecrate validation status application service.

@@ -4,3 +4,7 @@ namespace: kubecrate-status
 resources:
   - ./namespace.yaml
   - ../../../../application-services/kubecrate-status/base
+patches:
+  - path: ./status-config-eso-secret-loading.yaml
+  - path: ./deployment-eso-secret-volume-patch.yaml
+  - path: ./rbac-eso-secret-loading-patch.yaml

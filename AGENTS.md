@@ -59,6 +59,10 @@ Do not collapse these axes together in docs or tasks.
 - Each platform service slice should include an AI-runnable validation path with an end-to-end proof. Prefer a small application service fixture, such as nginx or a minimal Go/Node app, that consumes the platform service through its documented interface and proves the operator-visible outcome.
 - Platform service validation should prove real consumption, not only installation. Examples: a secret projection service is validated by an application service loading a projected Secret; ingress is validated by reaching an application service through the ingress path; certificate management is validated by a certificate issued and used for TLS; observability is validated by application or platform signals appearing in the expected collector or dashboard path.
 
+## Blocking behavior
+
+Do not block for human approval when an implementation step only applies already-approved, documented repository rules, such as standard platform-service base placement, cluster binding placement, documented namespace naming, or entrypoint wiring. In those cases, continue and leave clear evidence. Block only when there is a genuine product, architecture, scope, security, credential, validation, or undocumented convention decision.
+
 ## Repository placement rules
 
 - Docs and planning artifacts live under `docs/` until an installable slice requires runtime files.
@@ -83,6 +87,19 @@ Do not collapse these axes together in docs or tasks.
 - Before claiming success, verify the intended cluster context, expected resources, controller and workload health, readiness, or sync conditions, recent events or logs for blocking errors, and the operator-visible outcome.
 - If health is failing or unclear, do not claim success. Use `debug-kubernetes` for bounded diagnosis before proposing or applying fixes.
 - Keep deeper checks symptom-driven. Authorization or RBAC checks such as `kubectl auth can-i` are examples to use when evidence points to that layer, not a mandatory per-ServiceAccount checklist.
+
+## Kubecrate status app validation rules
+
+- Do not create service-specific status apps or dashboards for individual platform service slices.
+- Reflect platform service validation through the existing generic kubecrate status app by enabling or updating the relevant capability check, such as `secret-loading`, `ingress-reachability`, `certificate-tls-status`, `observability-signal-path`, or `policy-behavior`.
+- Preserve the generic status app contract: human-readable status UI plus machine-readable `/status.json` with stable check fields.
+- For each platform service implementation or validation slice, include a controlled red test before claiming completion:
+  - first prove the relevant status app check is green,
+  - intentionally break the relevant platform capability in a reversible, non-sensitive way,
+  - verify `/status.json` and the UI report the relevant check as non-green with useful diagnostics,
+  - restore the expected configuration,
+  - verify the check returns to green.
+- Red tests must not print or commit sensitive values, and must leave the live validation environment restored.
 
 ## Current phase guardrails
 

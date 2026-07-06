@@ -4,5 +4,7 @@ resources:
   - ./kubecrate-system-namespace.yaml
   - ./kubecrate-status-namespace.yaml
   - ../platform-services/flux
+  - ./external-secrets-operator-kustomization.yaml
+  - ./external-secrets-operator-smoke-kustomization.yaml
   - ./kubecrate-status-kustomization.yaml
   - ./kubecrate-reconciliation-marker.yaml
