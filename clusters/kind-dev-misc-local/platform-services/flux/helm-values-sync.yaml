@@ -5,7 +5,7 @@ gitRepository:
     url: ssh://git@github.com/42aei/kubecrate.git
     interval: 1m
     ref:
-      branch: wt/t_afaafb28
+      branch: wt/t_db63ed6e
 kustomization:
   spec:
     interval: 1m
