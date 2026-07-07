@@ -163,16 +163,26 @@ def validate_kustomize_roots() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-tool-check", action="store_true")
+    parser.add_argument(
+        "--check",
+        choices=("all", "yaml", "source-manifests", "kustomize"),
+        default="all",
+        help="Run one validation group. Use 'all' for the full local/CI suite.",
+    )
     args = parser.parse_args()
 
     if not args.skip_tool_check:
-        require_tool("kubeconform")
-        if not shutil.which("kubectl") and not shutil.which("kustomize"):
+        if args.check in {"all", "source-manifests", "kustomize"}:
+            require_tool("kubeconform")
+        if args.check in {"all", "kustomize"} and not shutil.which("kubectl") and not shutil.which("kustomize"):
             raise SystemExit("Required tool not found on PATH: kubectl or kustomize")
 
-    validate_yaml_parse()
-    validate_source_manifests()
-    validate_kustomize_roots()
+    if args.check in {"all", "yaml"}:
+        validate_yaml_parse()
+    if args.check in {"all", "source-manifests"}:
+        validate_source_manifests()
+    if args.check in {"all", "kustomize"}:
+        validate_kustomize_roots()
 
 
 if __name__ == "__main__":
