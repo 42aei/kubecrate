@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: cratecheck
     app.kubernetes.io/part-of: kubecrate
 rules:
-  # Discovery API access required by the dynamic client REST mapper
+  # CrateCheck uses Kubernetes discovery to map each configured resource apiVersion/kind to the concrete API resource path before issuing read-only get calls.
   - nonResourceURLs:
       - /api
       - /api/*
@@ -14,7 +14,7 @@ rules:
       - /apis/*
     verbs:
       - get
-  # Resources checked by the initial baseline StatusConfig
+  # Resources checked by the initial baseline check config
   - apiGroups:
       - ""
     resources:
@@ -35,4 +35,4 @@ rules:
       - get
   # Future platform service checks may require additional read verbs on resources
   # such as secrets, ingresses, certificates, or custom resources.
-  # Expand this ClusterRole incrementally as new checks are added to the StatusConfig.
+  # Expand this ClusterRole incrementally as new checks are added to the check config.

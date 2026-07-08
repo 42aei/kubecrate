@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Validate CrateCheck application service manifests and StatusConfig.
+"""Validate CrateCheck application service manifests and check config.
 
 Usage:
     python3 tests/validate-cratecheck.py
     python3 tests/validate-cratecheck.py --render  # also run kustomize build + kubeconform
 
 Validates:
-    1. StatusConfig YAML parses and has required fields
+    1. check YAML parses and has required fields
     2. Kustomize build succeeds for base, cluster binding, and entrypoint
     3. kubeconform validates generated manifests (optional, requires kubeconform)
     4. RBAC rules are present and minimal
@@ -42,7 +42,7 @@ def check(description: str, ok: bool, detail: str = "") -> bool:
 
 
 def validate_status_config() -> bool:
-    """Validate the CrateCheck StatusConfig YAML in the ConfigMap."""
+    """Validate the CrateCheck check YAML in the ConfigMap."""
     configmap_path = BASE_DIR / "configmap.yaml"
     with open(configmap_path) as f:
         cm = yaml.safe_load(f)
@@ -55,25 +55,25 @@ def validate_status_config() -> bool:
 
     all_ok = True
     all_ok &= check(
-        "apiVersion is status.cratecheck.io/v1alpha1",
-        status_cfg.get("apiVersion") == "status.cratecheck.io/v1alpha1",
+        "no CRD-shaped apiVersion field",
+        "apiVersion" not in status_cfg,
     )
     all_ok &= check(
-        "kind is StatusConfig",
-        status_cfg.get("kind") == "StatusConfig",
+        "no CRD-shaped kind field",
+        "kind" not in status_cfg,
     )
     all_ok &= check(
-        "spec.interval is non-empty",
-        bool(status_cfg.get("spec", {}).get("interval")),
+        "interval is non-empty",
+        bool(status_cfg.get("interval")),
     )
-    checks = status_cfg.get("spec", {}).get("checks", [])
+    checks = status_cfg.get("checks", [])
     all_ok &= check(
         "at least one check defined",
         len(checks) >= 1,
         f"found {len(checks)}",
     )
     for i, c in enumerate(checks):
-        prefix = f"spec.checks[{i}]"
+        prefix = f"checks[{i}]"
         check_ids: list[str] = []
         for field in ("id", "name", "severity", "resource", "expression"):
             all_ok &= check(
@@ -205,7 +205,7 @@ def main():
     parser.add_argument("--render", action="store_true", help="Run kustomize build + kubeconform")
     args = parser.parse_args()
 
-    print("=== CrateCheck StatusConfig validation ===")
+    print("=== CrateCheck check config validation ===")
     cfg_ok = validate_status_config()
 
     print("\n=== CrateCheck RBAC validation ===")
