@@ -8,7 +8,7 @@ This change defines that validation application service before ESO, ingress, cer
 
 - Introduce a reusable application service validation status app for the kind-first local path, consuming the external CrateCheck image (`ghcr.io/42aei/cratecheck:main`) rather than embedding application runtime code.
 - Define the app as an application service fixture, not a platform service.
-- Deploy CrateCheck with a declarative YAML StatusConfig (CEL-based checks against live Kubernetes resources) stored in a ConfigMap. No Python, JS, Go, or runtime code in ConfigMaps.
+- Deploy CrateCheck with a plain declarative YAML check config (CEL-based checks against live Kubernetes resources) stored in a ConfigMap. No Python, JS, Go, or runtime code in ConfigMaps.
 - Provide a polished human-readable status UI (`/status`) and a machine-readable status JSON endpoint (`/status.json`) served by CrateCheck.
 - Define initial baseline checks (CrateCheck deployment readiness, namespace existence, ConfigMap presence) with future check categories for secret loading, ingress reachability, certificate/TLS status, observability signal path, and policy behavior.
 - Add read-only Kubernetes RBAC (ClusterRole `cratecheck-readonly`) scoped to initial check resources plus discovery API access, documented for incremental expansion.
