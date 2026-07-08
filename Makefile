@@ -3,11 +3,12 @@
 SHELL := /bin/sh
 
 KIND_CLUSTER_NAME ?= kind-dev-misc-local
-KIND_CONTEXT := kind-$(KIND_CLUSTER_NAME)
+KIND_CONTEXT = kind-$(KIND_CLUSTER_NAME)
 HELM_CONTEXT_ARGS := --kube-context "$(KIND_CONTEXT)"
 KIND_CONFIG := kind/config.yaml
 KIND_UNIQUE_PREFIX ?= kubecrate-qa
 KIND_UNIQUE_CLUSTER_NAME := $(KIND_UNIQUE_PREFIX)-$(shell date +%s)-$(shell LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
+KIND_UNIQUE_STATE_FILE ?= .tmp/kind-unique-cluster-name
 ENTRYPOINT_ROOT := clusters/$(KIND_CLUSTER_NAME)/entrypoint
 FLUX_PLATFORM_SERVICE_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services/flux
 FLUX_HELM_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values.yaml
@@ -19,7 +20,7 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-delete kind-unique-smoke
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -40,11 +41,21 @@ kind-dev-misc-local-delete:
 
 kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
 kind-unique-create: kind-dev-misc-local-create
-> printf '%s\n' "$(KIND_CLUSTER_NAME)"
+> mkdir -p "$$(dirname "$(KIND_UNIQUE_STATE_FILE)")"
+> printf '%s\n' "$(KIND_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
+> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_CLUSTER_NAME)" "$(KIND_CLUSTER_NAME)"
+
+kind-unique-current:
+> test -s "$(KIND_UNIQUE_STATE_FILE)" || { printf 'no kind unique cluster state found at %s\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }
+> sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)"
 
 kind-unique-delete:
-> test -n "$(KIND_CLUSTER_NAME)" || { printf 'KIND_CLUSTER_NAME is required\n' >&2; exit 1; }
-> kind delete cluster --name "$(KIND_CLUSTER_NAME)"
+> cluster=""; \
+> if [ "$(origin KIND_CLUSTER_NAME)" = "command line" ] || [ "$(origin KIND_CLUSTER_NAME)" = "environment" ] || [ "$(origin KIND_CLUSTER_NAME)" = "environment override" ]; then cluster="$(KIND_CLUSTER_NAME)"; \
+> elif [ -s "$(KIND_UNIQUE_STATE_FILE)" ]; then cluster="$$(sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)")"; fi; \
+> test -n "$${cluster}" || { printf 'KIND_CLUSTER_NAME is required or %s must contain a cluster name\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }; \
+> kind delete cluster --name "$${cluster}"; \
+> if [ -s "$(KIND_UNIQUE_STATE_FILE)" ] && [ "$$(sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)")" = "$${cluster}" ]; then rm -f "$(KIND_UNIQUE_STATE_FILE)"; fi
 
 kind-unique-smoke: kind-dev-misc-local-check-prereqs
 > cluster="$(KIND_UNIQUE_CLUSTER_NAME)"; \
