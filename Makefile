@@ -2,10 +2,12 @@
 
 SHELL := /bin/sh
 
-KIND_CLUSTER_NAME := kind-dev-misc-local
+KIND_CLUSTER_NAME ?= kind-dev-misc-local
 KIND_CONTEXT := kind-$(KIND_CLUSTER_NAME)
 HELM_CONTEXT_ARGS := --kube-context "$(KIND_CONTEXT)"
 KIND_CONFIG := kind/config.yaml
+KIND_UNIQUE_PREFIX ?= kubecrate-qa
+KIND_UNIQUE_CLUSTER_NAME := $(KIND_UNIQUE_PREFIX)-$(shell date +%s)-$(shell LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
 ENTRYPOINT_ROOT := clusters/$(KIND_CLUSTER_NAME)/entrypoint
 FLUX_PLATFORM_SERVICE_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services/flux
 FLUX_HELM_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values.yaml
@@ -17,7 +19,7 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-delete kind-unique-smoke
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -35,6 +37,26 @@ kind-dev-misc-local-create: kind-dev-misc-local-check-prereqs
 
 kind-dev-misc-local-delete:
 > kind delete cluster --name "$(KIND_CLUSTER_NAME)"
+
+kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
+kind-unique-create: kind-dev-misc-local-create
+> printf '%s\n' "$(KIND_CLUSTER_NAME)"
+
+kind-unique-delete:
+> test -n "$(KIND_CLUSTER_NAME)" || { printf 'KIND_CLUSTER_NAME is required\n' >&2; exit 1; }
+> kind delete cluster --name "$(KIND_CLUSTER_NAME)"
+
+kind-unique-smoke: kind-dev-misc-local-check-prereqs
+> cluster="$(KIND_UNIQUE_CLUSTER_NAME)"; \
+> cleanup() { kind delete cluster --name "$${cluster}" >/dev/null 2>&1 || true; }; \
+> trap cleanup EXIT INT TERM; \
+> $(MAKE) kind-dev-misc-local-create KIND_CLUSTER_NAME="$${cluster}"; \
+> kubectl --context "kind-$${cluster}" get nodes; \
+> kubectl --context "kind-$${cluster}" wait --for=condition=Ready node --all --timeout=180s; \
+> cleanup; \
+> trap - EXIT INT TERM; \
+> if kind get clusters | grep -Fx "$${cluster}" >/dev/null; then printf 'cluster cleanup failed: %s\n' "$${cluster}" >&2; exit 1; fi; \
+> printf 'created and deleted disposable kind cluster: %s\n' "$${cluster}"
 
 kind-dev-misc-local-recreate:
 > $(MAKE) kind-dev-misc-local-delete
