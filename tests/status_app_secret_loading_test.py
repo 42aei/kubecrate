@@ -9,9 +9,12 @@ logic can be validated without a live cluster.
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import types
 import unittest
+
+import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 APP_CONFIG = REPO_ROOT / "application-services/kubecrate-status/base/app-config.yaml"
@@ -251,12 +254,37 @@ class ManifestAlignmentTest(unittest.TestCase):
             "/apis/helm.toolkit.fluxcd.io/v2/namespaces/core-external-secrets-operator/helmreleases/external-secrets",
         )
 
-    def test_eso_status_wiring_lives_in_kind_binding_not_generic_base(self):
-        kustomization_text = KIND_STATUS_KUSTOMIZATION.read_text(encoding="utf-8")
+    def test_eso_status_rbac_patch_preserves_base_reader_rules(self):
+        rendered = subprocess.check_output(
+            ["kubectl", "kustomize", str(KIND_STATUS_KUSTOMIZATION.parent)],
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(rendered) if doc]
+        reader = next(
+            doc for doc in documents
+            if doc.get("kind") == "ClusterRole" and doc.get("metadata", {}).get("name") == "kubecrate-status-reader"
+        )
+        rules = reader["rules"]
+        rule_keys = {
+            (
+                tuple(rule.get("apiGroups", [])),
+                tuple(rule.get("resources", [])),
+                tuple(rule.get("resourceNames", [])),
+                tuple(rule.get("verbs", [])),
+            )
+            for rule in rules
+        }
 
-        self.assertIn("status-config-eso-secret-loading.yaml", kustomization_text)
-        self.assertIn("deployment-eso-secret-volume-patch.yaml", kustomization_text)
-        self.assertIn("rbac-eso-secret-loading-patch.yaml", kustomization_text)
+        expected_rules = {
+            (("",), ("services", "endpoints"), (), ("get",)),
+            (("apps",), ("deployments",), (), ("get",)),
+            (("source.toolkit.fluxcd.io",), ("gitrepositories",), (), ("get",)),
+            (("kustomize.toolkit.fluxcd.io",), ("kustomizations",), (), ("get",)),
+            (("helm.toolkit.fluxcd.io",), ("helmreleases",), (), ("get",)),
+            (("",), ("secrets",), ("eso-smoke-projected",), ("get",)),
+            (("external-secrets.io",), ("secretstores", "externalsecrets"), (), ("get",)),
+        }
+        self.assertTrue(expected_rules.issubset(rule_keys), rule_keys)
 
 
 if __name__ == "__main__":
