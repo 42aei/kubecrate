@@ -59,7 +59,7 @@ data:
           name: cratecheck-status-config
         expression: >
           has(object.data) &&
-          has(object.data['status.yaml']) &&
+          'status.yaml' in object.data &&
           object.data['status.yaml'] != ''
         successMessage: check ConfigMap is present and non-empty
         failureMessage: check ConfigMap is missing or empty
