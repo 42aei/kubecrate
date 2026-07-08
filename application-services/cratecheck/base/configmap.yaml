@@ -8,18 +8,7 @@ metadata:
     app.kubernetes.io/part-of: kubecrate
 data:
   status.yaml: |
-    # CrateCheck check config for the Kubecrate kind-first local path.
-    # This ConfigMap contains declarative YAML check definitions only; no runtime code.
-    #
-    # Future platform service slices can add checks for:
-    #   - secret loading (External-Secrets Operator)
-    #   - ingress reachability (Envoy Gateway)
-    #   - certificate/TLS status (cert-manager)
-    #   - observability signal path
-    #   - policy behavior (Kyverno)
-    #
-    # Add new checks to the checks list when the corresponding platform
-    # service is introduced and the ClusterRole is expanded accordingly.
+    # Design and extension notes: openspec/changes/create-validation-status-app/design.md
     interval: 30s
     checks:
       - id: cratecheck-deployment-ready
