@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: kubecrate-system
+  name: cratecheck
   labels:
-    app.kubernetes.io/name: kubecrate-system
+    app.kubernetes.io/name: cratecheck
     app.kubernetes.io/part-of: kubecrate

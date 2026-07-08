@@ -6,12 +6,13 @@ This change defines that validation application service before ESO, ingress, cer
 
 ## What Changes
 
-- Introduce a reusable application service validation status app for the kind-first local path.
+- Introduce a reusable application service validation status app for the kind-first local path, consuming the external CrateCheck image (`ghcr.io/42aei/cratecheck:main`) rather than embedding application runtime code.
 - Define the app as an application service fixture, not a platform service.
-- Define a polished human-readable status UI and a machine-readable status JSON endpoint.
-- Define a status-check contract where each check reports status, the capability it validates, the platform or Kubernetes area it exercises, and troubleshooting guidance for non-green states.
-- Define initial check categories that future platform service slices can enable: base app health, secret loading, ingress reachability, certificate/TLS status, observability signal path, and policy behavior.
-- Define the minimum runtime placement for the fixture only for this approved slice, without creating unrelated application service skeletons.
+- Deploy CrateCheck with a declarative YAML StatusConfig (CEL-based checks against live Kubernetes resources) stored in a ConfigMap. No Python, JS, Go, or runtime code in ConfigMaps.
+- Provide a polished human-readable status UI (`/status`) and a machine-readable status JSON endpoint (`/status.json`) served by CrateCheck.
+- Define initial baseline checks (CrateCheck deployment readiness, namespace existence, ConfigMap presence) with future check categories for secret loading, ingress reachability, certificate/TLS status, observability signal path, and policy behavior.
+- Add read-only Kubernetes RBAC (ClusterRole `cratecheck-readonly`) scoped to initial check resources plus discovery API access, documented for incremental expansion.
+- Define the runtime placement: `application-services/cratecheck/base/` for reusable base, `clusters/kind-dev-misc-local/application-services/cratecheck/` for cluster binding, wired through `clusters/kind-dev-misc-local/entrypoint/` for GitOps-managed operation.
 - Define AI-runnable validation commands that can fetch the status JSON and assert expected checks for the capabilities enabled by this slice.
 
 ## Capabilities

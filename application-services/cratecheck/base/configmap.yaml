@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cratecheck-status-config
+  namespace: cratecheck
+  labels:
+    app.kubernetes.io/name: cratecheck
+    app.kubernetes.io/part-of: kubecrate
+data:
+  status.yaml: |
+    # CrateCheck StatusConfig for Kubecrate kind-first local path.
+    # This ConfigMap contains YAML check definitions only; no runtime code.
+    #
+    # Future platform service slices can add checks for:
+    #   - secret loading (External-Secrets Operator)
+    #   - ingress reachability (Envoy Gateway)
+    #   - certificate/TLS status (cert-manager)
+    #   - observability signal path
+    #   - policy behavior (Kyverno)
+    #
+    # Add new checks to the spec.checks list when the corresponding platform
+    # service is introduced and the ClusterRole is expanded accordingly.
+    apiVersion: status.cratecheck.io/v1alpha1
+    kind: StatusConfig
+    metadata:
+      name: kubecrate-status
+    spec:
+      interval: 30s
+      checks:
+        - id: cratecheck-deployment-ready
+          name: CrateCheck deployment ready
+          severity: red
+          resource:
+            apiVersion: apps/v1
+            kind: Deployment
+            namespace: cratecheck
+            name: cratecheck
+          expression: >
+            has(object.status) &&
+            object.status.observedGeneration >= object.metadata.generation &&
+            object.status.availableReplicas == object.spec.replicas
+          successMessage: CrateCheck deployment is fully available
+          failureMessage: CrateCheck deployment is not fully available
+        - id: cratecheck-namespace-exists
+          name: CrateCheck namespace exists
+          severity: red
+          resource:
+            apiVersion: v1
+            kind: Namespace
+            namespace: ""
+            name: cratecheck
+          expression: >
+            has(object.metadata) &&
+            object.metadata.name == 'cratecheck'
+          successMessage: cratecheck namespace exists
+          failureMessage: cratecheck namespace not found
+        - id: cratecheck-configmap-present
+          name: CrateCheck StatusConfig ConfigMap present
+          severity: red
+          resource:
+            apiVersion: v1
+            kind: ConfigMap
+            namespace: cratecheck
+            name: cratecheck-status-config
+          expression: >
+            has(object.data) &&
+            has(object.data['status.yaml']) &&
+            object.data['status.yaml'] != ''
+          successMessage: StatusConfig ConfigMap is present and non-empty
+          failureMessage: StatusConfig ConfigMap is missing or empty
