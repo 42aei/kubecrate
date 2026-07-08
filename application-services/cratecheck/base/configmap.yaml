@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: kubecrate
 data:
   status.yaml: |
-    # Design and extension notes: openspec/changes/create-validation-status-app/design.md
+    # CrateCheck config contract: https://github.com/42aei/cratecheck/blob/main/docs/kubernetes/README.md#adapting-for-another-service
     interval: 30s
     checks:
       - id: cratecheck-deployment-ready
