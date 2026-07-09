@@ -95,6 +95,23 @@ Do not collapse these axes together in docs or tasks.
 - If health is failing or unclear, do not claim success. Use `debug-kubernetes` for bounded diagnosis before proposing or applying fixes.
 - Keep deeper checks symptom-driven. Authorization or RBAC checks such as `kubectl auth can-i` are examples to use when evidence points to that layer, not a mandatory per-ServiceAccount checklist.
 
+## Blocking behavior
+
+Do not block for human approval when an implementation step only applies already-approved, documented repository rules, such as standard platform-service base placement, cluster binding placement, documented namespace naming, or entrypoint wiring. In those cases, continue and leave clear evidence. Block only when there is a genuine product, architecture, scope, security, credential, validation, or undocumented convention decision.
+
+## CrateCheck validation rules
+
+- Do not create service-specific status apps or dashboards for individual platform service slices.
+- Reflect platform service validation through CrateCheck by adding new checks to CrateCheck's check configuration and extending its ClusterRole as needed.
+- Preserve CrateCheck's config contract: check id, name, severity, resource, expression, successMessage, failureMessage.
+- For each platform service implementation or validation slice, include a controlled red test before claiming completion:
+  - first prove the relevant CrateCheck checks are green,
+  - intentionally break the relevant platform capability in a reversible, non-sensitive way,
+  - verify CrateCheck reports the affected checks as non-green with useful diagnostics,
+  - restore the expected configuration,
+  - verify the checks return to green.
+- Red tests must not print or commit sensitive values, and must leave the live validation environment restored.
+
 ## Current phase guardrails
 
 For this architecture and planning pass:

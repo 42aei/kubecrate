@@ -92,6 +92,19 @@ def validate_status_config() -> bool:
         "no duplicate check IDs",
         len(ids) == len(set(ids)),
     )
+    # Verify ESO checks are present
+    eso_check_ids = {
+        "eso-helmrelease-ready",
+        "eso-secretstore-ready",
+        "eso-externalsecret-ready",
+        "eso-projected-secret-exists",
+    }
+    present_eso_ids = eso_check_ids & set(ids)
+    all_ok &= check(
+        "ESO check IDs are present",
+        present_eso_ids == eso_check_ids,
+        f"missing: {eso_check_ids - set(ids)}",
+    )
     return all_ok
 
 
@@ -119,6 +132,26 @@ def validate_rbac() -> bool:
     all_ok &= check(
         "ClusterRole includes discovery API access",
         has_discovery,
+    )
+    # Verify ESO resource rules are present
+    eso_api_groups = set()
+    eso_resources = set()
+    for r in rules:
+        for g in r.get("apiGroups", []):
+            eso_api_groups.add(g)
+        for res in r.get("resources", []):
+            eso_resources.add(res)
+    all_ok &= check(
+        "ClusterRole grants helmreleases read access",
+        "helm.toolkit.fluxcd.io" in eso_api_groups,
+    )
+    all_ok &= check(
+        "ClusterRole grants external-secrets read access",
+        "external-secrets.io" in eso_api_groups,
+    )
+    all_ok &= check(
+        "ClusterRole grants secrets read access",
+        "secrets" in eso_resources,
     )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"

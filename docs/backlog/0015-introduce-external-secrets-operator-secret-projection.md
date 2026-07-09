@@ -1,8 +1,9 @@
 ---
 task_id: "0015"
 title: "Introduce External-Secrets Operator secret projection"
-status: "proposed"
-depends_on: ["0011", "0014"]
+status: "started"
+depends_on: ["0011"]
+openspec: "openspec/changes/introduce-external-secrets-operator-smoke/"
 ---
 
 ## Goal
