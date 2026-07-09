@@ -4,3 +4,6 @@ resources:
   - ./kubecrate-system-namespace.yaml
   - ../platform-services/flux
   - ./kubecrate-reconciliation-marker.yaml
+  - ./envoy-gateway-kustomization.yaml
+  - ./envoy-gateway-smoke-kustomization.yaml
+  - ./cratecheck-kustomization.yaml
