@@ -27,11 +27,13 @@ Backlog 0014 defines the fixture: a deliberately small but polished status panel
 
 ## Decisions
 
-### Implement a small application service rather than static nginx
+### Consume external CrateCheck image rather than embedding app code
 
-The validation fixture should be a small application service with explicit status logic rather than a static nginx page. A minimal Go or Node app is acceptable; the implementation change should choose the smallest maintainable option available in the repo context.
+The validation fixture consumes the external CrateCheck image (`ghcr.io/42aei/cratecheck:main`) as a Deployment. CrateCheck is a small Go binary that evaluates declarative CEL-based checks against live Kubernetes resources and serves `/status.json` (JSON) and `/status` (HTML UI).
 
-Static nginx is rejected as the default because the fixture needs a structured JSON contract, per-check explanations, and future capability checks that would become awkward as static content.
+This avoids embedding application runtime code in ConfigMaps or maintaining in-repo app source for what is essentially a validation fixture. The ConfigMap (`cratecheck-status-config`) carries only plain YAML check definitions — no Python, JS, Go, or runtime code.
+
+In-repo app implementation is rejected because CrateCheck already provides the required status model, CEL evaluation engine, Kubernetes dynamic client, HTTP server, and HTML UI. Maintaining a parallel implementation would duplicate effort without adding value.
 
 ### Status model uses explicit check states
 
@@ -52,9 +54,9 @@ This avoids coupling 0014 to the platform service tasks that depend on it.
 
 ### Placement follows application service layout
 
-The validation app is an application service because it consumes platform services. Its reusable definition should live under `application-services/<service>/base/`, and its kind-first cluster binding should live under `clusters/kind-dev-misc-local/application-services/<service>/`.
+CrateCheck is an application service because it consumes platform services. Its reusable definition lives under `application-services/cratecheck/base/` and its kind-first cluster binding under `clusters/kind-dev-misc-local/application-services/cratecheck/`. It is wired into GitOps-managed operation through `clusters/kind-dev-misc-local/entrypoint/`.
 
-This change is allowed to introduce those concrete paths only for the validation app. It should not create broad empty application-services skeletons.
+This change introduces those concrete paths only for the CrateCheck validation app. It does not create broad empty application-services skeletons.
 
 ### GitOps-managed operation owns runtime reconciliation
 

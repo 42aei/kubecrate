@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cratecheck-status-config
+  namespace: cratecheck
+  labels:
+    app.kubernetes.io/name: cratecheck
+    app.kubernetes.io/part-of: kubecrate
+data:
+  status.yaml: |
+    # CrateCheck config contract: https://github.com/42aei/cratecheck/blob/main/docs/kubernetes/README.md#adapting-for-another-service
+    interval: 30s
+    checks:
+      - id: cratecheck-deployment-ready
+        name: CrateCheck deployment ready
+        severity: red
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: cratecheck
+          name: cratecheck
+        expression: >
+          has(object.status) &&
+          object.status.observedGeneration >= object.metadata.generation &&
+          object.status.availableReplicas == object.spec.replicas
+        successMessage: CrateCheck deployment is fully available
+        failureMessage: CrateCheck deployment is not fully available
+      - id: cratecheck-namespace-exists
+        name: CrateCheck namespace exists
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          namespace: ""
+          name: cratecheck
+        expression: >
+          has(object.metadata) &&
+          object.metadata.name == 'cratecheck'
+        successMessage: cratecheck namespace exists
+        failureMessage: cratecheck namespace not found
+      - id: cratecheck-configmap-present
+        name: CrateCheck check ConfigMap present
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          namespace: cratecheck
+          name: cratecheck-status-config
+        expression: >
+          has(object.data) &&
+          'status.yaml' in object.data &&
+          object.data['status.yaml'] != ''
+        successMessage: check ConfigMap is present and non-empty
+        failureMessage: check ConfigMap is missing or empty
