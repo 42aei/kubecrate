@@ -144,10 +144,11 @@ def validate_deployment() -> bool:
         len(containers) >= 1,
     )
     container = containers[0]
+    image = container.get("image", "")
     all_ok &= check(
-        "Container references ghcr.io/42aei/cratecheck image",
-        "ghcr.io/42aei/cratecheck" in container.get("image", ""),
-        container.get("image", "MISSING"),
+        "Container references CrateCheck v1 semantic image tag",
+        image == "ghcr.io/42aei/cratecheck:v1",
+        image or "MISSING",
     )
     all_ok &= check(
         "No imagePullSecrets in pod spec",

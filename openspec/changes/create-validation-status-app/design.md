@@ -29,7 +29,7 @@ Backlog 0014 defines the fixture: a deliberately small but polished status panel
 
 ### Consume external CrateCheck image rather than embedding app code
 
-The validation fixture consumes the external CrateCheck image (`ghcr.io/42aei/cratecheck:main`) as a Deployment. CrateCheck is a small Go binary that evaluates declarative CEL-based checks against live Kubernetes resources and serves `/status.json` (JSON) and `/status` (HTML UI).
+The validation fixture consumes the external CrateCheck image (`ghcr.io/42aei/cratecheck:v1`) as a Deployment. CrateCheck is a small Go binary that evaluates declarative CEL-based checks against live Kubernetes resources and serves `/status.json` (JSON) and `/status` (HTML UI).
 
 This avoids embedding application runtime code in ConfigMaps or maintaining in-repo app source for what is essentially a validation fixture. The ConfigMap (`cratecheck-status-config`) carries only plain YAML check definitions — no Python, JS, Go, or runtime code.
 

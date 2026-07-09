@@ -20,7 +20,7 @@ spec:
       serviceAccountName: cratecheck
       containers:
         - name: cratecheck
-          image: ghcr.io/42aei/cratecheck:main
+          image: ghcr.io/42aei/cratecheck:v1
           imagePullPolicy: Always
           ports:
             - name: http
