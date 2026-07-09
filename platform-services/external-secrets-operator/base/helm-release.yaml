@@ -1,0 +1,31 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-secrets
+  namespace: core-external-secrets-operator
+  labels:
+    app.kubernetes.io/name: external-secrets-operator
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+spec:
+  interval: 30m0s
+  releaseName: external-secrets
+  targetNamespace: core-external-secrets-operator
+  timeout: 5m0s
+  chart:
+    spec:
+      chart: external-secrets
+      sourceRef:
+        kind: HelmRepository
+        name: external-secrets
+        namespace: core-external-secrets-operator
+      version: 2.7.0
+  install:
+    createNamespace: false
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  valuesFrom:
+    - kind: ConfigMap
+      name: external-secrets-operator-values
+      valuesKey: values.yaml
