@@ -21,10 +21,12 @@ Kubecrate SHALL configure the managed Envoy proxy Service as NodePort via an `En
 - **THEN** `spec.provider.kubernetes.envoyService.type` is `NodePort`
 - **AND** the GatewayClass references the EnvoyProxy via `parametersRef`
 
-#### Scenario: Gateway listener port is exposed via NodePort
+#### Scenario: Gateway listener port is exposed via deterministic NodePort
 - **WHEN** the smoke Gateway has an HTTP listener on port 80
-- **THEN** the Envoy proxy Service maps that listener to a Kubernetes NodePort
-- **AND** the operator can verify the NodePort assignment and reconcile it with the kind config port mapping
+- **THEN** the Envoy proxy Service maps that listener to Kubernetes NodePort 30080
+- **AND** the `EnvoyProxy` resource SHALL include the `port` field (set to 80) in its `envoyService.patch` alongside `nodePort: 30080` so the patch is valid under Kubernetes Service strategic merge (which uses `port` as the merge key)
+- **AND** the operator SHALL verify that the Envoy proxy Service has `nodePort: 30080` on the HTTP listener port
+- **AND** the NodePort assignment SHALL NOT rely on dynamic or reconciliation-time assignment
 
 ### Requirement: Smoke Gateway API resources route traffic to CrateCheck
 Kubecrate SHALL define Gateway API resources that route HTTP traffic to the CrateCheck application service. The smoke resources SHALL be reconciled by a dedicated Flux Kustomization that depends on the Envoy Gateway platform service Kustomization.

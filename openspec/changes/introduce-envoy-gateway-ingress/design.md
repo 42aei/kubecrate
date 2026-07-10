@@ -34,7 +34,7 @@ The Helm chart `gateway-helm` version `v1.4.2` is used with the Kubernetes provi
 
 The kind `config.yaml` maps host port 10080 to container port 30080. For ingress traffic to reach the cluster through this mapping, the Envoy proxy Service must be of type `NodePort` on port 30080.
 
-An `EnvoyProxy` resource (CRD `gateway.envoyproxy.io/v1alpha1`) configures the managed proxy infrastructure. The smoke `GatewayClass` references the `EnvoyProxy` via `parametersRef`. The `EnvoyProxy` sets `provider.kubernetes.envoyService.type: NodePort` and uses `envoyService.patch` to declaratively pin the Service `nodePort` to 30080, matching the kind config mapping.
+An `EnvoyProxy` resource (CRD `gateway.envoyproxy.io/v1alpha1`) configures the managed proxy infrastructure. The smoke `GatewayClass` references the `EnvoyProxy` via `parametersRef`. The `EnvoyProxy` sets `provider.kubernetes.envoyService.type: NodePort` and uses `envoyService.patch` to declaratively pin the Service `nodePort` to 30080, matching the kind config mapping. The patch targets the Service `spec.ports` entry for the HTTP listener and MUST include the `port` field (set to 80, matching the Gateway listener port) as the Kubernetes Service strategic merge key; without it the patch is ambiguous and a strategic-merge `kubectl patch` would fail with `does not contain declared merge key: port`.
 
 ### Smoke Gateway API resources
 
@@ -81,7 +81,22 @@ The committed `helm-values-sync.yaml` pins the Flux sync branch to the canonical
 make kind-dev-misc-local-bootstrap FLUX_GIT_BRANCH_OVERRIDE=kubecrate/cratecheck-restack-envoy
 ```
 
-The `kind-dev-misc-local-bootstrap` target detects the override and patches the `flux-sync-values` ConfigMap after applying the entrypoint kustomization, before the `flux-system-sync` HelmRelease reconciles. This ensures the GitRepository is created with the QA branch from the start.
+The bootstrap target uses `scripts/render-flux-sync-override.py` to generate a `flux-sync-values-override` ConfigMap that sets only the `gitRepository.spec.ref.branch` field. This ConfigMap is applied before Flux reconciliation begins so the override is present from the start — no post-apply imperative `yq` patch, no race with helm-controller.
+
+The sync HelmRelease (`flux-system-sync`) declares the override via an optional `valuesFrom` entry:
+
+```yaml
+valuesFrom:
+  - kind: ConfigMap
+    name: flux-sync-values
+    valuesKey: values.yaml
+  - kind: ConfigMap
+    name: flux-sync-values-override
+    valuesKey: values.yaml
+    optional: true
+```
+
+Because the override is `optional: true`, the HelmRelease reconciles normally when no override is configured. The committed `helm-values-sync.yaml` remains unchanged as the canonical branch reference; the override is applied only at bootstrap time and is not part of GitOps-managed configuration, so root reconciliation cannot restore the canonical branch during a QA run.
 
 The `kind-dev-misc-local-await-gitops` target also honours `FLUX_GIT_BRANCH_OVERRIDE` when verifying the expected GitRepository branch, so downstream gitops readiness checks remain consistent.
 

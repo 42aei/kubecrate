@@ -115,6 +115,8 @@ data:
             p.parentRef.name == 'kubecrate-envoy-smoke' &&
             p.parentRef.namespace == 'core-envoy-gateway' &&
             p.parentRef.sectionName == 'http' &&
+            has(p.controllerName) &&
+            p.controllerName == 'gateway.envoyproxy.io/gatewayclass-controller' &&
             has(p.conditions) &&
             p.conditions.exists(c,
               c.type == 'Accepted' && c.status == 'True') &&

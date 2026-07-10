@@ -36,3 +36,4 @@
 - [x] 6.1 Create `openspec/changes/introduce-envoy-gateway-ingress/` with proposal, design, tasks, and spec.
 - [x] 6.2 Update backlog 0016 status from `proposed` to `started` with reference to this OpenSpec change.
 - [x] 6.3 Ensure no reference to obsolete `kubecrate-status`; all references use CrateCheck.
+- [ ] 6.4 Obtain explicit human approval for this OpenSpec change. AGENTS.md currently only authorizes `create-first-installable-slice` as a proposal-approved change (AGENTS.md line 93). This `introduce-envoy-gateway-ingress` change was created alongside implementation and has no separate approval evidence. The repository maintainer (Christian) must explicitly approve this proposal before the runtime implementation is authorized per AGENTS.md line 3. Until then, task 6.1-6.3 are technical preparation only.
