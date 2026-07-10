@@ -167,6 +167,39 @@ def validate_deployment() -> bool:
     return all_ok
 
 
+def validate_cel_contracts() -> bool:
+    """Validate CEL expression contracts for known checks.
+
+    - envoy-httproute-ready MUST require both Accepted=True and ResolvedRefs=True
+      so that the documented red test (backend port 9999) is detected.
+    """
+    configmap_path = BASE_DIR / "configmap.yaml"
+    with open(configmap_path) as f:
+        cm = yaml.safe_load(f)
+    status_yaml = cm["data"]["status.yaml"]
+    status_cfg = yaml.safe_load(status_yaml)
+    checks_by_id = {c["id"]: c for c in status_cfg.get("checks", [])}
+
+    all_ok = True
+
+    envoy_route = checks_by_id.get("envoy-httproute-ready", {})
+    expr = envoy_route.get("expression", "")
+    all_ok &= check(
+        "envoy-httproute-ready expression references ResolvedRefs",
+        "ResolvedRefs" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready expression references Accepted",
+        "Accepted" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready expression checks status == 'True' for both conditions",
+        expr.count("status == 'True'") >= 2,
+    )
+
+    return all_ok
+
+
 def run_kustomize_build(path: Path, label: str) -> bool:
     """Run kustomize build and return success."""
     result = subprocess.run(
@@ -214,6 +247,9 @@ def main():
 
     print("\n=== CrateCheck Deployment validation ===")
     deploy_ok = validate_deployment()
+
+    print("\n=== CrateCheck CEL contract validation ===")
+    cel_ok = validate_cel_contracts()
 
     if args.render:
         print("\n=== Kustomize build validation ===")

@@ -4,12 +4,32 @@ This guide validates the Envoy Gateway HTTP ingress slice for `kind-dev-misc-loc
 
 ## Local access model
 
-The repository-owned kind config maps host port `10080` to node port `30080` on the control-plane node. Envoy Gateway creates a managed Envoy proxy Service for the smoke Gateway on the same node port.
+The repository-owned kind config maps host port `10080` to node port `30080` on the control-plane node. Envoy Gateway creates a managed Envoy proxy Service for the smoke Gateway. The `EnvoyProxy` resource configures the Service as `NodePort` so ingress traffic reaches the cluster through this mapping.
 
 Existing kind clusters created before this mapping was added must be recreated before the host port works:
 
 ```sh
 make kind-dev-misc-local-recreate
+```
+
+After Envoy Gateway reconciles, verify the Envoy proxy NodePort assignment:
+
+```sh
+kubectl --context kind-kind-dev-misc-local -n core-envoy-gateway get svc -l gateway.envoyproxy.io/owning-gateway-name=kubecrate-envoy-smoke -o jsonpath='{.items[0].spec.ports[0].nodePort}'
+```
+
+If the assigned NodePort is not `30080`, patch the Service to match the kind config:
+
+```sh
+kubectl --context kind-kind-dev-misc-local -n core-envoy-gateway patch svc \
+  -l gateway.envoyproxy.io/owning-gateway-name=kubecrate-envoy-smoke \
+  --type=json -p='[{"op":"replace","path":"/spec/ports/0/nodePort","value":30080}]'
+```
+
+Verify host-side ingress is reachable:
+
+```sh
+curl -fsS http://127.0.0.1:10080/
 ```
 
 ## Reconcile and inspect
@@ -24,11 +44,12 @@ kubectl --context kind-kind-dev-misc-local -n cratecheck get httproute envoy-smo
 kubectl --context kind-kind-dev-misc-local -n cratecheck get deploy,svc,endpoints cratecheck -o wide
 ```
 
-## Validate CrateCheck status through ingress
+## Validate CrateCheck status through Envoy Gateway ingress
+
+Access CrateCheck `/status.json` through the Envoy Gateway ingress path (host port 10080 → kind node → Envoy proxy → CrateCheck Service):
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck port-forward svc/cratecheck 8080:8080 &
-curl -fsS http://127.0.0.1:8080/status.json | python3 -c '
+curl -fsS http://127.0.0.1:10080/status.json | python3 -c '
 import json,sys
 data=json.load(sys.stdin)
 print("overall:", data.get("overallStatus", data.get("overall_status", "UNKNOWN")))
@@ -39,7 +60,30 @@ for c in data.get("checks", data.get("items", [])):
 
 All Envoy CrateCheck checks (`envoy-helmrelease-ready`, `envoy-gatewayclass-accepted`, `envoy-gateway-ready`, `envoy-httproute-ready`) must report green before this slice can pass live validation.
 
-## Validate CrateCheck status JSON directly
+The HTML status UI is also reachable through ingress:
+
+```sh
+curl -fsS http://127.0.0.1:10080/status
+```
+
+## Validate CrateCheck status directly (port-forward)
+
+As a fallback or for debugging when ingress is not working, access CrateCheck directly:
+
+```sh
+kubectl --context kind-kind-dev-misc-local -n cratecheck port-forward svc/cratecheck 8080:8080 &
+sleep 2
+curl -fsS http://127.0.0.1:8080/status.json | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+print("overall:", data.get("overallStatus", data.get("overall_status", "UNKNOWN")))
+for c in data.get("checks", data.get("items", [])):
+    print(f"  {c.get(\"id\", \"?\")}: {c.get(\"state\", c.get(\"status\", \"?\"))}")
+'
+kill %1 2>/dev/null
+```
+
+Or inspect from inside the pod:
 
 ```sh
 kubectl --context kind-kind-dev-misc-local -n cratecheck exec deploy/cratecheck -- wget -qO- http://localhost:8080/status.json 2>/dev/null || \
@@ -49,17 +93,98 @@ kubectl --context kind-kind-dev-misc-local -n cratecheck exec deploy/cratecheck 
 ## Controlled red test
 
 After proving all Envoy checks green:
-1. Break the route by patching the HTTPRoute backend port to a non-existent port:
-   ```sh
-   kubectl --context kind-kind-dev-misc-local -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
-     -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":9999}]'
-   ```
-2. Verify `envoy-httproute-ready` reports non-green in CrateCheck status.
-3. Restore the expected backend port:
-   ```sh
-   kubectl --context kind-kind-dev-misc-local -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
-     -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":8080}]'
-   ```
-4. Verify `envoy-httproute-ready` returns to green.
+
+### Phase 1: Verify green baseline
+
+```sh
+# All Envoy checks must be green
+curl -fsS http://127.0.0.1:10080/status.json | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+checks = {c["id"]: c for c in data.get("checks", data.get("items", []))}
+route = checks.get("envoy-httproute-ready", {})
+print(f"envoy-httproute-ready: {route.get(\"state\", route.get(\"status\", \"?\"))}")
+assert route.get("state") == "green" or route.get("status") == "green", "expected green"
+print("GREEN baseline confirmed")
+'
+```
+
+### Phase 2: Break the route (controlled red)
+
+Patch the HTTPRoute backend port to a non-existent port. This breaks `ResolvedRefs` because the backend port 9999 does not exist on the CrateCheck Service:
+
+```sh
+kubectl --context kind-kind-dev-misc-local -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
+  -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":9999}]'
+```
+
+Wait for the route status to update (typically within 30 seconds), then verify the red condition:
+
+```sh
+sleep 10
+curl -fsS http://127.0.0.1:10080/status.json | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+checks = {c["id"]: c for c in data.get("checks", data.get("items", []))}
+route = checks.get("envoy-httproute-ready", {})
+state = route.get("state", route.get("status", "?"))
+print(f"envoy-httproute-ready: {state}")
+assert state != "green", f"expected non-green after red test, got {state}"
+print("RED test: envoy-httproute-ready is NOT green (expected)")
+'
+```
+
+Alternatively, inspect the HTTPRoute parent status directly:
+
+```sh
+kubectl --context kind-kind-dev-misc-local -n cratecheck get httproute envoy-smoke-cratecheck \
+  -o jsonpath='{range .status.parents[*]}{.conditions}{"\n"}{end}' | python3 -m json.tool
+```
+
+`ResolvedRefs` should be `False` with a reason like `BackendNotFound` or `ServicePortNotFound`.
+
+### Phase 3: Restore green
+
+Restore the correct backend port:
+
+```sh
+kubectl --context kind-kind-dev-misc-local -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
+  -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":8080}]'
+```
+
+Verify `envoy-httproute-ready` returns to green:
+
+```sh
+sleep 10
+curl -fsS http://127.0.0.1:10080/status.json | python3 -c '
+import json,sys
+data=json.load(sys.stdin)
+checks = {c["id"]: c for c in data.get("checks", data.get("items", []))}
+route = checks.get("envoy-httproute-ready", {})
+state = route.get("state", route.get("status", "?"))
+print(f"envoy-httproute-ready: {state}")
+assert state == "green", f"expected green after restore, got {state}"
+print("RESTORE: envoy-httproute-ready is green (expected)")
+'
+```
 
 Do not use this red-test step against shared or production-like clusters.
+
+## QA branch override for disposable Flux clusters
+
+When validating with a disposable QA cluster, override the Flux sync branch at bootstrap time without modifying committed config:
+
+```sh
+# Extract the current helm-values-sync.yaml and override the branch
+yq eval '.gitRepository.spec.ref.branch = "kubecrate/cratecheck-restack-envoy"' \
+  clusters/kind-dev-misc-local/platform-services/flux/helm-values-sync.yaml \
+  > /tmp/qa-flux-sync-values.yaml
+
+# Use the overridden values during Flux sync bootstrap
+helm upgrade --install flux-system-sync oci://ghcr.io/fluxcd-community/charts/flux2-sync \
+  --kube-context "kind-kind-dev-misc-local" \
+  --namespace flux-system \
+  --values /tmp/qa-flux-sync-values.yaml
+```
+
+The committed `helm-values-sync.yaml` remains unchanged as the canonical branch reference.

@@ -9,3 +9,8 @@ metadata:
     kubecrate.io/smoke-test: envoy-gateway
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: kubecrate-envoy-proxy
+    namespace: core-envoy-gateway

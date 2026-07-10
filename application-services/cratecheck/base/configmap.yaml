@@ -111,6 +111,8 @@ data:
           object.status.parents.exists(p,
             has(p.conditions) &&
             p.conditions.exists(c,
-              c.type == 'Accepted' && c.status == 'True'))
-        successMessage: Envoy smoke HTTPRoute is accepted by parent Gateway
-        failureMessage: Envoy smoke HTTPRoute is not accepted by parent Gateway
+              c.type == 'Accepted' && c.status == 'True') &&
+            p.conditions.exists(c,
+              c.type == 'ResolvedRefs' && c.status == 'True'))
+        successMessage: Envoy smoke HTTPRoute is accepted and backend refs are resolved by parent Gateway
+        failureMessage: Envoy smoke HTTPRoute is not accepted or backend refs are not resolved by parent Gateway
