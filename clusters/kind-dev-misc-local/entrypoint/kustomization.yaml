@@ -4,4 +4,6 @@ resources:
   - ./kubecrate-system-namespace.yaml
   - ./kubecrate-reconciliation-marker.yaml
   - ../platform-services/flux
+  - ./cert-manager-kustomization.yaml
+  - ./cert-manager-local-issuer-kustomization.yaml
   - ../application-services/cratecheck

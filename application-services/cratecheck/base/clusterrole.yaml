@@ -33,6 +33,26 @@ rules:
       - configmaps
     verbs:
       - get
+  # cert-manager platform service checks: HelmRelease, ClusterIssuer, Certificate, TLS Secrets
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+    resources:
+      - helmreleases
+    verbs:
+      - get
+  - apiGroups:
+      - cert-manager.io
+    resources:
+      - clusterissuers
+      - certificates
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
   # Future platform service checks may require additional read verbs on resources
   # such as secrets, ingresses, certificates, or custom resources.
   # Expand this ClusterRole incrementally as new checks are added to the check config.

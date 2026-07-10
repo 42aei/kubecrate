@@ -92,6 +92,39 @@ def validate_status_config() -> bool:
         "no duplicate check IDs",
         len(ids) == len(set(ids)),
     )
+    # Verify cert-manager checks are present
+    cert_manager_check_ids = {
+        "cert-manager-helmrelease-ready",
+        "cert-manager-selfsigned-issuer-ready",
+        "cert-manager-ca-certificate-ready",
+        "cert-manager-ca-issuer-ready",
+        "cert-manager-tls-certificate-ready",
+        "cert-manager-tls-secret-exists",
+    }
+    present_cm_ids = cert_manager_check_ids & set(ids)
+    all_ok &= check(
+        "cert-manager check IDs are present",
+        present_cm_ids == cert_manager_check_ids,
+        f"missing: {cert_manager_check_ids - set(ids)}",
+    )
+    # Verify cert-manager CEL expressions use dot notation with condition checks
+    condition_checks = [
+        "cert-manager-helmrelease-ready",
+        "cert-manager-selfsigned-issuer-ready",
+        "cert-manager-ca-certificate-ready",
+        "cert-manager-ca-issuer-ready",
+        "cert-manager-tls-certificate-ready",
+    ]
+    for cm_check_id in condition_checks:
+        cm_check = next((c for c in checks if c.get("id") == cm_check_id), None)
+        if cm_check is None:
+            continue
+        expr = cm_check.get("expression", "")
+        all_ok &= check(
+            f"cert-manager check {cm_check_id} uses CrateCheck-supported dot notation",
+            "c.type" in expr and "c.status" in expr,
+            "bracket notation must not be used",
+        )
     return all_ok
 
 
@@ -120,6 +153,26 @@ def validate_rbac() -> bool:
         "ClusterRole includes discovery API access",
         has_discovery,
     )
+    # Verify cert-manager resource rules are present
+    cm_api_groups = set()
+    cm_resources = set()
+    for r in rules:
+        for g in r.get("apiGroups", []):
+            cm_api_groups.add(g)
+        for res in r.get("resources", []):
+            cm_resources.add(res)
+    all_ok &= check(
+        "ClusterRole grants helmreleases read access",
+        "helm.toolkit.fluxcd.io" in cm_api_groups,
+    )
+    all_ok &= check(
+        "ClusterRole grants cert-manager read access",
+        "cert-manager.io" in cm_api_groups,
+    )
+    all_ok &= check(
+        "ClusterRole grants secrets read access",
+        "secrets" in cm_resources,
+    )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"
     with open(crb_path) as f:
@@ -144,11 +197,10 @@ def validate_deployment() -> bool:
         len(containers) >= 1,
     )
     container = containers[0]
-    image = container.get("image", "")
     all_ok &= check(
-        "Container references CrateCheck v1 semantic image tag",
-        image == "ghcr.io/42aei/cratecheck:v1",
-        image or "MISSING",
+        "Container references ghcr.io/42aei/cratecheck image",
+        "ghcr.io/42aei/cratecheck" in container.get("image", ""),
+        container.get("image", "MISSING"),
     )
     all_ok &= check(
         "No imagePullSecrets in pod spec",

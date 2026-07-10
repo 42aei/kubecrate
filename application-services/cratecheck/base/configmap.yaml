@@ -52,3 +52,91 @@ data:
           object.data['status.yaml'] != ''
         successMessage: check ConfigMap is present and non-empty
         failureMessage: check ConfigMap is missing or empty
+      - id: cert-manager-helmrelease-ready
+        name: cert-manager HelmRelease ready
+        severity: red
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: core-cert-manager
+          name: cert-manager
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: cert-manager HelmRelease is ready
+        failureMessage: cert-manager HelmRelease is not ready
+      - id: cert-manager-selfsigned-issuer-ready
+        name: cert-manager self-signed ClusterIssuer ready
+        severity: red
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          namespace: ""
+          name: kubecrate-local-selfsigned
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: cert-manager self-signed ClusterIssuer is ready
+        failureMessage: cert-manager self-signed ClusterIssuer is not ready
+      - id: cert-manager-ca-certificate-ready
+        name: cert-manager local CA Certificate ready
+        severity: red
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          namespace: cratecheck
+          name: cratecheck-local-ca
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: cert-manager local CA Certificate is ready
+        failureMessage: cert-manager local CA Certificate is not ready
+      - id: cert-manager-ca-issuer-ready
+        name: cert-manager CA ClusterIssuer ready
+        severity: red
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          namespace: ""
+          name: kubecrate-local-ca
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: cert-manager CA ClusterIssuer is ready
+        failureMessage: cert-manager CA ClusterIssuer is not ready
+      - id: cert-manager-tls-certificate-ready
+        name: cert-manager TLS Certificate ready
+        severity: red
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          namespace: cratecheck
+          name: cratecheck-tls
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: cert-manager TLS Certificate is ready
+        failureMessage: cert-manager TLS Certificate is not ready
+      - id: cert-manager-tls-secret-exists
+        name: cert-manager TLS Secret exists
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: cratecheck
+          name: cratecheck-tls
+        expression: >-
+          has(object.metadata) &&
+          object.metadata.name == 'cratecheck-tls'
+        successMessage: cert-manager TLS Secret exists
+        failureMessage: cert-manager TLS Secret not found
