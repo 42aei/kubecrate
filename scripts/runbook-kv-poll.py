@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Shared Kyverno runbook polling helpers extracted from the runbook.
+"""Shared Kyverno runbook polling helpers — single authoritative source.
 
-Provides the core CrateCheck /status.json polling logic used across the runbook's
+Provides CrateCheck /status.json polling logic used across the runbook's
 green, controlled-red, and restored-green phases. Designed to be:
 
   - imported as a module by validate-cratecheck.py for fixture-based testing
-  - called as a CLI with --fixture <json-file> for executable validation
+  - called as a CLI with --fixture for executable validation
+  - called as a CLI with --url for live /status.json polling (the runbook's
+    operator workflow uses this path — no more inline polling implementations)
 
-Usage (CLI):
+Usage (CLI — fixture):
   python3 scripts/runbook-kv-poll.py --fixture tests/fixtures/kv-all-green.json --mode green
   python3 scripts/runbook-kv-poll.py --fixture tests/fixtures/kv-controlled-red.json --mode red
   python3 scripts/runbook-kv-poll.py --fixture tests/fixtures/kv-all-green.json --mode restored-green
+
+Usage (CLI — live):
+  python3 scripts/runbook-kv-poll.py --url http://localhost:8080/status.json --mode green
+  python3 scripts/runbook-kv-poll.py --url http://localhost:8080/status.json --mode red
+  python3 scripts/runbook-kv-poll.py --url http://localhost:8080/status.json --mode restored-green
 
 Exit codes:
   0 - polling succeeded (all required checks reached expected state)
@@ -20,6 +27,7 @@ Exit codes:
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,6 +46,61 @@ def load_fixture(path: str) -> dict:
     """Load a fixture JSON file representing a /status.json response."""
     with open(path) as f:
         return json.load(f)
+
+
+def fetch_live_status(url: str, timeout: int = 5) -> dict | None:
+    """Fetch a live /status.json payload via curl.
+
+    Returns the parsed JSON dict on success, or None on failure.
+    """
+    result = subprocess.run(
+        ["curl", "-s", "--max-time", str(timeout), url],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def poll_live(
+    url: str,
+    deadline: float,
+    check_fn,
+    poll_interval: float = 2.0,
+) -> tuple:
+    """Generic live polling loop: fetches from url and calls check_fn(payload).
+
+    check_fn must return (done: bool, result_tuple: ...) where the result
+    is an (all_ok, check_map) or (target_red, unaffected_ok, check_map) pair.
+
+    Returns the last result_tuple from check_fn.
+    """
+    last_result = None
+    while time.time() < deadline:
+        payload = fetch_live_status(url)
+        if payload is None:
+            time.sleep(poll_interval)
+            continue
+
+        done, result = check_fn(payload)
+        last_result = result
+        if done:
+            return result
+
+        remaining = deadline - time.time()
+        sleep_time = min(poll_interval, remaining)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        else:
+            break
+
+    if last_result is None:
+        # Never got a valid response — return failure tuple
+        return (False, {})
+    return last_result
 
 
 def build_check_map(payload: dict) -> dict:
@@ -220,13 +283,19 @@ def _log_state(checks: dict, note: str = "") -> None:
 
 
 def cmd_poll() -> int:
-    """CLI entry point for fixture-based polling."""
+    """CLI entry point — fixture-based or live polling."""
     parser = argparse.ArgumentParser(
-        description="Runbook Kyverno polling against a fixture /status.json",
+        description="Runbook Kyverno polling against fixture or live /status.json",
     )
     parser.add_argument(
-        "--fixture", required=True, type=str,
-        help="Path to fixture JSON file (simulated /status.json)",
+        "--fixture", type=str, default=None,
+        help="Path to fixture JSON file (simulated /status.json). "
+             "Mutually exclusive with --url.",
+    )
+    parser.add_argument(
+        "--url", type=str, default=None,
+        help="Live /status.json URL to poll (e.g. http://localhost:8080/status.json). "
+             "Mutually exclusive with --fixture.",
     )
     parser.add_argument(
         "--mode", required=True,
@@ -239,11 +308,28 @@ def cmd_poll() -> int:
     )
     args = parser.parse_args()
 
-    fixture = load_fixture(args.fixture)
+    if args.fixture is None and args.url is None:
+        print("ERROR: one of --fixture or --url is required.", file=sys.stderr)
+        return 2
+    if args.fixture is not None and args.url is not None:
+        print("ERROR: --fixture and --url are mutually exclusive.", file=sys.stderr)
+        return 2
+
     deadline = time.time() + args.deadline_offset
 
     if args.mode == "green":
-        all_ok, checks = poll_all_green(fixture, deadline)
+        if args.url:
+            def _check_green(payload):
+                checks = build_check_map(payload)
+                if not TARGET_IDS.issubset(checks.keys()):
+                    return (False, (False, checks))
+                all_ok = all(checks[cid]["state"] == "green" for cid in TARGET_IDS)
+                return (all_ok, (all_ok, checks))
+            all_ok, checks = poll_live(args.url, deadline, _check_green)
+        else:
+            fixture = load_fixture(args.fixture)
+            all_ok, checks = poll_all_green(fixture, deadline)
+
         if all_ok:
             print("\nAll Kyverno CrateCheck checks are green.")
             return 0
@@ -252,7 +338,23 @@ def cmd_poll() -> int:
             return 1
 
     elif args.mode in ("red", "controlled-red"):
-        target_is_red, unaffected_ok, checks = poll_exact_red(fixture, deadline)
+        if args.url:
+            def _check_red(payload):
+                checks = build_check_map(payload)
+                cp = checks.get(RED_TARGET_ID)
+                hr = checks.get("kyverno-helmrelease-ready")
+                ns = checks.get("kyverno-smoke-namespace-exists")
+                if cp is None or hr is None or ns is None:
+                    return (False, (False, False, checks))
+                cp_is_red = cp["state"] == "red"
+                unaffected_ok = hr["state"] == "green" and ns["state"] == "green"
+                done = cp_is_red and unaffected_ok
+                return (done, (cp_is_red, unaffected_ok, checks))
+            target_is_red, unaffected_ok, checks = poll_live(args.url, deadline, _check_red)
+        else:
+            fixture = load_fixture(args.fixture)
+            target_is_red, unaffected_ok, checks = poll_exact_red(fixture, deadline)
+
         if target_is_red and unaffected_ok:
             print("\nPASS: red test — ClusterPolicy red, HelmRelease+smoke namespace unaffected green.")
             return 0
@@ -264,7 +366,18 @@ def cmd_poll() -> int:
             return 1
 
     elif args.mode == "restored-green":
-        all_ok, checks = poll_restored_green(fixture, deadline)
+        if args.url:
+            def _check_green(payload):
+                checks = build_check_map(payload)
+                if not TARGET_IDS.issubset(checks.keys()):
+                    return (False, (False, checks))
+                all_ok = all(checks[cid]["state"] == "green" for cid in TARGET_IDS)
+                return (all_ok, (all_ok, checks))
+            all_ok, checks = poll_live(args.url, deadline, _check_green)
+        else:
+            fixture = load_fixture(args.fixture)
+            all_ok, checks = poll_restored_green(fixture, deadline)
+
         if all_ok:
             print("\nAll Kyverno CrateCheck checks are green after restoration.")
             return 0

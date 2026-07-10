@@ -74,50 +74,7 @@ trap "kill $PF_PID 2>/dev/null; wait $PF_PID 2>/dev/null" EXIT
 sleep 2
 
 # Poll CrateCheck /status.json with timeout (up to 60s for Kyverno checks to go green)
-python3 << 'PYEOF'
-import json, subprocess, sys, time
-
-deadline = time.time() + 60
-target_ids = {"kyverno-helmrelease-ready", "kyverno-clusterpolicy-ready", "kyverno-smoke-namespace-exists"}
-all_green = False
-
-while time.time() < deadline:
-    result = subprocess.run(
-        ["curl", "-s", "--max-time", "5", "http://localhost:8080/status.json"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        time.sleep(2)
-        continue
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        time.sleep(2)
-        continue
-
-    checks = {c["id"]: c for c in payload.get("checks", [])}
-
-    all_ok = True
-    for cid in sorted(target_ids):
-        c = checks.get(cid)
-        state = c["state"] if c else "MISSING"
-        summary = c.get("summary", "") if c else ""
-        print(f"  {state:>8} {cid}: {summary}")
-        if state != "green":
-            all_ok = False
-
-    if all_ok:
-        print("\nAll Kyverno CrateCheck checks are green.")
-        all_green = True
-        break
-
-    time.sleep(5)
-
-if not all_green:
-    print("\nFAIL: Kyverno CrateCheck checks did not reach green within 60s.")
-    sys.exit(1)
-PYEOF
+python3 scripts/runbook-kv-poll.py --url http://localhost:8080/status.json --mode green --deadline-offset 60
 # Store exit code
 GREEN_EXIT=$?
 
@@ -235,69 +192,7 @@ echo ""
 # ===== RED: poll CrateCheck for non-green kyverno-clusterpolicy-ready =====
 # Must confirm: clusterpolicy is red AND helmrelease/smoke-ns remain green
 echo "=== Polling CrateCheck for red kyverno-clusterpolicy-ready (up to 60s) ==="
-python3 << 'PYEOF'
-import json, subprocess, sys, time
-
-deadline = time.time() + 60
-found_red = False
-unaffected_green = False
-
-while time.time() < deadline:
-    result = subprocess.run(
-        ["curl", "-s", "--max-time", "5", "http://localhost:8080/status.json"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        time.sleep(2)
-        continue
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        time.sleep(2)
-        continue
-
-    checks = {c["id"]: c for c in payload.get("checks", [])}
-
-    # Require all expected checks are present (missing checks = fail)
-    cp_check = checks.get("kyverno-clusterpolicy-ready")
-    hr_check = checks.get("kyverno-helmrelease-ready")
-    ns_check = checks.get("kyverno-smoke-namespace-exists")
-
-    if cp_check is None or hr_check is None or ns_check is None:
-        print("  MISSING one or more Kyverno checks — will retry")
-        time.sleep(5)
-        continue
-
-    cp_state = cp_check["state"]
-    hr_state = hr_check["state"]
-    ns_state = ns_check["state"]
-
-    print(f"  {cp_state:>8} kyverno-clusterpolicy-ready: {cp_check.get('summary', '')}")
-    print(f"  {hr_state:>8} kyverno-helmrelease-ready: {hr_check.get('summary', '')}")
-    print(f"  {ns_state:>8} kyverno-smoke-namespace-exists: {ns_check.get('summary', '')}")
-
-    # ClusterPolicy must be red (exact state match, not any non-green)
-    cp_is_red = cp_state == "red"
-
-    # HelmRelease and smoke namespace must remain green (unaffected)
-    unaffected_ok = hr_state == "green" and ns_state == "green"
-
-    if cp_is_red and unaffected_ok:
-        found_red = True
-        unaffected_green = True
-        break
-
-    time.sleep(5)
-
-if not found_red:
-    print("\nFAIL: kyverno-clusterpolicy-ready did not turn red within 60s.")
-    sys.exit(1)
-if not unaffected_green:
-    print("\nFAIL: unaffected Kyverno checks (helmrelease-ready, smoke-namespace-exists) are not green.")
-    sys.exit(1)
-print("\nPASS: red test — ClusterPolicy red, HelmRelease+smoke namespace unaffected green.")
-PYEOF
+python3 scripts/runbook-kv-poll.py --url http://localhost:8080/status.json --mode red --deadline-offset 60
 RED_EXIT=$?
 
 # Capture red-state JSON evidence
@@ -354,56 +249,7 @@ PYEOF
 # ===== GREEN AFTER RESTORE =====
 echo ""
 echo "=== Polling CrateCheck for restored green (all three Kyverno checks, up to 60s) ==="
-python3 << 'PYEOF'
-import json, subprocess, sys, time
-
-deadline = time.time() + 60
-all_green = False
-
-while time.time() < deadline:
-    result = subprocess.run(
-        ["curl", "-s", "--max-time", "5", "http://localhost:8080/status.json"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        time.sleep(2)
-        continue
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        time.sleep(2)
-        continue
-
-    checks = {c["id"]: c for c in payload.get("checks", [])}
-    target_ids = {"kyverno-helmrelease-ready", "kyverno-clusterpolicy-ready", "kyverno-smoke-namespace-exists"}
-
-    # Require all checks present — missing checks = fail
-    if not target_ids.issubset(checks.keys()):
-        missing = target_ids - set(checks.keys())
-        print(f"  MISSING checks: {missing} — retrying")
-        time.sleep(5)
-        continue
-
-    all_ok = True
-    for cid in sorted(target_ids):
-        c = checks[cid]
-        state = c["state"]
-        summary = c.get("summary", "")
-        print(f"  {state:>8} {cid}: {summary}")
-        if state != "green":
-            all_ok = False
-
-    if all_ok:
-        all_green = True
-        break
-    time.sleep(5)
-
-if not all_green:
-    print("\nFAIL: Kyverno checks did not return to green after restoration.")
-    sys.exit(1)
-print("\nPASS: restoration — all three Kyverno checks returned to green.")
-PYEOF
+python3 scripts/runbook-kv-poll.py --url http://localhost:8080/status.json --mode restored-green --deadline-offset 60
 RESTORE_EXIT=$?
 
 # Capture restored-green UI evidence

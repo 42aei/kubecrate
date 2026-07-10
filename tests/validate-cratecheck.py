@@ -972,11 +972,22 @@ def validate_runbook_probes() -> bool:
     )
 
     # --- Structural: exact red state checking (state == 'red', not any non-green) ---
-    has_exact_red = "cp_state == 'red'" in runbook_text or 'cp_state == "red"' in runbook_text
+    # The shared helper at scripts/runbook-kv-poll.py is the authoritative source.
+    poll_script = REPO_ROOT / "scripts" / "runbook-kv-poll.py"
+    poll_script_text = ""
+    if poll_script.exists():
+        with open(poll_script_path := poll_script) as f:
+            poll_script_text = f.read()
+    has_exact_red_in_helper = 'state"] == "red"' in poll_script_text or "state'] == 'red'" in poll_script_text
+    # Also check runbook for direct references (pre-migration compatibility)
+    has_exact_red_in_runbook = "cp_state == 'red'" in runbook_text or 'cp_state == "red"' in runbook_text
+    has_exact_red = has_exact_red_in_helper or has_exact_red_in_runbook
     all_ok &= check(
         "runbook probes: red test uses exact red state check (state == 'red')",
         has_exact_red,
-        "found exact red check" if has_exact_red else "uses non-specific non-green check — must be state == 'red'",
+        "found exact red check in shared helper" if has_exact_red_in_helper
+        else "found exact red check in runbook" if has_exact_red_in_runbook
+        else "uses non-specific non-green check — must be state == 'red'",
     )
 
     # --- Structural: red phase checks other Kyverno checks remain green ---
@@ -1025,6 +1036,19 @@ def validate_runbook_probes() -> bool:
     all_ok &= check(
         "runbook probes: polling uses deadline/timeout pattern",
         has_timeout,
+    )
+
+    # --- Structural: runbook uses shared polling helper (not inline implementations) ---
+    # The three polling phases (green, red, restored-green) must call
+    # scripts/runbook-kv-poll.py, the single authoritative polling source.
+    # Count occurrences of the shared helper call.
+    shared_helper_calls = runbook_text.count("scripts/runbook-kv-poll.py")
+    all_ok &= check(
+        "runbook probes: runbook uses shared polling helper (scripts/runbook-kv-poll.py) for all phases",
+        shared_helper_calls >= 3,
+        f"found {shared_helper_calls} shared-helper calls (need >= 3 for green, red, restored-green)"
+        if shared_helper_calls >= 3
+        else f"found only {shared_helper_calls} shared-helper calls — runbook may have inline polling implementations instead",
     )
 
     # --- Structural: trap does NOT suppress restoration failures with || true ---
@@ -1322,8 +1346,15 @@ trap cleanup_and_restore EXIT
                 ),
             )
 
-            # --- Adversarial: if kill PF_PID line is removed, the behavioral test fails ---
-            # Build a mutated version without kill
+            # ================================================================
+            # ADVERSARIAL: execution-based runbook mutations
+            # ================================================================
+            # Each mutation alters the trap body, executes it, and asserts
+            # that the behavioral checks (kill, reconcile, post-reconcile
+            # read) now FAIL.  Showing the trace is empty is insufficient;
+            # we must prove the mutation defeats the validator.
+
+            # --- M5: Remove kill PF_PID — the port-forward cleanup check must FAIL ---
             mutated_body = re.sub(
                 r'kill\s+\$PF_PID\s+2>/dev/null\s*;?\s*',
                 '# kill removed\n',
@@ -1362,14 +1393,119 @@ trap cleanup_and_restore EXIT
                     )
                     mutated_trace_content = pf_mutated_trace.read_text()
                     kill_still_present = "kill 424242" in mutated_trace_content
+                    # The behavioral check that passes for the clean trap should
+                    # now FAIL: kill MUST be absent from the trace.
                     all_ok &= check(
-                        "runbook fixtures: adversarial — removing kill PF_PID removes kill from trace",
+                        "runbook fixtures: adversarial M5 — remove kill PF_PID: behavioral kill-check FAILS (kill absent from trace)",
                         not kill_still_present,
-                        "kill correctly absent after mutation" if not kill_still_present
-                        else "kill STILL present after mutation — mutation did not work",
+                        "kill correctly absent (mutation detected — behavioral check would fail)" if not kill_still_present
+                        else "kill STILL present after mutation — mutation was ineffective",
                     )
                 finally:
                     Path(pf_mutated_path).unlink(missing_ok=True)
+
+            # --- M6: Remove Flux reconcile from trap ---
+            # The Flux reconcile failure injection test relies on the trap
+            # calling Flux reconcile and then exit 1 on failure.  If we
+            # remove the reconcile command the trap should exit 0 instead of
+            # non-zero — which means the behavioral check fails.
+            # Replace the entire if-block so bash syntax remains valid.
+            mutated_no_reconcile = re.sub(
+                r'if ! flux.*?reconcile.*?; then\n.*?exit 1\n\s+elif',
+                'if true; then\n            echo "RECONCILE SKIPPED (removed)"\n            RESTORE_NEEDED=0\n        elif',
+                trap_body,
+                flags=re.DOTALL,
+            )
+            if mutated_no_reconcile != trap_body:
+                m6_script = f"""#!/bin/bash
+set -e
+PF_PID=99999
+RESTORE_NEEDED=1
+flux() {{ echo "mock flux: would fail" >&2; return 1; }}
+kubectl() {{ echo "mock kubectl $*" >&2; return 0; }}
+export -f flux kubectl
+cleanup_and_restore() {{
+{mutated_no_reconcile}
+}}
+trap cleanup_and_restore EXIT
+"""
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".sh", delete=False, dir=str(tmp_dir)
+                ) as tmp_m6:
+                    tmp_m6.write(m6_script)
+                    m6_path = tmp_m6.name
+
+                try:
+                    result_m6 = subprocess.run(
+                        ["bash", m6_path],
+                        capture_output=True, text=True, cwd=REPO_ROOT,
+                    )
+                    # Without reconcile, the trap should NOT fail (exit 0),
+                    # which means the behavioral check "injected Flux reconcile
+                    # failure -> trap exits non-zero" would FAIL.
+                    all_ok &= check(
+                        "runbook fixtures: adversarial M6 — remove Flux reconcile: trap exits 0 (behavioral reconcile-failure check would FAIL)",
+                        result_m6.returncode == 0,
+                        f"exit={result_m6.returncode} (expected 0 — mutation detected)" if result_m6.returncode == 0
+                        else f"exit={result_m6.returncode} — mutation was ineffective (unexpected)",
+                    )
+                finally:
+                    Path(m6_path).unlink(missing_ok=True)
+
+            # --- M7: Remove post-reconcile kubectl read from trap ---
+            # The post-reconcile resource-read failure test relies on a
+            # kubectl get clusterpolicy check in the trap.  Remove it and
+            # the trap should no longer detect a missing ClusterPolicy.
+            # Replace the entire elif-block so bash syntax remains valid.
+            mutated_no_read = re.sub(
+                r'elif ! kubectl.*?get clusterpolicy.*?; then\n.*?exit 1\n\s+else',
+                'elif true; then\n            echo "KUBECTL READ SKIPPED (removed)"\n            RESTORE_NEEDED=0\n        else',
+                trap_body,
+                flags=re.DOTALL,
+            )
+            if mutated_no_read != trap_body and mutated_no_read != mutated_no_reconcile:
+                m7_script = f"""#!/bin/bash
+set -e
+PF_PID=99999
+RESTORE_NEEDED=1
+flux() {{ echo "mock flux: reconcile succeeded" >&2; return 0; }}
+kubectl() {{
+    if [[ "$*" == *"get clusterpolicy"* ]]; then
+        echo "mock kubectl: ClusterPolicy still missing" >&2
+        return 1
+    fi
+    echo "mock kubectl $*" >&2
+    return 0
+}}
+export -f flux kubectl
+cleanup_and_restore() {{
+{mutated_no_read}
+}}
+trap cleanup_and_restore EXIT
+"""
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".sh", delete=False, dir=str(tmp_dir)
+                ) as tmp_m7:
+                    tmp_m7.write(m7_script)
+                    m7_path = tmp_m7.name
+
+                try:
+                    result_m7 = subprocess.run(
+                        ["bash", m7_path],
+                        capture_output=True, text=True, cwd=REPO_ROOT,
+                    )
+                    # Without the kubectl get clusterpolicy read, the trap
+                    # should NOT detect the missing resource → exit 0.
+                    # The behavioral check "post-reconcile resource-read
+                    # failure -> trap exits non-zero" would FAIL.
+                    all_ok &= check(
+                        "runbook fixtures: adversarial M7 — remove post-reconcile kubectl read: trap exits 0 (behavioral read-failure check would FAIL)",
+                        result_m7.returncode == 0,
+                        f"exit={result_m7.returncode} (expected 0 — mutation detected)" if result_m7.returncode == 0
+                        else f"exit={result_m7.returncode} — mutation was ineffective (unexpected)",
+                    )
+                finally:
+                    Path(m7_path).unlink(missing_ok=True)
         finally:
             Path(pf_test_path).unlink(missing_ok=True)
 
@@ -1705,6 +1841,7 @@ def validate_flux_sync_override_reset() -> bool:
 
     tmp_dir = REPO_ROOT / ".tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    entrypoint = REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
 
     def _run_recipe(override_branch: str, inject_fail: str | None = None) -> tuple[int, str, str]:
         """Run the recipe with mock tools. Returns (exit_code, trace, stderr)."""
@@ -1745,7 +1882,6 @@ exit 0
         override_file = tmp_dir / f"test-override-{safe_branch}.yaml"
         helm_values = tmp_dir / "test-helm-values.yaml"
         helm_values.write_text("{}")
-        entrypoint = REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
 
         script = f"""#!/bin/bash
 set -eo pipefail
@@ -1768,6 +1904,81 @@ export ENTRYPOINT_ROOT="{entrypoint}"
 {shell_recipe}
 """
         script_path = tmp_dir / f"test-recipe-{safe_branch}.sh"
+        script_path.write_text(script)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        trace = trace_file.read_text() if trace_file.exists() else ""
+        return result.returncode, trace, result.stderr
+
+    def _run_recipe_with_body(
+        recipe_body: str,
+        override_branch: str,
+        tmp_dir: Path,
+        entrypoint: Path,
+        inject_fail: str | None = None,
+    ) -> tuple[int, str, str]:
+        """Like _run_recipe but takes an explicit recipe body (for mutation testing).
+
+        Returns (exit_code, trace, stderr).
+        """
+        mock_dir = tmp_dir / "mock-bin-adversarial"
+        mock_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_branch = (override_branch or "default").replace("/", "-")
+        trace_file = tmp_dir / f"kubectl-trace-adv-{safe_branch}"
+
+        # Mock kubectl
+        mock_kubectl = mock_dir / "kubectl"
+        mock_kubectl.write_text(f"""#!/bin/bash
+echo "kubectl $*" >> "{trace_file}"
+if [ -n "{inject_fail or ''}" ]; then
+    if echo "$*" | grep -q "{inject_fail}"; then
+        echo "MOCK INJECTED FAILURE: $*" >> "{trace_file}"
+        exit 1
+    fi
+fi
+exit 0
+""")
+        mock_kubectl.chmod(0o755)
+
+        # Mock helm
+        mock_helm = mock_dir / "helm"
+        mock_helm.write_text(f"""#!/bin/bash
+echo "helm $*" >> "{trace_file}"
+exit 0
+""")
+        mock_helm.chmod(0o755)
+
+        # Convert $(VAR) to ${VAR}
+        shell_recipe = re.sub(r'\$\((\w+)\)', r'${\1}', recipe_body)
+
+        override_file = tmp_dir / f"test-override-adv-{safe_branch}.yaml"
+        helm_values = tmp_dir / "test-helm-values-adv.yaml"
+        helm_values.write_text("{}")
+
+        script = f"""#!/bin/bash
+set -eo pipefail
+export PATH="{mock_dir}:$PATH"
+export KIND_CLUSTER_NAME="kind-dev-misc-local"
+export KIND_CONTEXT="kind-$KIND_CLUSTER_NAME"
+export HELM_CONTEXT_ARGS="--kube-context $KIND_CONTEXT"
+export FLUX_GIT_BRANCH="pivot/flux-sync-ssh-bootstrap"
+export FLUX_GIT_BRANCH_OVERRIDE="{override_branch}"
+export FLUX_SYNC_OVERRIDE_FILE="{override_file}"
+export FLUX_RELEASE_NAME="flux-system"
+export FLUX_SYNC_HELMRELEASE_NAME="flux-system-sync"
+export FLUX_NAMESPACE="flux-system"
+export FLUX_CHART="oci://ghcr.io/fluxcd-community/charts/flux2"
+export FLUX_CHART_VERSION="2.18.4"
+export FLUX_HELM_VALUES="{helm_values}"
+export ENTRYPOINT_ROOT="{entrypoint}"
+
+{shell_recipe}
+"""
+        script_path = tmp_dir / f"test-recipe-adv-{safe_branch}.sh"
         script_path.write_text(script)
 
         result = subprocess.run(
@@ -1857,53 +2068,117 @@ export ENTRYPOINT_ROOT="{entrypoint}"
     )
 
     # ===================================================================
-    # ADVERSARIAL: mutation checks against the actual Makefile text
+    # ADVERSARIAL: execution-based mutation tests
     # ===================================================================
+    # Each mutation modifies the recipe, executes it, and asserts that
+    # the behavioral checks we rely on now FAIL.  Structural regex
+    # presence checks alone are insufficient — the validator must prove
+    # that the mutation breaks the expected behavior.
 
-    # --- If the condition -n is mutated to -z, the recipe is broken ---
-    condition_match = re.search(
-        r'if\s+\[\s+-n\s+"\$\(FLUX_GIT_BRANCH_OVERRIDE\)"\s+\]',
-        makefile_text,
-    )
-    all_ok &= check(
-        "flux sync override reset: adversarial — condition uses -n (non-empty check)",
-        condition_match is not None,
-        "condition uses -n (correct)" if condition_match
-        else "condition -n check NOT found — verify it is not -z",
-    )
-    has_negated_condition = re.search(
-        r'if\s+\[\s+-z\s+"\$\(FLUX_GIT_BRANCH_OVERRIDE\)"\s+\]',
-        makefile_text,
-    )
-    all_ok &= check(
-        "flux sync override reset: adversarial — condition is NOT -z (inverted logic)",
-        has_negated_condition is None,
-        "condition correctly not -z" if has_negated_condition is None
-        else "CRITICAL: condition uses -z — override/delete logic is INVERTED",
-    )
+    # --- M1: Invert condition -n to -z ---
+    mutated_recipe_neg = re.sub(r'\[ -n "', '[ -z "', recipe)
+    if mutated_recipe_neg != recipe:
+        exit_m1, trace_m1, _ = _run_recipe_with_body(
+            mutated_recipe_neg, "candidate/test-m1", tmp_dir, entrypoint,
+        )
+        # -z means the override branch is NOT taken — override path creates nothing
+        m1_has_create = "create configmap flux-sync-values-override" in trace_m1
+        m1_has_delete = "delete configmap flux-sync-values-override" in trace_m1
+        all_ok &= check(
+            "flux sync override reset: adversarial M1 — inverted -n→-z: override path does NOT create ConfigMap",
+            not m1_has_create,
+            "create correctly absent (inverted condition)" if not m1_has_create
+            else f"create STILL present — mutation was ineffective. trace: {trace_m1.strip()[:200]}",
+        )
+        # Inverted condition: override branch becomes else, which deletes
+        all_ok &= check(
+            "flux sync override reset: adversarial M1 — inverted -n→-z: override path deletes (wrong branch)",
+            m1_has_delete,
+            "delete detected (inverted) — expected because -z makes override fall into else branch",
+        )
 
-    # --- Verify the delete command is present with exact expected args ---
-    delete_cmd_match = re.search(
-        r'kubectl\s+.*delete\s+configmap\s+flux-sync-values-override\s+.*--ignore-not-found',
-        makefile_text,
-    )
-    all_ok &= check(
-        "flux sync override reset: adversarial — delete command exact signature present",
-        delete_cmd_match is not None,
-        "delete with --ignore-not-found found" if delete_cmd_match
-        else "delete command signature NOT found or altered",
-    )
+        # Also test M1 with default path: -z means the if branch is taken
+        # instead of the else branch → delete should NOT happen
+        exit_m1d, trace_m1d, _ = _run_recipe_with_body(
+            mutated_recipe_neg, "", tmp_dir, entrypoint,
+        )
+        m1d_has_delete = "delete configmap flux-sync-values-override" in trace_m1d
+        all_ok &= check(
+            "flux sync override reset: adversarial M1 — inverted -n→-z: default path does NOT delete (wrong branch)",
+            not m1d_has_delete,
+            "delete correctly absent (inverted condition)" if not m1d_has_delete
+            else f"delete STILL present — mutation was ineffective",
+        )
 
-    # --- Verify the apply -f - pipe is present (create dry-run | apply -f -) ---
-    apply_pipe_match = re.search(
-        r'kubectl\s+.*apply\s+-f\s+-',
-        makefile_text,
+    # --- M2: Remove create command from recipe ---
+    mutated_no_create = re.sub(
+        r'create\s+configmap\s+flux-sync-values-override.*?apply\s+-f\s+-;',
+        '# CREATE + APPLY REMOVED',
+        recipe,
+        flags=re.DOTALL,
+    )
+    if mutated_no_create != recipe:
+        exit_m2, trace_m2, _ = _run_recipe_with_body(
+            mutated_no_create, "candidate/test-m2", tmp_dir, entrypoint,
+        )
+        m2_has_create = "create configmap flux-sync-values-override" in trace_m2
+        all_ok &= check(
+            "flux sync override reset: adversarial M2 — create removed: override path does NOT create ConfigMap",
+            not m2_has_create,
+            "create correctly absent (removed)" if not m2_has_create
+            else f"create STILL present — mutation was ineffective",
+        )
+
+    # --- M3: Remove apply -f - command from recipe ---
+    mutated_no_apply = re.sub(
+        r'\|\s*kubectl\s+.*?apply\s+-f\s+-;',
+        '# APPLY PIPE REMOVED',
+        recipe,
+        flags=re.DOTALL,
+    )
+    if mutated_no_apply != recipe:
+        exit_m3, trace_m3, _ = _run_recipe_with_body(
+            mutated_no_apply, "candidate/test-m3", tmp_dir, entrypoint,
+        )
+        m3_has_apply = "apply -f -" in trace_m3
+        all_ok &= check(
+            "flux sync override reset: adversarial M3 — apply removed: override path does NOT apply ConfigMap",
+            not m3_has_apply,
+            "apply correctly absent (removed)" if not m3_has_apply
+            else f"apply STILL present — mutation was ineffective",
+        )
+
+    # --- M4: Remove delete command from recipe ---
+    mutated_no_delete = re.sub(
+        r'kubectl\s+.*?delete\s+configmap\s+flux-sync-values-override.*?--ignore-not-found;',
+        '# DELETE REMOVED',
+        recipe,
+        flags=re.DOTALL,
+    )
+    if mutated_no_delete != recipe:
+        exit_m4, trace_m4, _ = _run_recipe_with_body(
+            mutated_no_delete, "", tmp_dir, entrypoint,
+        )
+        m4_has_delete = "delete configmap flux-sync-values-override" in trace_m4
+        all_ok &= check(
+            "flux sync override reset: adversarial M4 — delete removed: default path does NOT delete ConfigMap",
+            not m4_has_delete,
+            "delete correctly absent (removed)" if not m4_has_delete
+            else f"delete STILL present — mutation was ineffective",
+        )
+
+    # ===================================================================
+    # FAILURE PROPAGATION: kubectl apply -f - failure (independent of create)
+    # ===================================================================
+    fail_apply_exit, fail_apply_trace, fail_apply_stderr = _run_recipe(
+        "candidate/test-branch", inject_fail="apply -f -"
     )
     all_ok &= check(
-        "flux sync override reset: adversarial — apply -f - pipe present for override path",
-        apply_pipe_match is not None,
-        "apply -f - found" if apply_pipe_match
-        else "apply -f - NOT found — override ConfigMap may not be applied",
+        "flux sync override reset: kubectl apply -f - failure propagates non-zero exit",
+        fail_apply_exit != 0,
+        f"exit={fail_apply_exit} (expected non-zero)" + (
+            f" stderr: {fail_apply_stderr.strip()[:200]}" if fail_apply_stderr.strip() else ""
+        ),
     )
 
     # Clean up mock traces
