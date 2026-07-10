@@ -170,8 +170,10 @@ def validate_deployment() -> bool:
 def validate_cel_contracts() -> bool:
     """Validate CEL expression contracts for known checks.
 
-    - envoy-httproute-ready MUST require both Accepted=True and ResolvedRefs=True
-      so that the documented red test (backend port 9999) is detected.
+    - envoy-httproute-ready MUST be scoped to the expected parentRef
+      (Gateway kubecrate-envoy-smoke in namespace core-envoy-gateway, section http)
+      and require both Accepted=True and ResolvedRefs=True.
+      The parentRef scope prevents accidental matching against a wrong parent.
     """
     configmap_path = BASE_DIR / "configmap.yaml"
     with open(configmap_path) as f:
@@ -184,17 +186,56 @@ def validate_cel_contracts() -> bool:
 
     envoy_route = checks_by_id.get("envoy-httproute-ready", {})
     expr = envoy_route.get("expression", "")
+
+    # Positive: scoped parentRef with all identifying fields
     all_ok &= check(
-        "envoy-httproute-ready expression references ResolvedRefs",
-        "ResolvedRefs" in expr,
+        "envoy-httproute-ready expression scopes to parentRef (not any parent)",
+        "parentRef" in expr,
     )
     all_ok &= check(
-        "envoy-httproute-ready expression references Accepted",
-        "Accepted" in expr,
+        "envoy-httproute-ready parentRef matches expected group",
+        "'gateway.networking.k8s.io'" in expr,
     )
     all_ok &= check(
-        "envoy-httproute-ready expression checks status == 'True' for both conditions",
+        "envoy-httproute-ready parentRef matches expected kind Gateway",
+        "'Gateway'" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready parentRef matches expected name kubecrate-envoy-smoke",
+        "'kubecrate-envoy-smoke'" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready parentRef matches expected namespace",
+        "'core-envoy-gateway'" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready parentRef matches expected sectionName http",
+        "'http'" in expr,
+    )
+    # Still requires both Accepted and ResolvedRefs
+    all_ok &= check(
+        "envoy-httproute-ready expression references Accepted condition",
+        "'Accepted'" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready expression references ResolvedRefs condition",
+        "'ResolvedRefs'" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready requires status == 'True' for both Accepted and ResolvedRefs",
         expr.count("status == 'True'") >= 2,
+    )
+
+    # Negative contract: the expression must NOT match on a wrong parent name.
+    # p.parentRef.name is tested with equality, not substring, so verify the
+    # expression uses the exact expected gateway name.
+    all_ok &= check(
+        "envoy-httproute-ready parentRef name is exact equality, not substring",
+        "name == 'kubecrate-envoy-smoke'" in expr,
+    )
+    all_ok &= check(
+        "envoy-httproute-ready parentRef namespace is exact equality, not substring",
+        "namespace == 'core-envoy-gateway'" in expr,
     )
 
     return all_ok

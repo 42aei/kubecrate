@@ -32,11 +32,9 @@ The Helm chart `gateway-helm` version `v1.4.2` is used with the Kubernetes provi
 
 ### EnvoyProxy for kind NodePort exposure
 
-The kind `config.yaml` maps host port 10080 to container port 30080. For ingress traffic to reach the cluster through this mapping, the Envoy proxy Service must be of type `NodePort`.
+The kind `config.yaml` maps host port 10080 to container port 30080. For ingress traffic to reach the cluster through this mapping, the Envoy proxy Service must be of type `NodePort` on port 30080.
 
-An `EnvoyProxy` resource (CRD `gateway.envoyproxy.io/v1alpha1`) configures the managed proxy infrastructure. The smoke `GatewayClass` references the `EnvoyProxy` via `parametersRef`. The `EnvoyProxy` sets `provider.kubernetes.envoyService.type: NodePort`.
-
-The Gateway listener on port 80 becomes a Service port. The NodePort is assigned by Kubernetes within the default range (30000–32767). If the assigned NodePort does not match 30080, the operator patches the Service or adjusts the kind config. The runbook documents the verification step.
+An `EnvoyProxy` resource (CRD `gateway.envoyproxy.io/v1alpha1`) configures the managed proxy infrastructure. The smoke `GatewayClass` references the `EnvoyProxy` via `parametersRef`. The `EnvoyProxy` sets `provider.kubernetes.envoyService.type: NodePort` and uses `envoyService.patch` to declaratively pin the Service `nodePort` to 30080, matching the kind config mapping.
 
 ### Smoke Gateway API resources
 
@@ -77,19 +75,17 @@ No RBAC changes are required for this slice.
 
 ### QA branch override for disposable Flux
 
-The committed `helm-values-sync.yaml` pins the Flux sync branch to the canonical branch. For disposable QA clusters that need to reconcile a PR branch, the operator overrides the branch at bootstrap time:
+The committed `helm-values-sync.yaml` pins the Flux sync branch to the canonical branch. For disposable QA clusters that need to reconcile a PR branch, set `FLUX_GIT_BRANCH_OVERRIDE` at bootstrap time:
 
 ```sh
-# Patch the sync values before Flux bootstrap
-yq eval '.gitRepository.spec.ref.branch = "kubecrate/cratecheck-restack-envoy"' \
-  clusters/kind-dev-misc-local/platform-services/flux/helm-values-sync.yaml > /tmp/qa-values.yaml
-# Then use --values /tmp/qa-values.yaml during Flux bootstrap
+make kind-dev-misc-local-bootstrap FLUX_GIT_BRANCH_OVERRIDE=kubecrate/cratecheck-restack-envoy
 ```
 
-The Makefile `kind-dev-misc-local-bootstrap` target supports `FLUX_HELM_VALUES_EXTRA` for additional values files. The runbook documents the QA override workflow.
+The `kind-dev-misc-local-bootstrap` target detects the override and patches the `flux-sync-values` ConfigMap after applying the entrypoint kustomization, before the `flux-system-sync` HelmRelease reconciles. This ensures the GitRepository is created with the QA branch from the start.
+
+The `kind-dev-misc-local-await-gitops` target also honours `FLUX_GIT_BRANCH_OVERRIDE` when verifying the expected GitRepository branch, so downstream gitops readiness checks remain consistent.
 
 ## Risks / Trade-offs
 
 - [Risk] The Envoy Gateway Helm chart v1.4.2 may have chart maintenance or community-status changes. → Mitigation: version is pinned; revisit if upstream guidance changes.
-- [Risk] The NodePort assigned by Kubernetes may not match the kind config port 30080. → Mitigation: document the verification step and port adjustment workflow.
 - [Risk] The EnvoyProxy parametersRef requires the EnvoyProxy CRD to be installed before the GatewayClass is reconciled. → Mitigation: the Envoy Gateway HelmRelease installs the CRDs; the smoke Kustomization depends on the main Envoy Gateway Kustomization.

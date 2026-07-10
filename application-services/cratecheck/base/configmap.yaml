@@ -109,10 +109,16 @@ data:
           has(object.status) &&
           has(object.status.parents) &&
           object.status.parents.exists(p,
+            has(p.parentRef) &&
+            p.parentRef.group == 'gateway.networking.k8s.io' &&
+            p.parentRef.kind == 'Gateway' &&
+            p.parentRef.name == 'kubecrate-envoy-smoke' &&
+            p.parentRef.namespace == 'core-envoy-gateway' &&
+            p.parentRef.sectionName == 'http' &&
             has(p.conditions) &&
             p.conditions.exists(c,
               c.type == 'Accepted' && c.status == 'True') &&
             p.conditions.exists(c,
               c.type == 'ResolvedRefs' && c.status == 'True'))
-        successMessage: Envoy smoke HTTPRoute is accepted and backend refs are resolved by parent Gateway
-        failureMessage: Envoy smoke HTTPRoute is not accepted or backend refs are not resolved by parent Gateway
+        successMessage: Envoy smoke HTTPRoute is accepted and backend refs are resolved by parent Gateway kubecrate-envoy-smoke
+        failureMessage: Envoy smoke HTTPRoute is not accepted or backend refs are not resolved by parent Gateway kubecrate-envoy-smoke

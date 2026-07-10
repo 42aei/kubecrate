@@ -81,6 +81,15 @@ kind-dev-misc-local-bootstrap:
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(ENTRYPOINT_ROOT)"
+> @if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then \
+> 	override_branch='$(FLUX_GIT_BRANCH_OVERRIDE)'; \
+> 	printf 'QA override: patching flux-sync-values ConfigMap to branch %s\n' "$${override_branch}"; \
+> 	override_branch="$${override_branch}" yq eval '.gitRepository.spec.ref.branch = strenv(override_branch)' "$(FLUX_SYNC_VALUES)" \
+> 		| kubectl --context "$(KIND_CONTEXT)" create configmap flux-sync-values \
+> 			-n "$(FLUX_NAMESPACE)" --from-file=values.yaml=/dev/stdin \
+> 			--dry-run=client -o yaml \
+> 		| kubectl --context "$(KIND_CONTEXT)" apply -f -; \
+> fi
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
 > kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\.pub}' | base64 -d && printf '\n'

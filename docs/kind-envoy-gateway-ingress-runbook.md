@@ -12,18 +12,10 @@ Existing kind clusters created before this mapping was added must be recreated b
 make kind-dev-misc-local-recreate
 ```
 
-After Envoy Gateway reconciles, verify the Envoy proxy NodePort assignment:
+The EnvoyProxy resource declaratively pins NodePort 30080 via `envoyService.patch`. After Envoy Gateway reconciles, verify the Envoy proxy Service is running on the expected port:
 
 ```sh
 kubectl --context kind-kind-dev-misc-local -n core-envoy-gateway get svc -l gateway.envoyproxy.io/owning-gateway-name=kubecrate-envoy-smoke -o jsonpath='{.items[0].spec.ports[0].nodePort}'
-```
-
-If the assigned NodePort is not `30080`, patch the Service to match the kind config:
-
-```sh
-kubectl --context kind-kind-dev-misc-local -n core-envoy-gateway patch svc \
-  -l gateway.envoyproxy.io/owning-gateway-name=kubecrate-envoy-smoke \
-  --type=json -p='[{"op":"replace","path":"/spec/ports/0/nodePort","value":30080}]'
 ```
 
 Verify host-side ingress is reachable:
@@ -172,19 +164,10 @@ Do not use this red-test step against shared or production-like clusters.
 
 ## QA branch override for disposable Flux clusters
 
-When validating with a disposable QA cluster, override the Flux sync branch at bootstrap time without modifying committed config:
+When validating with a disposable QA cluster, override the Flux sync branch at bootstrap time by setting the `FLUX_GIT_BRANCH_OVERRIDE` environment variable. The bootstrap target patches the `flux-sync-values` ConfigMap before the `flux-system-sync` HelmRelease reconciles, ensuring the `GitRepository` is created with the QA branch from the start:
 
 ```sh
-# Extract the current helm-values-sync.yaml and override the branch
-yq eval '.gitRepository.spec.ref.branch = "kubecrate/cratecheck-restack-envoy"' \
-  clusters/kind-dev-misc-local/platform-services/flux/helm-values-sync.yaml \
-  > /tmp/qa-flux-sync-values.yaml
-
-# Use the overridden values during Flux sync bootstrap
-helm upgrade --install flux-system-sync oci://ghcr.io/fluxcd-community/charts/flux2-sync \
-  --kube-context "kind-kind-dev-misc-local" \
-  --namespace flux-system \
-  --values /tmp/qa-flux-sync-values.yaml
+make kind-dev-misc-local-bootstrap FLUX_GIT_BRANCH_OVERRIDE=kubecrate/cratecheck-restack-envoy
 ```
 
-The committed `helm-values-sync.yaml` remains unchanged as the canonical branch reference.
+The committed `helm-values-sync.yaml` remains unchanged as the canonical branch reference. The override is applied only at bootstrap time and does not modify committed config.

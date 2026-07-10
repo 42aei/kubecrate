@@ -13,3 +13,9 @@ spec:
     kubernetes:
       envoyService:
         type: NodePort
+        patch:
+          value:
+            spec:
+              ports:
+                - name: http
+                  nodePort: 30080
