@@ -88,7 +88,7 @@ data:
         resource:
           apiVersion: cert-manager.io/v1
           kind: Certificate
-          namespace: cratecheck
+          namespace: core-cert-manager
           name: cratecheck-local-ca
         expression: >-
           has(object.status) &&

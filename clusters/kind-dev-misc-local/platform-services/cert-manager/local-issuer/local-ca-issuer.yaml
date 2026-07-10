@@ -13,7 +13,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: cratecheck-local-ca
-  namespace: cratecheck
+  namespace: core-cert-manager
   labels:
     app.kubernetes.io/name: cert-manager
     app.kubernetes.io/part-of: kubecrate

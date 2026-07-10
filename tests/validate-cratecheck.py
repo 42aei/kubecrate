@@ -125,6 +125,72 @@ def validate_status_config() -> bool:
             "c.type" in expr and "c.status" in expr,
             "bracket notation must not be used",
         )
+        all_ok &= check(
+            f"cert-manager check {cm_check_id} asserts Ready=True condition",
+            "c.type == 'Ready'" in expr and "c.status == 'True'" in expr,
+            "must check Ready condition with True status",
+        )
+    # Verify cert-manager resource targets are exact
+    cert_manager_expected_resources = {
+        "cert-manager-helmrelease-ready": {
+            "apiVersion": "helm.toolkit.fluxcd.io/v2",
+            "kind": "HelmRelease",
+            "namespace": "core-cert-manager",
+            "name": "cert-manager",
+        },
+        "cert-manager-selfsigned-issuer-ready": {
+            "apiVersion": "cert-manager.io/v1",
+            "kind": "ClusterIssuer",
+            "namespace": "",
+            "name": "kubecrate-local-selfsigned",
+        },
+        "cert-manager-ca-certificate-ready": {
+            "apiVersion": "cert-manager.io/v1",
+            "kind": "Certificate",
+            "namespace": "core-cert-manager",
+            "name": "cratecheck-local-ca",
+        },
+        "cert-manager-ca-issuer-ready": {
+            "apiVersion": "cert-manager.io/v1",
+            "kind": "ClusterIssuer",
+            "namespace": "",
+            "name": "kubecrate-local-ca",
+        },
+        "cert-manager-tls-certificate-ready": {
+            "apiVersion": "cert-manager.io/v1",
+            "kind": "Certificate",
+            "namespace": "cratecheck",
+            "name": "cratecheck-tls",
+        },
+        "cert-manager-tls-secret-exists": {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "namespace": "cratecheck",
+            "name": "cratecheck-tls",
+        },
+    }
+    for cm_id, expected in cert_manager_expected_resources.items():
+        cm_check = next((c for c in checks if c.get("id") == cm_id), None)
+        if cm_check is None:
+            continue
+        resource = cm_check.get("resource", {})
+        for field in ("apiVersion", "kind", "namespace", "name"):
+            actual = resource.get(field, "")
+            expected_val = expected[field]
+            all_ok &= check(
+                f"cert-manager check {cm_id} resource.{field} matches expected",
+                actual == expected_val,
+                f"got '{actual}', expected '{expected_val}'",
+            )
+    # Verify TLS Secret check uses existence pattern (no condition checks on Secret)
+    tls_secret_check = next((c for c in checks if c.get("id") == "cert-manager-tls-secret-exists"), None)
+    if tls_secret_check:
+        expr = tls_secret_check.get("expression", "")
+        all_ok &= check(
+            "cert-manager-tls-secret-exists checks metadata existence (no status conditions)",
+            "object.metadata" in expr and "c.status" not in expr,
+            "Secret resources have no status conditions; check metadata only",
+        )
     return all_ok
 
 
@@ -153,26 +219,40 @@ def validate_rbac() -> bool:
         "ClusterRole includes discovery API access",
         has_discovery,
     )
-    # Verify cert-manager resource rules are present
-    cm_api_groups = set()
-    cm_resources = set()
+    # Verify cert-manager resource rules are present with exact RBAC tuples
+    cm_rules = {
+        # HelmRelease check: needs helm.toolkit.fluxcd.io helmreleases get
+        ("helm.toolkit.fluxcd.io", "helmreleases", "get"): False,
+        # ClusterIssuer/Certificate checks: needs cert-manager.io clusterissuers+certificates get
+        ("cert-manager.io", "clusterissuers", "get"): False,
+        ("cert-manager.io", "certificates", "get"): False,
+        # TLS Secret check: needs core secrets get
+        ("", "secrets", "get"): False,
+    }
     for r in rules:
         for g in r.get("apiGroups", []):
-            cm_api_groups.add(g)
-        for res in r.get("resources", []):
-            cm_resources.add(res)
-    all_ok &= check(
-        "ClusterRole grants helmreleases read access",
-        "helm.toolkit.fluxcd.io" in cm_api_groups,
-    )
-    all_ok &= check(
-        "ClusterRole grants cert-manager read access",
-        "cert-manager.io" in cm_api_groups,
-    )
-    all_ok &= check(
-        "ClusterRole grants secrets read access",
-        "secrets" in cm_resources,
-    )
+            for res in r.get("resources", []):
+                for verb in r.get("verbs", []):
+                    key = (g, res, verb)
+                    if key in cm_rules:
+                        cm_rules[key] = True
+    for (api_group, resource, verb), found in cm_rules.items():
+        all_ok &= check(
+            f"ClusterRole grants {verb} on {api_group or 'core'}/{resource}",
+            found,
+            f"missing RBAC tuple: apiGroups=[{api_group}], resources=[{resource}], verbs=[{verb}]",
+        )
+    # Verify no overly broad cert-manager permissions (read-only: get only, no list/watch/create/update/delete)
+    cert_manager_read_only_verbs = {"get"}
+    for r in rules:
+        api_groups = r.get("apiGroups", [])
+        if "cert-manager.io" in api_groups or "helm.toolkit.fluxcd.io" in api_groups:
+            verbs = set(r.get("verbs", []))
+            all_ok &= check(
+                f"cert-manager RBAC rules are read-only (get only)",
+                verbs <= cert_manager_read_only_verbs,
+                f"found verbs {verbs} for apiGroups={api_groups}",
+            )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"
     with open(crb_path) as f:
@@ -198,8 +278,8 @@ def validate_deployment() -> bool:
     )
     container = containers[0]
     all_ok &= check(
-        "Container references ghcr.io/42aei/cratecheck image",
-        "ghcr.io/42aei/cratecheck" in container.get("image", ""),
+        "Container references ghcr.io/42aei/cratecheck:v1 image",
+        container.get("image", "") == "ghcr.io/42aei/cratecheck:v1",
         container.get("image", "MISSING"),
     )
     all_ok &= check(

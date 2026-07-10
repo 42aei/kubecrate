@@ -40,9 +40,9 @@ Kubecrate SHALL provide a local cert-manager issuer path that proves certificate
 
 #### Scenario: CA Certificate is issued and creates a CA Secret
 - **WHEN** the self-signed ClusterIssuer is ready
-- **AND** the CA Certificate `cratecheck-local-ca` (isCA: true) is created in namespace `cratecheck`
+- **AND** the CA Certificate `cratecheck-local-ca` (isCA: true) is created in namespace `core-cert-manager`
 - **THEN** cert-manager issues the CA Certificate
-- **AND** a Kubernetes Secret `cratecheck-local-ca` is created containing the CA key material
+- **AND** a Kubernetes Secret `cratecheck-local-ca` is created in namespace `core-cert-manager` containing the CA key material
 
 #### Scenario: CA-based ClusterIssuer is ready
 - **WHEN** the CA Certificate Secret exists

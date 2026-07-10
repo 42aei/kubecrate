@@ -39,7 +39,7 @@ cert-manager uses namespace `core-cert-manager`. This follows the `core-<service
 
 ### Local self-signed CA proves real issuance
 
-The acceptance proof uses a self-signed ClusterIssuer to issue a local CA Certificate (isCA: true), which then backs a CA-based ClusterIssuer that issues an end-entity TLS Certificate for CrateCheck. The TLS Certificate generates a Kubernetes Secret (`cratecheck-tls`) that consumers can reference for TLS termination.
+The acceptance proof uses a self-signed ClusterIssuer to issue a local CA Certificate (isCA: true) in namespace `core-cert-manager`, which then backs a CA-based ClusterIssuer that issues an end-entity TLS Certificate for CrateCheck. The CA Certificate Secret is created in `core-cert-manager` so the CA ClusterIssuer can read it through cert-manager's `--cluster-resource-namespace` setting. The TLS Certificate generates a Kubernetes Secret (`cratecheck-tls`) in the `cratecheck` namespace that consumers can reference for TLS termination.
 
 This chain proves that cert-manager can issue and renew certificates through its standard controller, without requiring external PKI or public DNS.
 

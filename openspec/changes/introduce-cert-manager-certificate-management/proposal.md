@@ -1,8 +1,8 @@
 ## Why
 
-Backlog 0017 is ready for OpenSpec because it names a concrete platform service (cert-manager), a clear operator-visible outcome (TLS certificate issuance and HTTPS readiness), and an established validation consumer (CrateCheck). The kind-first local path already has Flux bootstrap installation and CrateCheck; this change brings cert-manager as the next platform service slice to prove TLS certificate management.
+Backlog 0017 is ready for OpenSpec because it names a concrete platform service (cert-manager), a clear operator-visible outcome (TLS certificate issuance validated through CrateCheck), and an established validation consumer (CrateCheck). The kind-first local path already has Flux bootstrap installation and CrateCheck; this change brings cert-manager as the next platform service slice to prove TLS certificate management.
 
-Kubecrate needs to prove that application services can consume TLS certificates issued through cert-manager and that CrateCheck can validate the full certificate lifecycle: controller health, Issuer readiness, Certificate issuance, TLS Secret creation, and HTTPS reachability.
+Kubecrate needs to prove that application services can consume TLS certificates issued through cert-manager and that CrateCheck can validate the full certificate lifecycle: controller health, Issuer readiness, Certificate issuance, and TLS Secret creation.
 
 ## What Changes
 
