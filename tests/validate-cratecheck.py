@@ -13,7 +13,6 @@ Validates:
 """
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -242,37 +241,240 @@ def run_kubeconform(label: str) -> bool:
     )
 
 
+def _parse_eso_expressions() -> dict[str, dict]:
+    """Parse ESO check expressions from the committed configmap.yaml.
+
+    Returns a dict mapping check ID to expression metadata (expression,
+    resource coordinates, messages).  Only returns ESO-specific checks.
+    """
+    eso_check_ids = {
+        "eso-secretstore-ready",
+        "eso-externalsecret-ready",
+        "eso-projected-secret-exists",
+    }
+    configmap_path = BASE_DIR / "configmap.yaml"
+    with open(configmap_path) as fh:
+        cm = yaml.safe_load(fh)
+    status_yaml = cm["data"]["status.yaml"]
+    status_cfg = yaml.safe_load(status_yaml)
+    expressions: dict[str, dict] = {}
+    for c in status_cfg["checks"]:
+        cid = c.get("id", "")
+        if cid in eso_check_ids:
+            expressions[cid] = {
+                "expression": c["expression"],
+                "resource": c["resource"],
+                "success_message": c.get("successMessage", ""),
+                "failure_message": c.get("failureMessage", ""),
+            }
+    return expressions
+
+
+def _cel_eval(expression: str, activation: dict) -> bool:
+    """Evaluate a CEL expression against a JSON-shaped activation dictionary."""
+    import celpy  # noqa: F811
+    from celpy.adapter import json_to_cel  # noqa: F811
+
+    env = celpy.Environment()
+    ast = env.compile(expression)
+    program = env.program(ast)
+    value = program.evaluate({"object": json_to_cel(activation)})
+    return bool(value)
+
+
 def validate_cel_expressions() -> bool:
-    """Validate ESO CEL expressions against representative mock objects using cratecheck Go tests."""
-    cratecheck_repo = Path("/home/hermes/repos/cratecheck")
-    if not cratecheck_repo.exists():
-        return check("ESO CEL expression validation", False, "cratecheck repo not found")
-    
-    # Ensure the ESO test file exists
-    test_file = cratecheck_repo / "internal" / "cel" / "eso_test.go"
-    if not test_file.exists():
-        return check("ESO CEL test file exists", False, f"{test_file} not found")
-    
-    go_bin = os.environ.get("GO_BIN", "")
-    if not go_bin:
-        for candidate in ["/tmp/go/go/bin/go", "/usr/local/go/bin/go", "/snap/go/current/bin/go"]:
-            if Path(candidate).exists():
-                go_bin = candidate
-                break
-    if not go_bin:
-        return check("go binary found", False, "go not installed")
-    
-    result = subprocess.run(
-        [go_bin, "test", "./internal/cel/", "-run", "TestESO", "-v", "-count=1"],
-        capture_output=True, text=True, cwd=cratecheck_repo,
-        timeout=60,
+    """Validate ESO CEL expressions parsed from the committed configmap against
+    representative positive and negative mock status objects.
+
+    Uses the ``celpy`` library so validation is portable — no dependency
+    on a separate CrateCheck checkout, a Go toolchain, or any machine-local path.
+    """
+    try:
+        expressions = _parse_eso_expressions()
+    except Exception as exc:
+        return check("ESO CEL expressions parseable from configmap", False, str(exc))
+
+    all_ok = True
+
+    # Required ESO check IDs
+    required_ids = {
+        "eso-secretstore-ready",
+        "eso-externalsecret-ready",
+        "eso-projected-secret-exists",
+    }
+    found_ids = set(expressions.keys())
+    all_ok &= check(
+        "All ESO check IDs present in configmap",
+        found_ids == required_ids,
+        f"missing: {required_ids - found_ids}, extra: {found_ids - required_ids}",
     )
-    ok = result.returncode == 0
-    return check(
-        "ESO CEL expression validation (SecretStore + ExternalSecret conditions)",
-        ok,
-        result.stderr.strip()[:200] if not ok else "",
+
+    # ---- Positive / negative fixtures ----
+
+    # SecretStore: object with conditions including type=Ready, status=True
+    store_expr = expressions.get("eso-secretstore-ready", {}).get("expression", "")
+    store_resource = expressions.get("eso-secretstore-ready", {}).get("resource", {})
+
+    # Positive: Ready=True present
+    store_ok_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "True",
+                 "reason": "Valid", "message": "Store is valid"},
+            ],
+        },
+    }
+    # Negative: no status at all
+    store_no_status_obj: dict = {}
+    # Negative: conditions present but no Ready type
+    store_no_ready_obj = {
+        "status": {
+            "conditions": [
+                {"type": "NotReady", "status": "True"},
+            ],
+        },
+    }
+    # Negative: Ready type present but status is False
+    store_status_false_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "False",
+                 "reason": "InvalidConfiguration"},
+            ],
+        },
+    }
+
+    all_ok &= check(
+        "SecretStore expression: mock (Ready) -> true",
+        _cel_eval(store_expr, store_ok_obj),
     )
+    all_ok &= check(
+        "SecretStore expression: mock (no status) -> false",
+        not _cel_eval(store_expr, store_no_status_obj),
+    )
+    all_ok &= check(
+        "SecretStore expression: mock (no Ready condition) -> false",
+        not _cel_eval(store_expr, store_no_ready_obj),
+    )
+    all_ok &= check(
+        "SecretStore expression: mock (status=False) -> false",
+        not _cel_eval(store_expr, store_status_false_obj),
+    )
+    all_ok &= check(
+        "SecretStore resource coordinates",
+        store_resource == {
+            "apiVersion": "external-secrets.io/v1",
+            "kind": "SecretStore",
+            "namespace": "kubecrate-system",
+            "name": "eso-smoke-kubernetes-store",
+        },
+    )
+
+    # ExternalSecret: same expression shape, different resource coordinates
+    es_expr = expressions.get("eso-externalsecret-ready", {}).get("expression", "")
+    es_resource = expressions.get("eso-externalsecret-ready", {}).get("resource", {})
+
+    es_ok_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "True",
+                 "reason": "Updated", "message": "Sync complete"},
+            ],
+        },
+    }
+    es_no_status_obj: dict = {}
+    es_no_ready_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Error", "status": "True"},
+            ],
+        },
+    }
+    es_status_false_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "False",
+                 "reason": "SecretSyncedError"},
+            ],
+        },
+    }
+
+    all_ok &= check(
+        "ExternalSecret expression: mock (Ready) -> true",
+        _cel_eval(es_expr, es_ok_obj),
+    )
+    all_ok &= check(
+        "ExternalSecret expression: mock (no status) -> false",
+        not _cel_eval(es_expr, es_no_status_obj),
+    )
+    all_ok &= check(
+        "ExternalSecret expression: mock (no Ready condition) -> false",
+        not _cel_eval(es_expr, es_no_ready_obj),
+    )
+    all_ok &= check(
+        "ExternalSecret expression: mock (status=False) -> false",
+        not _cel_eval(es_expr, es_status_false_obj),
+    )
+    all_ok &= check(
+        "ExternalSecret resource coordinates",
+        es_resource == {
+            "apiVersion": "external-secrets.io/v1",
+            "kind": "ExternalSecret",
+            "namespace": "kubecrate-system",
+            "name": "eso-smoke-projection",
+        },
+    )
+
+    # Projected Secret: metadata.name == 'eso-smoke-projected'
+    sec_expr = expressions.get("eso-projected-secret-exists", {}).get("expression", "")
+    sec_resource = expressions.get("eso-projected-secret-exists", {}).get("resource", {})
+
+    sec_ok_obj = {"metadata": {"name": "eso-smoke-projected"}}
+    sec_no_metadata_obj: dict = {}
+    sec_wrong_name_obj = {"metadata": {"name": "wrong-secret"}}
+
+    all_ok &= check(
+        "Projected Secret expression: mock (correct name) -> true",
+        _cel_eval(sec_expr, sec_ok_obj),
+    )
+    all_ok &= check(
+        "Projected Secret expression: mock (no metadata) -> false",
+        not _cel_eval(sec_expr, sec_no_metadata_obj),
+    )
+    all_ok &= check(
+        "Projected Secret expression: mock (wrong name) -> false",
+        not _cel_eval(sec_expr, sec_wrong_name_obj),
+    )
+    all_ok &= check(
+        "Projected Secret resource coordinates",
+        sec_resource == {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "namespace": "kubecrate-system",
+            "name": "eso-smoke-projected",
+        },
+    )
+
+    # ----- Adversarial: prove mutating either committed expression causes failure -----
+    # If a committed expression is mutated (e.g. c.type == 'DefinitelyWrong'),
+    # the positive fixture must *fail*.
+    mutated_store = store_expr.replace("c.type == 'Ready'", "c.type == 'DefinitelyWrong'")
+    all_ok &= check(
+        "Adversarial: mutated SecretStore expression fails on valid mock",
+        not _cel_eval(mutated_store, store_ok_obj),
+    )
+    mutated_es = es_expr.replace("c.type == 'Ready'", "c.type == 'DefinitelyWrong'")
+    all_ok &= check(
+        "Adversarial: mutated ExternalSecret expression fails on valid mock",
+        not _cel_eval(mutated_es, es_ok_obj),
+    )
+    mutated_sec = sec_expr.replace("'eso-smoke-projected'", "'definitely-wrong'")
+    all_ok &= check(
+        "Adversarial: mutated Projected Secret expression fails on valid mock",
+        not _cel_eval(mutated_sec, sec_ok_obj),
+    )
+
+    return all_ok
 
 
 def main():
