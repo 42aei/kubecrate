@@ -1279,6 +1279,44 @@ exit {exit_code}
             "delete confirmed" if has_delete_in_final else "delete missing",
         )
 
+        # ── D5b: canonical branch would be restored ──────────────────
+        # After the override ConfigMap is deleted, the GitOps controller
+        # would use the committed canonical branch. Read the authoritative
+        # canonical branch from the committed helm-values-sync.yaml and
+        # assert it matches the expected canonical value.
+        sync_values_path = (
+            REPO_ROOT / "clusters" / "kind-dev-misc-local"
+            / "platform-services" / "flux" / "helm-values-sync.yaml"
+        )
+        with open(sync_values_path) as f:
+            committed_sync = yaml.safe_load(f)
+        canonical_branch = (
+            committed_sync.get("gitRepository", {})
+            .get("spec", {})
+            .get("ref", {})
+            .get("branch", "")
+        )
+        all_ok &= check(
+            "stateful (post-default): canonical branch is pivot/flux-sync-ssh-bootstrap",
+            canonical_branch == "pivot/flux-sync-ssh-bootstrap",
+            f"got {canonical_branch}",
+        )
+        # After default bootstrap deletes the override, no apply -f
+        # with an override branch was issued in the default phase.
+        # The canonical branch is the authoritative fallback.
+        # Count only `apply -f` (not `apply -k` or `delete --ignore-not-found`).
+        apply_f_in_default = sum(
+            1 for cmd, args in calls_default_only
+            if cmd == "kubectl"
+            and "apply" in args
+            and any(a == "-f" for a in args)
+        )
+        all_ok &= check(
+            "stateful (post-default): no override apply -f during default bootstrap",
+            apply_f_in_default == 0,
+            f"found {apply_f_in_default} apply -f calls in default phase",
+        )
+
         # ── D6: mock failure propagation ─────────────────────────────
         # A mock that exits nonzero must propagate the failure.
         print("\n    --- D6: mock failure propagation ---")
@@ -1307,6 +1345,86 @@ exit {exit_code}
             )
         finally:
             shutil.rmtree(tmpdir_fail, ignore_errors=True)
+
+        # ── D7: kubectl apply -k failure during root reconcile ───────
+        # A root reconciliation (simulated by kubectl apply -k
+        # entrypoint/) that fails must propagate non-zero.
+        print("\n    --- D7: kubectl apply -k failure propagation ---")
+        tmpdir_d7, _, env_d7 = _setup_harness(
+            override_branch="candidate/test-envoy",
+        )
+        try:
+            # Run candidate bootstrap first
+            _run_make(tmpdir_d7, env_d7,
+                      override_branch="candidate/test-envoy")
+
+            # Replace the kubectl mock to fail on apply -k
+            fail_kubectl_script = MOCK_SCRIPT_TEMPLATE.format(
+                name="kubectl", log_file=tmpdir_d7 + "/calls.log",
+                ctx_file=tmpdir_d7 + "/ctx.txt",
+                stdin_dir=tmpdir_d7 + "/stdin", exit_code=1,
+            )
+            with open(os.path.join(tmpdir_d7, "kubectl"), "w") as f:
+                f.write(fail_kubectl_script)
+            os.chmod(os.path.join(tmpdir_d7, "kubectl"), 0o755)
+
+            rc_d7, _, stderr_d7 = _run_cmd_in_harness(
+                tmpdir_d7,
+                ["kubectl", "--context", "kind-dry-run", "apply", "-k",
+                 str(ENTRYPOINT_DIR)],
+            )
+            all_ok &= check(
+                "stateful (failure): kubectl apply -k exit 1 propagates non-zero",
+                rc_d7 != 0,
+                f"rc={rc_d7} (expected != 0)",
+            )
+        finally:
+            shutil.rmtree(tmpdir_d7, ignore_errors=True)
+
+        # ── D8: kubectl delete failure during default bootstrap ──────
+        # The delete of the override ConfigMap during default bootstrap
+        # must propagate non-zero on failure.
+        print("\n    --- D8: kubectl delete failure propagation ---")
+        tmpdir_d8, _, env_d8 = _setup_harness(
+            override_branch="candidate/test-envoy",
+        )
+        try:
+            # Run candidate bootstrap
+            _run_make(tmpdir_d8, env_d8,
+                      override_branch="candidate/test-envoy")
+            # Run root reconcile
+            _run_cmd_in_harness(
+                tmpdir_d8,
+                ["kubectl", "--context", "kind-dry-run", "apply", "-k",
+                 str(ENTRYPOINT_DIR)],
+            )
+
+            # Replace the kubectl mock to fail on delete
+            fail_kubectl_d8 = MOCK_SCRIPT_TEMPLATE.format(
+                name="kubectl", log_file=tmpdir_d8 + "/calls.log",
+                ctx_file=tmpdir_d8 + "/ctx.txt",
+                stdin_dir=tmpdir_d8 + "/stdin", exit_code=1,
+            )
+            with open(os.path.join(tmpdir_d8, "kubectl"), "w") as f:
+                f.write(fail_kubectl_d8)
+            os.chmod(os.path.join(tmpdir_d8, "kubectl"), 0o755)
+
+            env_def_d8 = {
+                "KIND_CLUSTER_NAME": "dry-run",
+                "KIND_CONTEXT": "kind-dry-run",
+            }
+            rc_d8, _, stderr_d8 = _run_cmd_in_harness(
+                tmpdir_d8,
+                ["make", "kind-dev-misc-local-bootstrap"],
+                env_def_d8,
+            )
+            all_ok &= check(
+                "stateful (failure): kubectl delete exit 1 propagates non-zero",
+                rc_d8 != 0,
+                f"rc={rc_d8} (expected != 0)",
+            )
+        finally:
+            shutil.rmtree(tmpdir_d8, ignore_errors=True)
 
     finally:
         shutil.rmtree(tmpdir_d, ignore_errors=True)
@@ -1379,9 +1497,11 @@ exit {exit_code}
         shutil.rmtree(tmpdir_e1, ignore_errors=True)
 
     # ── E2: Remove the override render + apply pipe ──────────────────
-    #     The override is never applied, so the effective branch never
-    #     becomes the candidate. The stateful assertion (branch ==
-    #     candidate) must fail.
+    #     Runs the FULL stateful lifecycle (candidate → root reconcile
+    #     → default bootstrap) in ONE harness. Without the override
+    #     pipe, the candidate branch is never applied, so the effective
+    #     branch assertion fails. After default bootstrap, delete
+    #     should still work (the else branch is intact).
     tmpdir_e2, _, env_e2 = _setup_harness(
         override_branch="candidate/test-envoy",
     )
@@ -1394,15 +1514,43 @@ exit {exit_code}
         lines_mut = mutated_no_override.split("\n")
         for i, line in enumerate(lines_mut):
             if "| kubectl --context" in line and "apply -f -" in line:
-                lines_mut[i] = "# REMOVED apply pipe"
+                lines_mut[i] = "> \t\t# REMOVED apply pipe; \\"
+                break
         mutated_no_override = "\n".join(lines_mut)
 
         mutated_mf_e2 = os.path.join(tmpdir_e2, "Makefile.mutated")
         with open(mutated_mf_e2, "w") as f:
             f.write(mutated_no_override)
 
+        # ── candidate bootstrap ────────────────────────────────────
         _run_make(tmpdir_e2, env_e2, override_branch="candidate/test-envoy",
                   makefile=mutated_mf_e2)
+
+        # ── root reconcile ──────────────────────────────────────────
+        env_root_e2 = {
+            "KIND_CLUSTER_NAME": "dry-run",
+            "KIND_CONTEXT": "kind-dry-run",
+        }
+        _run_cmd_in_harness(
+            tmpdir_e2,
+            ["kubectl", "--context", "kind-dry-run", "apply", "-k",
+             str(ENTRYPOINT_DIR)],
+            env_root_e2,
+        )
+
+        # ── default bootstrap ───────────────────────────────────────
+        env_def_e2 = {
+            "KIND_CLUSTER_NAME": "dry-run",
+            "KIND_CONTEXT": "kind-dry-run",
+        }
+        rc_e2d, stdout_e2d, _ = _run_cmd_in_harness(
+            tmpdir_e2,
+            ["make", "-f", mutated_mf_e2, "kind-dev-misc-local-bootstrap"],
+            env_def_e2,
+        )
+        calls_e2 = _get_calls(tmpdir_e2)
+
+        # Assert: effective branch is NOT candidate (override was removed)
         eff_e2 = _effective_branch_from_stdin(tmpdir_e2)
         all_ok &= check(
             "adversarial stateful: removing override → effective branch "
@@ -1410,12 +1558,23 @@ exit {exit_code}
             eff_e2 != "candidate/test-envoy",
             f"effective branch: {eff_e2} (expected != candidate/test-envoy)",
         )
+
+        # Assert: the else delete still runs (else branch is intact)
+        desc_e2_del, ok_e2_del = _assert_default_delete(stdout_e2d, calls_e2)
+        all_ok &= check(
+            "adversarial stateful: removing override → delete still works "
+            "(else branch intact)",
+            ok_e2_del,
+            "delete present (correct)" if ok_e2_del else "delete missing",
+        )
     finally:
         shutil.rmtree(tmpdir_e2, ignore_errors=True)
 
     # ── E3: Reorder: apply -k AFTER override ─────────────────────────
-    #     The override runs before the entrypoint apply, so the
-    #     candidate-order checks fail.
+    #     Runs the FULL stateful lifecycle (candidate → root reconcile
+    #     → default bootstrap) in ONE harness with the reordered recipe.
+    #     The candidate-order checks must fail because apply -k runs
+    #     after the override.
     lines_orig_stateful = original_makefile.split("\n")
     apply_k_idx = None
     if_start = None
@@ -1449,11 +1608,37 @@ exit {exit_code}
             mutated_mf_e3 = os.path.join(tmpdir_e3, "Makefile.mutated")
             with open(mutated_mf_e3, "w") as f:
                 f.write(mutated_reorder)
+
+            # ── candidate bootstrap ─────────────────────────────────
             _run_make(tmpdir_e3, env_e3,
                       override_branch="candidate/test-envoy",
                       makefile=mutated_mf_e3)
+
+            # ── root reconcile ───────────────────────────────────────
+            env_root_e3 = {
+                "KIND_CLUSTER_NAME": "dry-run",
+                "KIND_CONTEXT": "kind-dry-run",
+            }
+            _run_cmd_in_harness(
+                tmpdir_e3,
+                ["kubectl", "--context", "kind-dry-run", "apply", "-k",
+                 str(ENTRYPOINT_DIR)],
+                env_root_e3,
+            )
+
+            # ── default bootstrap ────────────────────────────────────
+            env_def_e3 = {
+                "KIND_CLUSTER_NAME": "dry-run",
+                "KIND_CONTEXT": "kind-dry-run",
+            }
+            rc_e3d, stdout_e3d, _ = _run_cmd_in_harness(
+                tmpdir_e3,
+                ["make", "-f", mutated_mf_e3, "kind-dev-misc-local-bootstrap"],
+                env_def_e3,
+            )
             calls_e3 = _get_calls(tmpdir_e3)
 
+            # At least one candidate-order check MUST fail.
             e3_failed = 0
             for desc, ok in _assert_candidate_order(calls_e3):
                 if not ok:
@@ -1462,6 +1647,15 @@ exit {exit_code}
                 "adversarial stateful: reordering → candidate-order checks fail",
                 e3_failed > 0,
                 f"{e3_failed} behavioral checks failed (expected >0)",
+            )
+
+            # The else delete should still work (reorder doesn't remove it).
+            desc_e3_del, ok_e3_del = _assert_default_delete(stdout_e3d, calls_e3)
+            all_ok &= check(
+                "adversarial stateful: reordering → delete still works "
+                "(else branch intact)",
+                ok_e3_del,
+                "delete present (correct)" if ok_e3_del else "delete missing",
             )
         finally:
             shutil.rmtree(tmpdir_e3, ignore_errors=True)
@@ -1472,6 +1666,81 @@ exit {exit_code}
             False,
             "could not locate lines in Makefile for reorder test",
         )
+
+    # ── E4: Remove both override AND else delete ─────────────────────
+    #     Runs the FULL stateful lifecycle with both the override pipe
+    #     AND the else delete removed. Both the candidate branch
+    #     assertion AND the canonical reset assertion must fail,
+    #     proving both production paths are independently covered.
+    tmpdir_e4, _, env_e4 = _setup_harness(
+        override_branch="candidate/test-envoy",
+    )
+    try:
+        # Remove the override render + apply pipe
+        mutated_both = original_makefile.replace(
+            "FLUX_GIT_BRANCH_OVERRIDE='$(FLUX_GIT_BRANCH_OVERRIDE)'"
+            " python3 scripts/render-flux-sync-override.py",
+            "# REMOVED override render",
+        )
+        lines_both = mutated_both.split("\n")
+        for i, line in enumerate(lines_both):
+            if "| kubectl --context" in line and "apply -f -" in line:
+                lines_both[i] = "> \t\t# REMOVED apply pipe; \\"
+            if "delete configmap flux-sync-values-override" in line:
+                lines_both[i] = "> \t# REMOVED delete; \\"
+                break
+        mutated_both = "\n".join(lines_both)
+
+        mutated_mf_e4 = os.path.join(tmpdir_e4, "Makefile.mutated")
+        with open(mutated_mf_e4, "w") as f:
+            f.write(mutated_both)
+
+        # ── candidate bootstrap ────────────────────────────────────
+        _run_make(tmpdir_e4, env_e4, override_branch="candidate/test-envoy",
+                  makefile=mutated_mf_e4)
+
+        # ── root reconcile ──────────────────────────────────────────
+        env_root_e4 = {
+            "KIND_CLUSTER_NAME": "dry-run",
+            "KIND_CONTEXT": "kind-dry-run",
+        }
+        _run_cmd_in_harness(
+            tmpdir_e4,
+            ["kubectl", "--context", "kind-dry-run", "apply", "-k",
+             str(ENTRYPOINT_DIR)],
+            env_root_e4,
+        )
+
+        # ── default bootstrap ───────────────────────────────────────
+        env_def_e4 = {
+            "KIND_CLUSTER_NAME": "dry-run",
+            "KIND_CONTEXT": "kind-dry-run",
+        }
+        rc_e4d, stdout_e4d, _ = _run_cmd_in_harness(
+            tmpdir_e4,
+            ["make", "-f", mutated_mf_e4, "kind-dev-misc-local-bootstrap"],
+            env_def_e4,
+        )
+        calls_e4 = _get_calls(tmpdir_e4)
+
+        # Assert: effective branch is NOT candidate (override was removed)
+        eff_e4 = _effective_branch_from_stdin(tmpdir_e4)
+        all_ok &= check(
+            "adversarial stateful: removing both → effective branch "
+            "NOT candidate/test-envoy",
+            eff_e4 != "candidate/test-envoy",
+            f"effective branch: {eff_e4} (expected != candidate/test-envoy)",
+        )
+
+        # Assert: delete check FAILS (else delete was removed)
+        desc_e4_del, ok_e4_del = _assert_default_delete(stdout_e4d, calls_e4)
+        all_ok &= check(
+            f"adversarial stateful: removing both → {desc_e4_del} FAILS",
+            not ok_e4_del,
+            "delete check correctly failed against mutated recipe",
+        )
+    finally:
+        shutil.rmtree(tmpdir_e4, ignore_errors=True)
 
     # ══════════════════════════════════════════════════════════════════
     # Phase C: adversarial — mutated Makefile → behavioral checks fail
@@ -1497,7 +1766,8 @@ exit {exit_code}
         lines_ma = mutated_no_apply.split("\n")
         for i, line in enumerate(lines_ma):
             if "| kubectl --context" in line and "apply -f -" in line:
-                lines_ma[i] = "# REMOVED apply pipe"
+                lines_ma[i] = "> \t\t# REMOVED apply pipe; \\"
+                break
         mutated_no_apply = "\n".join(lines_ma)
 
         mutated_mf = os.path.join(tmpdir_c1, "Makefile.mutated")
