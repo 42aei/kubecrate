@@ -458,12 +458,16 @@ def validate_cel_expressions() -> bool:
     # ----- Adversarial: prove mutating either committed expression causes failure -----
     # If a committed expression is mutated (e.g. c.type == 'DefinitelyWrong'),
     # the positive fixture must *fail*.
-    mutated_store = store_expr.replace("c.type == 'Ready'", "c.type == 'DefinitelyWrong'")
+    mutated_store = store_expr.replace(
+        "c['type'] == 'Ready'", "c['type'] == 'DefinitelyWrong'"
+    )
     all_ok &= check(
         "Adversarial: mutated SecretStore expression fails on valid mock",
         not _cel_eval(mutated_store, store_ok_obj),
     )
-    mutated_es = es_expr.replace("c.type == 'Ready'", "c.type == 'DefinitelyWrong'")
+    mutated_es = es_expr.replace(
+        "c['type'] == 'Ready'", "c['type'] == 'DefinitelyWrong'"
+    )
     all_ok &= check(
         "Adversarial: mutated ExternalSecret expression fails on valid mock",
         not _cel_eval(mutated_es, es_ok_obj),
