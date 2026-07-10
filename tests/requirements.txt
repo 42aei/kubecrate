@@ -1,0 +1,4 @@
+# Pinned test dependencies for validate-cratecheck.py
+# Python 3.12+, isolated venv install.
+pyyaml==6.0.3
+cel-python==0.5.0

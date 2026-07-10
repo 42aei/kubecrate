@@ -112,3 +112,10 @@ kind-dev-misc-local-evidence:
 > flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+
+.PHONY: validate-cratecheck
+validate-cratecheck:
+> python3 -m venv .venv-cratecheck
+> .venv-cratecheck/bin/pip install -q -r tests/requirements.txt
+> .venv-cratecheck/bin/python3 tests/validate-cratecheck.py
+> @printf 'CrateCheck validation: PASS\n'
