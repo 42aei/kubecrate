@@ -8,7 +8,7 @@ The slice proves admission control enforcement through a `require-ns-label` Clus
 
 ## Quick reference: candidate branch override for disposable QA clusters
 
-This is required when the live Flux `GitRepository` must reconcile a candidate branch different from the default. The bootstrap target accepts `FLUX_GIT_BRANCH_OVERRIDE` which is passed to `--set git.branch` at helm install time, creating a durable GitRepository reference before its first reconciliation — no post-bootstrap `kubectl patch` needed.
+This is required when the live Flux `GitRepository` must reconcile a candidate branch different from the default. The bootstrap target writes a `helm-values-sync-override.yaml` file with the candidate branch reference before applying the entrypoint Kustomization, and restores it to an empty override after the apply — creating a durable GitRepository reference before its first reconciliation with no post-bootstrap `kubectl patch` needed.
 
 ```sh
 # Bootstrap with a candidate branch override
@@ -190,7 +190,9 @@ This test temporarily breaks the Kyverno path by deleting the ClusterPolicy, ver
 # Fail-closed wrapper: trap to restore ClusterPolicy on error/interruption
 cleanup_and_restore() {
     echo ""
-    echo "=== TRAP: restoring ClusterPolicy via Flux reconciliation ==="
+    echo "=== TRAP: killing port-forward and restoring ClusterPolicy via Flux reconciliation ==="
+    kill $PF_PID 2>/dev/null || true
+    wait $PF_PID 2>/dev/null || true
     flux --context kind-kind-dev-misc-local reconcile kustomization kyverno-smoke-policy -n flux-system --timeout 120s 2>/dev/null || true
     kubectl --context kind-kind-dev-misc-local get clusterpolicy require-ns-label --no-headers 2>/dev/null || \
       echo "WARN: ClusterPolicy still missing after trap restore attempt"
@@ -253,8 +255,8 @@ while time.time() < deadline:
     print(f"  {hr_state:>8} kyverno-helmrelease-ready: {hr_check.get('summary', '')}")
     print(f"  {ns_state:>8} kyverno-smoke-namespace-exists: {ns_check.get('summary', '')}")
 
-    # ClusterPolicy must be non-green (red)
-    cp_is_red = cp_state != "green"
+    # ClusterPolicy must be red (exact state match, not any non-green)
+    cp_is_red = cp_state == "red"
 
     # HelmRelease and smoke namespace must remain green (unaffected)
     unaffected_ok = hr_state == "green" and ns_state == "green"
@@ -267,7 +269,7 @@ while time.time() < deadline:
     time.sleep(5)
 
 if not found_red:
-    print("\nFAIL: kyverno-clusterpolicy-ready did not turn non-green within 60s.")
+    print("\nFAIL: kyverno-clusterpolicy-ready did not turn red within 60s.")
     sys.exit(1)
 if not unaffected_green:
     print("\nFAIL: unaffected Kyverno checks (helmrelease-ready, smoke-namespace-exists) are not green.")
@@ -429,7 +431,7 @@ Capture all of the following:
 - [ ] CrateCheck human-readable UI snippet — green state
 - [ ] Deny test output: unlabeled namespace creation denied with expected policy message
 - [ ] Allowed test output: labeled namespace created at admission time (label in manifest, not post-create)
-- [ ] Red test: kyverno-clusterpolicy-ready detected as non-green after ClusterPolicy deletion
+- [ ] Red test: kyverno-clusterpolicy-ready detected as red after ClusterPolicy deletion
 - [ ] Red test: kyverno-helmrelease-ready and kyverno-smoke-namespace-exists confirmed green (unaffected)
 - [ ] CrateCheck /status.json — red state and unaffected-green evidence
 - [ ] CrateCheck HTML UI snippet — red state

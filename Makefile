@@ -14,6 +14,7 @@ KIND_UNIQUE_STATE_FILE ?= .tmp/kind-unique-cluster-name
 ENTRYPOINT_ROOT := clusters/$(KIND_CLUSTER_NAME)/entrypoint
 FLUX_PLATFORM_SERVICE_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services/flux
 FLUX_HELM_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values.yaml
+FLUX_SYNC_OVERRIDE_FILE := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync-override.yaml
 FLUX_RELEASE_NAME := flux-system
 FLUX_SYNC_HELMRELEASE_NAME := flux-system-sync
 FLUX_NAMESPACE := flux-system
@@ -76,12 +77,19 @@ kind-dev-misc-local-recreate:
 > $(MAKE) kind-dev-misc-local-create
 
 kind-dev-misc-local-bootstrap:
-> FLUX_EFFECTIVE_BRANCH="$(FLUX_GIT_BRANCH)"; if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then FLUX_EFFECTIVE_BRANCH="$(FLUX_GIT_BRANCH_OVERRIDE)"; fi; \
-> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)" --set git.branch="$${FLUX_EFFECTIVE_BRANCH}"
+> printf '{}\n' >"$(FLUX_SYNC_OVERRIDE_FILE)"
+> if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then \
+>   printf 'gitRepository:\n  spec:\n    ref:\n      branch: %s\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" >"$(FLUX_SYNC_OVERRIDE_FILE)"; \
+>   printf 'bootstrap: overriding sync branch to %s (via %s)\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" "$(FLUX_SYNC_OVERRIDE_FILE)"; \
+> else \
+>   printf 'bootstrap: using committed default sync branch\n'; \
+> fi
+> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(ENTRYPOINT_ROOT)"
+> printf '{}\n' >"$(FLUX_SYNC_OVERRIDE_FILE)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
 > kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\.pub}' | base64 -d && printf '\n'
