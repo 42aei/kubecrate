@@ -2,13 +2,19 @@
 
 SHELL := /bin/sh
 
-KIND_CLUSTER_NAME := kind-dev-misc-local
-KIND_CONTEXT := kind-$(KIND_CLUSTER_NAME)
+KIND_CLUSTER_NAME ?= kind-dev-misc-local
+KIND_CONTEXT = kind-$(KIND_CLUSTER_NAME)
 HELM_CONTEXT_ARGS := --kube-context "$(KIND_CONTEXT)"
 KIND_CONFIG := kind/config.yaml
+FLUX_GIT_BRANCH ?= pivot/flux-sync-ssh-bootstrap
+FLUX_GIT_BRANCH_OVERRIDE ?=
+KIND_UNIQUE_PREFIX ?= kubecrate-qa
+KIND_UNIQUE_CLUSTER_NAME := $(KIND_UNIQUE_PREFIX)-$(shell date +%s)-$(shell LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
+KIND_UNIQUE_STATE_FILE ?= .tmp/kind-unique-cluster-name
 ENTRYPOINT_ROOT := clusters/$(KIND_CLUSTER_NAME)/entrypoint
 FLUX_PLATFORM_SERVICE_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services/flux
 FLUX_HELM_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values.yaml
+FLUX_SYNC_OVERRIDE_FILE := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync-override.yaml
 FLUX_RELEASE_NAME := flux-system
 FLUX_SYNC_HELMRELEASE_NAME := flux-system-sync
 FLUX_NAMESPACE := flux-system
@@ -17,7 +23,7 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -36,15 +42,61 @@ kind-dev-misc-local-create: kind-dev-misc-local-check-prereqs
 kind-dev-misc-local-delete:
 > kind delete cluster --name "$(KIND_CLUSTER_NAME)"
 
+kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
+kind-unique-create: kind-dev-misc-local-create
+> mkdir -p "$$(dirname "$(KIND_UNIQUE_STATE_FILE)")"
+> printf '%s\n' "$(KIND_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
+> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_CLUSTER_NAME)" "$(KIND_CLUSTER_NAME)"
+
+kind-unique-current:
+> test -s "$(KIND_UNIQUE_STATE_FILE)" || { printf 'no kind unique cluster state found at %s\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }
+> sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)"
+
+kind-unique-delete:
+> cluster=""; \
+> if [ "$(origin KIND_CLUSTER_NAME)" = "command line" ] || [ "$(origin KIND_CLUSTER_NAME)" = "environment" ] || [ "$(origin KIND_CLUSTER_NAME)" = "environment override" ]; then cluster="$(KIND_CLUSTER_NAME)"; \
+> elif [ -s "$(KIND_UNIQUE_STATE_FILE)" ]; then cluster="$$(sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)")"; fi; \
+> test -n "$${cluster}" || { printf 'KIND_CLUSTER_NAME is required or %s must contain a cluster name\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }; \
+> kind delete cluster --name "$${cluster}"; \
+> if [ -s "$(KIND_UNIQUE_STATE_FILE)" ] && [ "$$(sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)")" = "$${cluster}" ]; then rm -f "$(KIND_UNIQUE_STATE_FILE)"; fi
+
+kind-unique-smoke: kind-dev-misc-local-check-prereqs
+> cluster="$(KIND_UNIQUE_CLUSTER_NAME)"; \
+> cleanup() { kind delete cluster --name "$${cluster}" >/dev/null 2>&1 || true; }; \
+> trap cleanup EXIT INT TERM; \
+> $(MAKE) kind-dev-misc-local-create KIND_CLUSTER_NAME="$${cluster}"; \
+> kubectl --context "kind-$${cluster}" get nodes; \
+> kubectl --context "kind-$${cluster}" wait --for=condition=Ready node --all --timeout=180s; \
+> cleanup; \
+> trap - EXIT INT TERM; \
+> if kind get clusters | grep -Fx "$${cluster}" >/dev/null; then printf 'cluster cleanup failed: %s\n' "$${cluster}" >&2; exit 1; fi; \
+> printf 'created and deleted disposable kind cluster: %s\n' "$${cluster}"
+
 kind-dev-misc-local-recreate:
 > $(MAKE) kind-dev-misc-local-delete
 > $(MAKE) kind-dev-misc-local-create
 
 kind-dev-misc-local-bootstrap:
+> printf '{}\n' >"$(FLUX_SYNC_OVERRIDE_FILE)"
+> if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then \
+    printf 'gitRepository:\n  spec:\n    ref:\n      branch: %s\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" >"$(FLUX_SYNC_OVERRIDE_FILE)"; \
+    printf 'bootstrap: overriding sync branch to %s (via %s)\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" "$(FLUX_SYNC_OVERRIDE_FILE)"; \
+  else \
+    kubectl --context "$(KIND_CONTEXT)" delete configmap flux-sync-values-override -n "$(FLUX_NAMESPACE)" --ignore-not-found; \
+    printf 'bootstrap: removed any pre-existing flux-sync-values-override ConfigMap\n'; \
+    printf 'bootstrap: using committed default sync branch\n'; \
+  fi
 > helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
+> if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then \
+    kubectl --context "$(KIND_CONTEXT)" create configmap flux-sync-values-override \
+      --from-file=values.yaml="$(FLUX_SYNC_OVERRIDE_FILE)" \
+      -n "$(FLUX_NAMESPACE)" \
+      --dry-run=client -o yaml | kubectl --context "$(KIND_CONTEXT)" apply -f -; \
+    printf 'bootstrap: created durable flux-sync-values-override ConfigMap (survives GitOps reconciliation)\n'; \
+  fi
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(ENTRYPOINT_ROOT)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'

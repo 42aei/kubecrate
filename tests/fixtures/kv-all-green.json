@@ -1,0 +1,1 @@
+{"checks": [{"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"}, {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"}, {"id": "kyverno-smoke-namespace-exists", "state": "green", "summary": "Namespace exists"}]}

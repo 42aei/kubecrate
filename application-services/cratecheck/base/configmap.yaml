@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cratecheck-status-config
+  namespace: cratecheck
+  labels:
+    app.kubernetes.io/name: cratecheck
+    app.kubernetes.io/part-of: kubecrate
+data:
+  status.yaml: |
+    # CrateCheck config contract: https://github.com/42aei/cratecheck/blob/main/docs/kubernetes/README.md#adapting-for-another-service
+    interval: 30s
+    checks:
+      - id: cratecheck-deployment-ready
+        name: CrateCheck deployment ready
+        severity: red
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          namespace: cratecheck
+          name: cratecheck
+        expression: >
+          has(object.status) &&
+          object.status.observedGeneration >= object.metadata.generation &&
+          object.status.availableReplicas == object.spec.replicas
+        successMessage: CrateCheck deployment is fully available
+        failureMessage: CrateCheck deployment is not fully available
+      - id: cratecheck-namespace-exists
+        name: CrateCheck namespace exists
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          namespace: ""
+          name: cratecheck
+        expression: >
+          has(object.metadata) &&
+          object.metadata.name == 'cratecheck'
+        successMessage: cratecheck namespace exists
+        failureMessage: cratecheck namespace not found
+      - id: cratecheck-configmap-present
+        name: CrateCheck check ConfigMap present
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          namespace: cratecheck
+          name: cratecheck-status-config
+        expression: >
+          has(object.data) &&
+          'status.yaml' in object.data &&
+          object.data['status.yaml'] != ''
+        successMessage: check ConfigMap is present and non-empty
+        failureMessage: check ConfigMap is missing or empty
+      - id: kyverno-helmrelease-ready
+        name: Kyverno HelmRelease ready
+        severity: red
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: core-kyverno
+          name: kyverno
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: Kyverno HelmRelease is ready
+        failureMessage: Kyverno HelmRelease is not ready
+      - id: kyverno-clusterpolicy-ready
+        name: Kyverno require-ns-label ClusterPolicy ready
+        severity: red
+        resource:
+          apiVersion: kyverno.io/v1
+          kind: ClusterPolicy
+          namespace: ""
+          name: require-ns-label
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: Kyverno require-ns-label ClusterPolicy is ready
+        failureMessage: Kyverno require-ns-label ClusterPolicy is not ready
+      - id: kyverno-smoke-namespace-exists
+        name: Kyverno smoke allowed namespace exists
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          namespace: ""
+          name: kyverno-smoke-allowed
+        expression: >-
+          has(object.metadata) &&
+          object.metadata.name == 'kyverno-smoke-allowed'
+        successMessage: Kyverno smoke allowed namespace exists
+        failureMessage: Kyverno smoke allowed namespace not found
