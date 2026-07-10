@@ -1523,13 +1523,14 @@ exit {exit_code}
             if "delete configmap flux-sync-values-override" in line:
                 # Replace with true to keep shell structure valid
                 # while removing the actual delete behavior.
+                original = line
                 lines_e1[i] = line.replace(
                     'kubectl --context "$(KIND_CONTEXT)" delete configmap'
                     " flux-sync-values-override"
                     ' -n "$(FLUX_NAMESPACE)" --ignore-not-found',
                     "true",
                 )
-                found_delete_e1 = True
+                found_delete_e1 = lines_e1[i] != original
                 break
         mutated_no_else = "\n".join(lines_e1)
         mutated_mf_e1 = os.path.join(tmpdir_e1, "Makefile.mutated")
@@ -1858,21 +1859,23 @@ exit {exit_code}
             if "| kubectl --context" in line and "apply -f -" in line:
                 # Replace the piped apply with true to keep shell
                 # structure valid while removing the apply behavior.
+                original_ap = line
                 lines_both[i] = line.replace(
                     '| kubectl --context "$(KIND_CONTEXT)" apply -f -',
                     "true",
                 )
-                found_apply_pipe_e4 = True
+                found_apply_pipe_e4 = lines_both[i] != original_ap
             if "delete configmap flux-sync-values-override" in line:
                 # Replace with true to keep shell structure valid
                 # while removing the actual delete behavior.
+                original_del = line
                 lines_both[i] = line.replace(
                     'kubectl --context "$(KIND_CONTEXT)" delete configmap'
                     " flux-sync-values-override"
                     ' -n "$(FLUX_NAMESPACE)" --ignore-not-found',
                     "true",
                 )
-                found_delete_e4 = True
+                found_delete_e4 = lines_both[i] != original_del
                 break
         mutated_both = "\n".join(lines_both)
         all_ok &= check(
