@@ -12,3 +12,6 @@ configMapGenerator:
   - name: flux-sync-values
     files:
       - values.yaml=./helm-values-sync.yaml
+  - name: flux-sync-values-override
+    files:
+      - values.yaml=./helm-values-sync-override.yaml

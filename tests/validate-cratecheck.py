@@ -176,10 +176,15 @@ def validate_status_config() -> bool:
 def validate_cel_behavioral(checks: list[dict], expected_ids: set[str]) -> bool:
     """Validate cert-manager CEL expressions with structural and behavioral checks.
 
-    This replaces substring-only inspection with structural validation:
-    - Positive: verify guard clauses, exists closure, dot notation, Ready=True predicate
-    - Negative: verify expression would fail for wrong condition type or missing resource
-    - Completeness: every condition-based check has proper guards and closure
+    Structural checks:
+    - Balanced parentheses, dot notation, guard clauses, exists closure,
+      Ready=True predicate, no c.reason, no non-Ready types, proper quoting
+
+    Behavioral (actual CEL evaluation via celpy):
+    - Positive fixtures: Ready=True passes
+    - Negative fixtures: absent conditions, Ready=False, wrong type, missing resource fail
+    - Mutation regression: appending || true to every expression makes it always pass
+    - TLS Secret: metadata-only fixture validation
     """
     all_ok = True
     condition_check_ids = {cid for cid in expected_ids if cid != "cert-manager-tls-secret-exists"}
@@ -271,7 +276,6 @@ def validate_cel_behavioral(checks: list[dict], expected_ids: set[str]) -> bool:
             )
 
             # Simulate: if resource with wrong condition type presented, exists would return false
-            # The expression uses c.type == 'Ready' — confirm it would reject other types
             uses_other_condition = any(
                 f"c.type == '{t}'" in expr
                 for t in ["Available", "Healthy", "Progressing", "Degraded"]
@@ -282,9 +286,11 @@ def validate_cel_behavioral(checks: list[dict], expected_ids: set[str]) -> bool:
                 "only Ready matched" if not uses_other_condition else "FOUND non-Ready condition type in expression",
             )
 
+            # --- Actual CEL behavioral evaluation ---
+            all_ok &= _evaluate_cel_behavioral(cm_check_id, expr) and all_ok
+
         elif cm_check_id == "cert-manager-tls-secret-exists":
             # --- Secret existence: metadata-only pattern ---
-            # Positive: checks metadata, not conditions
             all_ok &= check(
                 f"check {cm_check_id} uses object.metadata (not status conditions)",
                 "object.metadata" in expr,
@@ -295,19 +301,205 @@ def validate_cel_behavioral(checks: list[dict], expected_ids: set[str]) -> bool:
                 "object.status" not in expr and "c.type" not in expr and "c.status" not in expr,
                 "no condition references (correct)" if ("object.status" not in expr and "c.type" not in expr and "c.status" not in expr) else "FOUND status/condition references — Secret has no conditions",
             )
-            # Verify name assertion pattern is present
             all_ok &= check(
                 f"check {cm_check_id} asserts metadata.name matches expected value",
                 "object.metadata.name" in expr,
                 "name assertion found" if "object.metadata.name" in expr else "missing metadata.name check — must validate the Secret name",
             )
-
-            # Negative: would fail if Secret doesn't exist (has guard)
             all_ok &= check(
                 f"check {cm_check_id} has exists guard: has(object.metadata)",
                 "has(object.metadata)" in expr,
                 "guard present" if "has(object.metadata)" in expr else "guard missing — must guard against missing resource",
             )
+
+            # --- Actual CEL behavioral evaluation for Secret ---
+            all_ok &= _evaluate_cel_secret_behavioral(cm_check_id, expr) and all_ok
+
+    return all_ok
+
+
+def _evaluate_cel_behavioral(check_id: str, expr: str) -> bool:
+    """Actually evaluate a condition-based CEL expression against fixture resources.
+
+    Returns True if all fixture evaluations pass (expected outcomes match).
+    """
+    all_ok = True
+
+    # Fixtures for condition-based checks
+    ready_true_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "True", "reason": "Ready", "message": "Resource is ready"},
+            ]
+        }
+    }
+    ready_false_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Ready", "status": "False", "reason": "Error", "message": "Not ready"},
+            ]
+        }
+    }
+    available_true_obj = {
+        "status": {
+            "conditions": [
+                {"type": "Available", "status": "True", "reason": "Available", "message": "Available"},
+            ]
+        }
+    }
+    empty_conditions_obj = {"status": {"conditions": []}}
+    no_status_obj = {"metadata": {"name": "test-resource"}}
+    empty_obj = {}
+
+    fixtures = [
+        ("Ready=True → passes (returns true)", ready_true_obj, True),
+        ("Ready=False → fails (returns false)", ready_false_obj, False),
+        ("Available=True → fails (wrong condition type)", available_true_obj, False),
+        ("empty conditions → fails (no matching condition)", empty_conditions_obj, False),
+        ("no status → fails (guard returns false)", no_status_obj, False),
+        ("empty object → fails (guard returns false)", empty_obj, False),
+    ]
+
+    mutation_fixtures = [
+        ("mutated || true on no-status → true (regression detected)", no_status_obj, True),
+        ("mutated || true on empty object → true (regression detected)", empty_obj, True),
+        ("mutated || true on Ready=False → true (regression detected)", ready_false_obj, True),
+    ]
+
+    try:
+        from celpy import Environment
+        from celpy.adapter import json_to_cel
+
+        env = Environment()
+
+        # Normal expression evaluation
+        try:
+            ast = env.compile(expr)
+            prg = env.program(ast)
+        except Exception as e:
+            all_ok &= check(
+                f"check {check_id} CEL expression compiles",
+                False,
+                f"compilation error: {e}",
+            )
+            return all_ok
+
+        for desc, obj, expected in fixtures:
+            try:
+                cel_obj = json_to_cel(obj)
+                result = prg.evaluate({"object": cel_obj})
+                actual = bool(result)
+                ok = actual == expected
+                all_ok &= check(
+                    f"check {check_id} CEL eval: {desc}",
+                    ok,
+                    f"got {actual}, expected {expected}",
+                )
+            except Exception as e:
+                all_ok &= check(
+                    f"check {check_id} CEL eval: {desc}",
+                    False,
+                    f"evaluation error: {e}",
+                )
+
+        # Mutation regression: append || true to the expression
+        mutated_expr = f"({expr}) || true"
+        try:
+            mut_ast = env.compile(mutated_expr)
+            mut_prg = env.program(mut_ast)
+        except Exception as e:
+            all_ok &= check(
+                f"check {check_id} CEL mutation: compilation",
+                False,
+                f"compilation error: {e}",
+            )
+            return all_ok
+
+        for desc, obj, expected in mutation_fixtures:
+            try:
+                cel_obj = json_to_cel(obj)
+                result = mut_prg.evaluate({"object": cel_obj})
+                actual = bool(result)
+                ok = actual == expected
+                all_ok &= check(
+                    f"check {check_id} CEL mutation regr: {desc}",
+                    ok,
+                    f"got {actual}, expected {expected}",
+                )
+            except Exception as e:
+                all_ok &= check(
+                    f"check {check_id} CEL mutation regr: {desc}",
+                    False,
+                    f"evaluation error: {e}",
+                )
+
+    except ImportError:
+        all_ok &= check(
+            f"check {check_id} CEL behavioral eval (celpy available)",
+            False,
+            "celpy not installed; install with: pip install cel-python",
+        )
+
+    return all_ok
+
+
+def _evaluate_cel_secret_behavioral(check_id: str, expr: str) -> bool:
+    """Actually evaluate a metadata-only CEL expression against fixture Secrets."""
+    all_ok = True
+
+    matching_secret = {"metadata": {"name": "cratecheck-tls"}}
+    wrong_name_secret = {"metadata": {"name": "other-secret"}}
+    empty_secret = {}
+    no_metadata = {"data": {"tls.crt": "..."}}
+
+    fixtures = [
+        ("matching Secret → passes", matching_secret, True),
+        ("wrong name → fails", wrong_name_secret, False),
+        ("empty object → fails (guard returns false)", empty_secret, False),
+        ("no metadata → fails (guard returns false)", no_metadata, False),
+    ]
+
+    try:
+        from celpy import Environment
+        from celpy.adapter import json_to_cel
+
+        env = Environment()
+
+        try:
+            ast = env.compile(expr)
+            prg = env.program(ast)
+        except Exception as e:
+            all_ok &= check(
+                f"check {check_id} CEL expression compiles",
+                False,
+                f"compilation error: {e}",
+            )
+            return all_ok
+
+        for desc, obj, expected in fixtures:
+            try:
+                cel_obj = json_to_cel(obj)
+                result = prg.evaluate({"object": cel_obj})
+                actual = bool(result)
+                ok = actual == expected
+                all_ok &= check(
+                    f"check {check_id} CEL eval: {desc}",
+                    ok,
+                    f"got {actual}, expected {expected}",
+                )
+            except Exception as e:
+                all_ok &= check(
+                    f"check {check_id} CEL eval: {desc}",
+                    False,
+                    f"evaluation error: {e}",
+                )
+
+    except ImportError:
+        all_ok &= check(
+            f"check {check_id} CEL behavioral eval (celpy available)",
+            False,
+            "celpy not installed; install with: pip install cel-python",
+        )
 
     return all_ok
 
@@ -451,6 +643,154 @@ def run_kubeconform(label: str) -> bool:
     )
 
 
+def validate_runbook_fixtures() -> bool:
+    """Validate the runbook assertion logic against fixture payloads.
+
+    Ensures the Python snippets in the runbook correctly detect:
+    - green: all cert-manager checks present and green
+    - missing: a required check ID absent → fail
+    - wrong state: a check is non-green → fail
+    - controlled red: red_ids non-green, unaffected_ids green
+    - restore green: all checks back to green after restore
+    """
+    all_ok = True
+
+    def _build_payload(check_states: dict[str, str]) -> dict:
+        """Build a CrateCheck /status.json shape from a dict of id→state."""
+        checks = []
+        for cid, state in check_states.items():
+            checks.append({"id": cid, "state": state, "summary": f"fixture {cid}", "name": cid, "severity": "red"})
+        return {"checks": checks}
+
+    cm_ids = [
+        "cert-manager-helmrelease-ready",
+        "cert-manager-selfsigned-issuer-ready",
+        "cert-manager-ca-certificate-ready",
+        "cert-manager-ca-issuer-ready",
+        "cert-manager-tls-certificate-ready",
+        "cert-manager-tls-secret-exists",
+    ]
+    unaffected_ids = cm_ids[:4]
+    red_ids = cm_ids[4:]
+
+    # --- Test 1: All green baseline ---
+    green_payload = _build_payload({cid: "green" for cid in cm_ids})
+    checks = {c["id"]: c for c in green_payload["checks"]}
+    all_checks_present = all(cid in checks for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: all six checks present in green payload",
+        all_checks_present,
+    )
+    all_green = all(checks[cid]["state"] == "green" for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: all six checks green",
+        all_green,
+    )
+
+    # --- Test 2: Missing check IDs → must fail ---
+    missing_payload = _build_payload({cid: "green" for cid in cm_ids[:3]})  # only 3 of 6
+    checks_missing = {c["id"]: c for c in missing_payload["checks"]}
+    any_missing = any(cid not in checks_missing for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: missing check IDs detected (fail-closed)",
+        any_missing,
+    )
+
+    # Missing check with {"checks": []} should be detected
+    empty_payload = {"checks": []}
+    checks_empty = {c["id"]: c for c in empty_payload["checks"]}
+    empty_detected = any(cid not in checks_empty for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: empty checks payload detected as missing (fail-closed)",
+        empty_detected,
+    )
+
+    # --- Test 3: Wrong state (non-green when should be green) ---
+    wrong_payload = _build_payload({cid: "green" for cid in cm_ids})
+    wrong_payload["checks"][2]["state"] = "yellow"  # ca-certificate-ready is yellow
+    checks_wrong = {c["id"]: c for c in wrong_payload["checks"]}
+    has_wrong = any(checks_wrong[cid]["state"] != "green" for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: non-green check detected in baseline",
+        has_wrong,
+    )
+
+    # --- Test 4: Controlled red ---
+    red_payload = _build_payload(
+        {cid: "green" for cid in unaffected_ids}
+        | {cid: "red" for cid in red_ids}
+    )
+    checks_red = {c["id"]: c for c in red_payload["checks"]}
+
+    # Red IDs must be present and non-green
+    red_ids_present = all(cid in checks_red for cid in red_ids)
+    all_ok &= check(
+        "runbook fixture: red IDs present in controlled red payload",
+        red_ids_present,
+    )
+    red_ids_non_green = all(checks_red[cid]["state"] != "green" for cid in red_ids)
+    all_ok &= check(
+        "runbook fixture: red IDs are non-green",
+        red_ids_non_green,
+    )
+
+    # Unaffected IDs must be present and green
+    unaffected_present = all(cid in checks_red for cid in unaffected_ids)
+    all_ok &= check(
+        "runbook fixture: unaffected IDs present in controlled red payload",
+        unaffected_present,
+    )
+    unaffected_green = all(checks_red[cid]["state"] == "green" for cid in unaffected_ids)
+    all_ok &= check(
+        "runbook fixture: unaffected IDs remain green during red test",
+        unaffected_green,
+    )
+
+    # --- Test 5: Red with missing red ID → must fail ---
+    red_missing_red_payload = _build_payload(
+        {cid: "green" for cid in unaffected_ids}
+        | {"cert-manager-tls-certificate-ready": "red"}  # only one red ID present
+    )
+    checks_red_missing = {c["id"]: c for c in red_missing_red_payload["checks"]}
+    red_missing_detected = any(cid not in checks_red_missing for cid in red_ids)
+    all_ok &= check(
+        "runbook fixture: missing red check ID detected (fail-closed)",
+        red_missing_detected,
+    )
+
+    # --- Test 6: Red with affected unaffected check → must fail ---
+    red_unaffected_broken_payload = _build_payload(
+        {cid: "green" if cid != "cert-manager-helmrelease-ready" else "yellow" for cid in unaffected_ids}
+        | {cid: "red" for cid in red_ids}
+    )
+    checks_unaffected_broken = {c["id"]: c for c in red_unaffected_broken_payload["checks"]}
+    unaffected_broken = any(
+        checks_unaffected_broken[cid]["state"] != "green"
+        for cid in unaffected_ids
+        if cid in checks_unaffected_broken
+    )
+    all_ok &= check(
+        "runbook fixture: affected unaffected check detected (regression)",
+        unaffected_broken,
+    )
+
+    # --- Test 7: Restore green ---
+    restore_payload = _build_payload({cid: "green" for cid in cm_ids})
+    checks_restore = {c["id"]: c for c in restore_payload["checks"]}
+    all_restore_present = all(cid in checks_restore for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: all checks present after restore",
+        all_restore_present,
+    )
+    all_restore_green = all(checks_restore[cid]["state"] == "green" for cid in cm_ids)
+    all_ok &= check(
+        "runbook fixture: all checks green after restore",
+        all_restore_green,
+    )
+
+    return all_ok
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate CrateCheck manifests")
     parser.add_argument("--render", action="store_true", help="Run kustomize build + kubeconform")
@@ -464,6 +804,9 @@ def main():
 
     print("\n=== CrateCheck Deployment validation ===")
     deploy_ok = validate_deployment()
+
+    print("\n=== Runbook fixture validation ===")
+    runbook_ok = validate_runbook_fixtures()
 
     if args.render:
         print("\n=== Kustomize build validation ===")

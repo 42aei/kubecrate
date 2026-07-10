@@ -14,6 +14,7 @@ KIND_UNIQUE_STATE_FILE ?= .tmp/kind-unique-cluster-name
 ENTRYPOINT_ROOT := clusters/$(KIND_CLUSTER_NAME)/entrypoint
 FLUX_PLATFORM_SERVICE_ROOT := clusters/$(KIND_CLUSTER_NAME)/platform-services/flux
 FLUX_HELM_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values.yaml
+FLUX_SYNC_OVERRIDE_FILE := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync-override.yaml
 FLUX_RELEASE_NAME := flux-system
 FLUX_SYNC_HELMRELEASE_NAME := flux-system-sync
 FLUX_NAMESPACE := flux-system
@@ -25,7 +26,7 @@ MARKER_NAME := kubecrate-reconciliation-marker
 .PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke
 
 kind-dev-misc-local-check-prereqs:
-> for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
+> for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\\n' "$${cmd}" >&2; exit 1; }; done
 > kind version
 > kubectl version --client=true
 > kustomize version
@@ -44,18 +45,18 @@ kind-dev-misc-local-delete:
 kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
 kind-unique-create: kind-dev-misc-local-create
 > mkdir -p "$$(dirname "$(KIND_UNIQUE_STATE_FILE)")"
-> printf '%s\n' "$(KIND_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
-> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_CLUSTER_NAME)" "$(KIND_CLUSTER_NAME)"
+> printf '%s\\n' "$(KIND_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
+> printf 'cluster=%s\\ncontext=kind-%s\\n' "$(KIND_CLUSTER_NAME)" "$(KIND_CLUSTER_NAME)"
 
 kind-unique-current:
-> test -s "$(KIND_UNIQUE_STATE_FILE)" || { printf 'no kind unique cluster state found at %s\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }
+> test -s "$(KIND_UNIQUE_STATE_FILE)" || { printf 'no kind unique cluster state found at %s\\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }
 > sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)"
 
 kind-unique-delete:
 > cluster=""; \
 > if [ "$(origin KIND_CLUSTER_NAME)" = "command line" ] || [ "$(origin KIND_CLUSTER_NAME)" = "environment" ] || [ "$(origin KIND_CLUSTER_NAME)" = "environment override" ]; then cluster="$(KIND_CLUSTER_NAME)"; \
 > elif [ -s "$(KIND_UNIQUE_STATE_FILE)" ]; then cluster="$$(sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)")"; fi; \
-> test -n "$${cluster}" || { printf 'KIND_CLUSTER_NAME is required or %s must contain a cluster name\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }; \
+> test -n "$${cluster}" || { printf 'KIND_CLUSTER_NAME is required or %s must contain a cluster name\\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }; \
 > kind delete cluster --name "$${cluster}"; \
 > if [ -s "$(KIND_UNIQUE_STATE_FILE)" ] && [ "$$(sed -n '1p' "$(KIND_UNIQUE_STATE_FILE)")" = "$${cluster}" ]; then rm -f "$(KIND_UNIQUE_STATE_FILE)"; fi
 
@@ -68,24 +69,31 @@ kind-unique-smoke: kind-dev-misc-local-check-prereqs
 > kubectl --context "kind-$${cluster}" wait --for=condition=Ready node --all --timeout=180s; \
 > cleanup; \
 > trap - EXIT INT TERM; \
-> if kind get clusters | grep -Fx "$${cluster}" >/dev/null; then printf 'cluster cleanup failed: %s\n' "$${cluster}" >&2; exit 1; fi; \
-> printf 'created and deleted disposable kind cluster: %s\n' "$${cluster}"
+> if kind get clusters | grep -Fx "$${cluster}" >/dev/null; then printf 'cluster cleanup failed: %s\\n' "$${cluster}" >&2; exit 1; fi; \
+> printf 'created and deleted disposable kind cluster: %s\\n' "$${cluster}"
 
 kind-dev-misc-local-recreate:
 > $(MAKE) kind-dev-misc-local-delete
 > $(MAKE) kind-dev-misc-local-create
 
 kind-dev-misc-local-bootstrap:
-> FLUX_EFFECTIVE_BRANCH="$(FLUX_GIT_BRANCH)"; if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then FLUX_EFFECTIVE_BRANCH="$(FLUX_GIT_BRANCH_OVERRIDE)"; fi; \
-> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)" --set git.branch="$${FLUX_EFFECTIVE_BRANCH}"
+> printf '{}\\n' >"$(FLUX_SYNC_OVERRIDE_FILE)"
+> if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then \
+>   printf 'gitRepository:\\n  spec:\\n    ref:\\n      branch: %s\\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" >"$(FLUX_SYNC_OVERRIDE_FILE)"; \
+>   printf 'bootstrap: overriding sync branch to %s (via %s)\\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" "$(FLUX_SYNC_OVERRIDE_FILE)"; \
+> else \
+>   printf 'bootstrap: using committed default sync branch\\n'; \
+> fi
+> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(ENTRYPOINT_ROOT)"
+> printf '{}\\n' >"$(FLUX_SYNC_OVERRIDE_FILE)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
-> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\.pub}' | base64 -d && printf '\n'
-> printf 'After deploy-key registration, run: make kind-dev-misc-local-await-gitops\n'
+> printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\\n'
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\\.pub}' | base64 -d && printf '\\n'
+> printf 'After deploy-key registration, run: make kind-dev-misc-local-await-gitops\\n'
 
 kind-dev-misc-local-await-gitops:
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
@@ -95,12 +103,12 @@ kind-dev-misc-local-await-gitops:
 > flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+> kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\\n'
 
 kind-dev-misc-local-evidence:
 > kubectl --context "$(KIND_CONTEXT)" get nodes
 > kubectl --context "$(KIND_CONTEXT)" get deployments -n "$(FLUX_NAMESPACE)"
-> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $$k, $$_ := .data}}{{printf "%s\n" $$k}}{{end}}'
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $$k, $$_ := .data}}{{printf "%s\\n" $$k}}{{end}}'
 > flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
-> kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+> kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\\n'
