@@ -2,8 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ./kubecrate-system-namespace.yaml
-  - ../platform-services/flux
   - ./kubecrate-reconciliation-marker.yaml
+  - ../platform-services/flux
+  - ../application-services/cratecheck
   - ./envoy-gateway-kustomization.yaml
   - ./envoy-gateway-smoke-kustomization.yaml
-  - ./cratecheck-kustomization.yaml

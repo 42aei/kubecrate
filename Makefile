@@ -94,7 +94,7 @@ kind-dev-misc-local-await-gitops:
 > flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> for kustomization in envoy-gateway envoy-gateway-smoke cratecheck; do kubectl --context "$(KIND_CONTEXT)" get kustomizations.kustomize.toolkit.fluxcd.io/"$${kustomization}" -n "$(FLUX_NAMESPACE)" >/dev/null || { printf 'missing expected child Flux Kustomization: %s\n' "$${kustomization}" >&2; exit 1; }; done
+> for kustomization in envoy-gateway envoy-gateway-smoke; do kubectl --context "$(KIND_CONTEXT)" get kustomizations.kustomize.toolkit.fluxcd.io/"$${kustomization}" -n "$(FLUX_NAMESPACE)" >/dev/null || { printf 'missing expected child Flux Kustomization: %s\n' "$${kustomization}" >&2; exit 1; }; done
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
 
 kind-dev-misc-local-evidence:
