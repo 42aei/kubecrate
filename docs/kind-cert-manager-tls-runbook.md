@@ -117,8 +117,13 @@ cleanup() {
   fi
   if [ "$KUSTOMIZATION_WAS_SUSPENDED" = true ]; then
     echo "resuming cert-manager-local-issuer Kustomization..."
-    flux --context "$CTX" resume kustomization cert-manager-local-issuer -n flux-system 2>/dev/null || true
-    flux --context "$CTX" reconcile kustomization cert-manager-local-issuer -n flux-system --timeout 180s 2>/dev/null || true
+    if ! flux --context "$CTX" resume kustomization cert-manager-local-issuer -n flux-system; then
+      echo "  CLEANUP FAILED: could not resume Kustomization" >&2
+    elif ! flux --context "$CTX" reconcile kustomization cert-manager-local-issuer -n flux-system --timeout 180s; then
+      echo "  CLEANUP FAILED: Kustomization resumed but reconcile failed" >&2
+    else
+      echo "  Kustomization resumed and reconciled successfully"
+    fi
   fi
 }
 trap cleanup EXIT INT TERM
@@ -139,24 +144,25 @@ print(json.dumps(checks))
 }
 
 # --- Polling helper: wait up to MAX_WAIT seconds for predicate to be true ---
+# Usage: poll_until DESCRIPTION MAX_WAIT PREDICATE [INTERVAL]
 poll_until() {
-  local desc="$1" max_wait="$2" interval="${3:-5}"
+  local desc="$1" max_wait="$2" predicate="$3" interval="${4:-5}"
   local elapsed=0
   while [ $elapsed -lt "$max_wait" ]; do
-    if eval "$desc"; then
-      echo "  condition met after ${elapsed}s"
+    if eval "$predicate"; then
+      echo "  $desc: condition met after ${elapsed}s"
       return 0
     fi
     sleep "$interval"
     elapsed=$((elapsed + interval))
   done
-  echo "  TIMEOUT after ${max_wait}s: $desc" >&2
+  echo "  $desc: TIMEOUT after ${max_wait}s" >&2
   return 1
 }
 
 # --- Pre-red baseline: all six checks green ---
 echo "=== Pre-red baseline ==="
-poll_until '
+poll_until "all six cert-manager checks green" 120 '
   python3 -c "
 import json, sys, urllib.request
 p = json.loads(urllib.request.urlopen(\"http://localhost:8080/status.json\").read())
@@ -167,7 +173,7 @@ for cid in [\"cert-manager-helmrelease-ready\",\"cert-manager-selfsigned-issuer-
     if s != \"green\": sys.exit(1)
 sys.exit(0)
 " 2>/dev/null
-' 120 "all six cert-manager checks green"
+'
 
 echo ""
 python3 << 'PYEOF'
@@ -210,7 +216,7 @@ kubectl --context "$CTX" -n cratecheck delete secret cratecheck-tls
 
 ```sh
 echo "=== Wait for red state ==="
-poll_until '
+poll_until "both TLS checks non-green" 120 '
   python3 -c "
 import json, sys, urllib.request
 p = json.loads(urllib.request.urlopen(\"http://localhost:8080/status.json\").read())
@@ -222,7 +228,7 @@ for cid in [\"cert-manager-tls-certificate-ready\", \"cert-manager-tls-secret-ex
     if s == \"green\": sys.exit(1)
 sys.exit(0)
 " 2>/dev/null
-' 120 "both TLS checks non-green"
+'
 
 echo ""
 python3 << 'PYEOF'
@@ -274,15 +280,15 @@ Capture UI evidence: open `http://localhost:8080/` in a browser while the port-f
 ```sh
 echo "=== Resume and reconcile Kustomization ==="
 flux --context "$CTX" resume kustomization cert-manager-local-issuer -n flux-system
-KUSTOMIZATION_WAS_SUSPENDED=false
 flux --context "$CTX" reconcile kustomization cert-manager-local-issuer -n flux-system --timeout 180s
+KUSTOMIZATION_WAS_SUSPENDED=false
 ```
 
 ### Step 6: Poll until green, then verify all six checks back to green
 
 ```sh
 echo "=== Wait for restore green ==="
-poll_until '
+poll_until "all six cert-manager checks green after restore" 180 '
   python3 -c "
 import json, sys, urllib.request
 p = json.loads(urllib.request.urlopen(\"http://localhost:8080/status.json\").read())
@@ -293,7 +299,7 @@ for cid in [\"cert-manager-helmrelease-ready\",\"cert-manager-selfsigned-issuer-
     if s != \"green\": sys.exit(1)
 sys.exit(0)
 " 2>/dev/null
-' 180 "all six cert-manager checks green after restore"
+'
 
 echo ""
 python3 << 'PYEOF'
