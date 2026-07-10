@@ -85,6 +85,8 @@ kind-dev-misc-local-bootstrap:
 > 	printf 'QA override: rendering flux-sync-values-override ConfigMap with branch %s\n' '$(FLUX_GIT_BRANCH_OVERRIDE)'; \
 > 	FLUX_GIT_BRANCH_OVERRIDE='$(FLUX_GIT_BRANCH_OVERRIDE)' python3 scripts/render-flux-sync-override.py \
 > 		| kubectl --context "$(KIND_CONTEXT)" apply -f -; \
+> else \
+> 	kubectl --context "$(KIND_CONTEXT)" delete configmap flux-sync-values-override -n "$(FLUX_NAMESPACE)" --ignore-not-found; \
 > fi
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
@@ -110,3 +112,10 @@ kind-dev-misc-local-evidence:
 > flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+
+.PHONY: validate-cratecheck
+validate-cratecheck:
+> python3 -m venv .venv-cratecheck
+> .venv-cratecheck/bin/pip install -q -r tests/requirements.txt
+> .venv-cratecheck/bin/python3 tests/validate-cratecheck.py
+> @printf 'CrateCheck validation: PASS\n'
