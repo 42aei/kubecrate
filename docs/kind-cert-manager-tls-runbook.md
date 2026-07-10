@@ -12,30 +12,26 @@ The kind config defines a minimal single-control-plane cluster with no pre-provi
 
 ## QA source / branch override
 
-To reconcile a disposable QA cluster against this exact candidate branch instead of the shared default branch, patch the Flux `GitRepository` source after bootstrap:
+To reconcile a disposable QA cluster against this exact candidate branch instead of the shared default branch, pass `FLUX_GIT_BRANCH_OVERRIDE` at bootstrap time:
 
 ```sh
-# After bootstrap, override the GitRepository branch to the candidate
-kubectl --context "kind-${QA_CLUSTER}" -n flux-system patch gitrepository flux-system --type merge \
-  -p '{"spec":{"ref":{"branch":"kubecrate/cratecheck-restack-cert-manager"}}}'
-
-# Reconcile so Flux picks up the branch change
-flux --context "kind-${QA_CLUSTER}" reconcile source git flux-system -n flux-system --timeout 180s
-flux --context "kind-${QA_CLUSTER}" reconcile kustomization flux-system -n flux-system --timeout 180s
+make kind-dev-misc-local-bootstrap FLUX_GIT_BRANCH_OVERRIDE=kubecrate/cratecheck-restack-cert-manager
 ```
+
+This injects the branch into the Flux HelmRelease at install time, so the `GitRepository` first reconciles the candidate rather than the default branch. No post-bootstrap patch is required.
+
+The committed default value for `FLUX_GIT_BRANCH` is `pivot/flux-sync-ssh-bootstrap`. The override mechanism is a Makefile variable that sets the Helm `git.branch` value; it is not Makefile-only authoritative orchestration — the authoritative Helm value path is `clusters/kind-dev-misc-local/platform-services/flux/helm-values.yaml` with the branch parameter.
 
 Verify the override took effect:
 
 ```sh
-kubectl --context "kind-${QA_CLUSTER}" -n flux-system get gitrepository flux-system -o jsonpath='{.spec.ref.branch}'
+kubectl --context "kind-${QA_CLUSTER}" -n flux-system get gitrepository flux-system -o jsonpath='{.spec.ref.branch}' && echo
 ```
 
-Return the source to the default branch after QA evidence is captured:
+Confirm the exact commit revision:
 
 ```sh
-kubectl --context "kind-${QA_CLUSTER}" -n flux-system patch gitrepository flux-system --type merge \
-  -p '{"spec":{"ref":{"branch":"main"}}}'
-flux --context "kind-${QA_CLUSTER}" reconcile source git flux-system -n flux-system --timeout 180s
+kubectl --context "kind-${QA_CLUSTER}" -n flux-system get gitrepository flux-system -o jsonpath='{.status.artifact.revision}' && echo
 ```
 
 ## Evidence commands
@@ -43,50 +39,65 @@ flux --context "kind-${QA_CLUSTER}" reconcile source git flux-system -n flux-sys
 Confirm the intended context before inspecting or mutating anything:
 
 ```sh
+QA_CLUSTER="${QA_CLUSTER:-kind-dev-misc-local}"
 kubectl config current-context
-kubectl --context kind-kind-dev-misc-local get nodes
+kubectl --context "kind-${QA_CLUSTER}" get nodes
 ```
 
 After GitOps-managed operation reconciles this branch, inspect cert-manager and the local issuer path:
 
 ```sh
-flux --context kind-kind-dev-misc-local get kustomizations -n flux-system
-kubectl --context kind-kind-dev-misc-local -n core-cert-manager get deployments,pods
-kubectl --context kind-kind-dev-misc-local get clusterissuers.cert-manager.io
-kubectl --context kind-kind-dev-misc-local -n core-cert-manager get certificates.cert-manager.io cratecheck-local-ca
-kubectl --context kind-kind-dev-misc-local -n cratecheck get certificates.cert-manager.io,secrets cratecheck-tls
+flux --context "kind-${QA_CLUSTER}" get kustomizations -n flux-system
+kubectl --context "kind-${QA_CLUSTER}" -n core-cert-manager get deployments,pods
+kubectl --context "kind-${QA_CLUSTER}" get clusterissuers.cert-manager.io
+kubectl --context "kind-${QA_CLUSTER}" -n core-cert-manager get certificates.cert-manager.io cratecheck-local-ca
+kubectl --context "kind-${QA_CLUSTER}" -n cratecheck get certificates.cert-manager.io,secrets cratecheck-tls
 ```
 
 Verify the CA Certificate has issued:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n core-cert-manager get secret cratecheck-local-ca -o jsonpath='{.data.tls\\.crt}' | base64 -d | openssl x509 -text -noout | head -20
+kubectl --context "kind-${QA_CLUSTER}" -n core-cert-manager get secret cratecheck-local-ca -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout | head -20
 ```
 
 Verify the TLS Certificate has issued:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck get secret cratecheck-tls -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout | head -20
+kubectl --context "kind-${QA_CLUSTER}" -n cratecheck get secret cratecheck-tls -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout | head -20
 ```
 
 Assert CrateCheck cert-manager checks are green:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck port-forward svc/cratecheck 8080:8080 &
+# Start port-forward once and keep alive for the entire evidence session
+kubectl --context "kind-${QA_CLUSTER}" -n cratecheck port-forward svc/cratecheck 8080:8080 &
+PF_PID=$!
 sleep 2
-curl -s http://localhost:8080/status.json | python3 -c '
-import json,sys
-payload = json.load(sys.stdin)
+
+python3 << 'PYEOF'
+import json, sys, urllib.request
+payload = json.loads(urllib.request.urlopen('http://localhost:8080/status.json').read())
 checks = {c["id"]: c for c in payload["checks"]}
 cm_ids = ["cert-manager-helmrelease-ready", "cert-manager-selfsigned-issuer-ready",
           "cert-manager-ca-certificate-ready", "cert-manager-ca-issuer-ready",
           "cert-manager-tls-certificate-ready", "cert-manager-tls-secret-exists"]
+all_green = True
 for cid in cm_ids:
-    if cid in checks:
-        c = checks[cid]
-        print(f"{c['state']:>6} {cid}: {c.get('summary', '')}")
-'
-kill %1 2>/dev/null
+    c = checks.get(cid)
+    if c is None:
+        print(f"  MISSING {cid}: check not found in status payload")
+        all_green = False
+        continue
+    is_green = c["state"] == "green"
+    if not is_green:
+        all_green = False
+    print(f"{c['state']:>6} {cid}: {c.get('summary', '')}")
+if not all_green:
+    print("BASELINE FAILED: not all cert-manager checks are green")
+    sys.exit(1)
+else:
+    print("BASELINE OK: all cert-manager checks are green")
+PYEOF
 ```
 
 ## Controlled red test
@@ -95,101 +106,119 @@ Only run this on an authorized disposable QA cluster or with explicit approval f
 
 The red test verifies that CrateCheck detects cert-manager path breakage and recovers after restoration. Because Flux GitOps reconciliation will immediately restore deleted resources, the test suspends the local issuer Kustomization first.
 
+The red mutation deletes both the TLS Certificate and its Secret so that BOTH the certificate-readiness check and the secret-existence check go red. Deleting only the Certificate leaves the Secret behind (cert-manager does not garbage-collect the Secret on Certificate deletion), which would falsely keep the secret-existence check green.
+
+The port-forward started in the baseline section remains active throughout. Do not kill it until the final step.
+
 ### 1. Verify all cert-manager checks are green (pre-red baseline)
 
-```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck port-forward svc/cratecheck 8080:8080 &
-sleep 2
-curl -s http://localhost:8080/status.json | python3 -c '
-import json,sys
-payload = json.load(sys.stdin)
-checks = {c["id"]: c for c in payload["checks"]}
-cm_ids = ["cert-manager-helmrelease-ready", "cert-manager-selfsigned-issuer-ready",
-          "cert-manager-ca-certificate-ready", "cert-manager-ca-issuer-ready",
-          "cert-manager-tls-certificate-ready", "cert-manager-tls-secret-exists"]
-all_green = True
-for cid in cm_ids:
-    if cid in checks:
-        c = checks[cid]
-        is_green = c["state"] == "green"
-        if not is_green:
-            all_green = False
-        print(f"{c[\"state\"]:>6} {cid}: {c.get(\"summary\", \"\")}")
-if not all_green:
-    print("PRE-RED BASELINE FAILED: not all cert-manager checks are green")
-    sys.exit(1)
-'
-kill %1 2>/dev/null
-```
+Already verified in the evidence section above. All six cert-manager check IDs must show `green`.
 
 ### 2. Suspend the cert-manager-local-issuer Flux Kustomization
 
-This prevents Flux from immediately reconciling the deleted Certificate:
+This prevents Flux from immediately reconciling the deleted resources:
 
 ```sh
-flux --context kind-kind-dev-misc-local suspend kustomization cert-manager-local-issuer -n flux-system
+flux --context "kind-${QA_CLUSTER}" suspend kustomization cert-manager-local-issuer -n flux-system
 ```
 
-### 3. Delete the TLS Certificate to trigger red state
+### 3. Delete both the TLS Certificate and TLS Secret to trigger red state
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck delete certificate cratecheck-tls
+kubectl --context "kind-${QA_CLUSTER}" -n cratecheck delete certificate cratecheck-tls
+kubectl --context "kind-${QA_CLUSTER}" -n cratecheck delete secret cratecheck-tls
 ```
 
-### 4. Verify CrateCheck reports red for the TLS Certificate checks
+### 4. Wait for CrateCheck to detect the breakage, then verify red state
+
+CrateCheck polls every 30 seconds. Wait for two intervals to ensure an updated evaluation:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck port-forward svc/cratecheck 8080:8080 &
-sleep 2
-curl -s http://localhost:8080/status.json | python3 -c '
-import json,sys
-payload = json.load(sys.stdin)
+echo "Waiting for CrateCheck to detect breakage (polling every 30s)..."
+sleep 65
+```
+
+Verify both checks are non-green (red or yellow or missing):
+
+```sh
+python3 << 'PYEOF'
+import json, sys, urllib.request
+payload = json.loads(urllib.request.urlopen('http://localhost:8080/status.json').read())
 checks = {c["id"]: c for c in payload["checks"]}
-for cid in ["cert-manager-tls-certificate-ready", "cert-manager-tls-secret-exists"]:
-    if cid in checks:
-        c = checks[cid]
-        is_red = c["state"] != "green"
-        print(f"{c[\"state\"]:>6} {cid}: {c.get(\"summary\", \"\")} (red expected={is_red})")
-'
-kill %1 2>/dev/null
+red_ids = ["cert-manager-tls-certificate-ready", "cert-manager-tls-secret-exists"]
+all_red = True
+for cid in red_ids:
+    c = checks.get(cid)
+    if c is None:
+        print(f"  MISSING {cid}: check not found in status payload (implicitly non-green)")
+        continue
+    is_red = c["state"] != "green"
+    if not is_red:
+        all_red = False
+    print(f"{c['state']:>6} {cid}: {c.get('summary', '')} (expected non-green={is_red})")
+if not all_red:
+    print("RED TEST FAILED: expected non-green for both TLS checks")
+    sys.exit(1)
+else:
+    print("RED TEST OK: both TLS checks are non-green")
+PYEOF
 ```
 
 Also capture UI evidence: open `http://localhost:8080/` in a browser while the port-forward is active and screenshot the red cert-manager rows.
 
+Note: other cert-manager checks (helmrelease-ready, selfsigned-issuer-ready, ca-certificate-ready, ca-issuer-ready) should remain green — only the two TLS checks should be red.
+
 ### 5. Resume the Kustomization to restore green state
 
 ```sh
-flux --context kind-kind-dev-misc-local resume kustomization cert-manager-local-issuer -n flux-system
-flux --context kind-kind-dev-misc-local reconcile kustomization cert-manager-local-issuer -n flux-system --timeout 180s
+flux --context "kind-${QA_CLUSTER}" resume kustomization cert-manager-local-issuer -n flux-system
+flux --context "kind-${QA_CLUSTER}" reconcile kustomization cert-manager-local-issuer -n flux-system --timeout 180s
 ```
 
-### 6. Verify CrateCheck returns to green
+### 6. Wait and verify CrateCheck returns to green
+
+Wait for cert-manager to issue the new certificate and CrateCheck to detect it:
 
 ```sh
-kubectl --context kind-kind-dev-misc-local -n cratecheck port-forward svc/cratecheck 8080:8080 &
-sleep 2
-curl -s http://localhost:8080/status.json | python3 -c '
-import json,sys
-payload = json.load(sys.stdin)
+echo "Waiting for cert-manager to issue new certificate and CrateCheck to detect it..."
+sleep 65
+```
+
+Verify all six checks are green again:
+
+```sh
+python3 << 'PYEOF'
+import json, sys, urllib.request
+payload = json.loads(urllib.request.urlopen('http://localhost:8080/status.json').read())
 checks = {c["id"]: c for c in payload["checks"]}
 cm_ids = ["cert-manager-helmrelease-ready", "cert-manager-selfsigned-issuer-ready",
           "cert-manager-ca-certificate-ready", "cert-manager-ca-issuer-ready",
           "cert-manager-tls-certificate-ready", "cert-manager-tls-secret-exists"]
 all_green = True
 for cid in cm_ids:
-    if cid in checks:
-        c = checks[cid]
-        is_green = c["state"] == "green"
-        if not is_green:
-            all_green = False
-        print(f"{c[\"state\"]:>6} {cid}: {c.get(\"summary\", \"\")}")
+    c = checks.get(cid)
+    if c is None:
+        print(f"  MISSING {cid}: check not found in status payload")
+        all_green = False
+        continue
+    is_green = c["state"] == "green"
+    if not is_green:
+        all_green = False
+    print(f"{c['state']:>6} {cid}: {c.get('summary', '')}")
 if not all_green:
     print("RESTORE GREEN FAILED: not all cert-manager checks returned to green")
     sys.exit(1)
-'
-kill %1 2>/dev/null
+else:
+    print("RESTORE GREEN OK: all cert-manager checks returned to green")
+PYEOF
 ```
 
 Also capture UI evidence: open `http://localhost:8080/` in a browser while the port-forward is active and screenshot the green cert-manager rows.
+
+### 7. Clean up port-forward
+
+```sh
+kill $PF_PID 2>/dev/null
+```
 
 Do not claim final success from static rendering alone. Capture context, Flux status, cert-manager resources, issuer/certificate readiness, TLS Secret existence, CrateCheck `/status.json`, UI screenshots, and the full green→red→restore-green evidence cycle.

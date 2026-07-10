@@ -6,6 +6,8 @@ KIND_CLUSTER_NAME ?= kind-dev-misc-local
 KIND_CONTEXT = kind-$(KIND_CLUSTER_NAME)
 HELM_CONTEXT_ARGS := --kube-context "$(KIND_CONTEXT)"
 KIND_CONFIG := kind/config.yaml
+FLUX_GIT_BRANCH ?= pivot/flux-sync-ssh-bootstrap
+FLUX_GIT_BRANCH_OVERRIDE ?=
 KIND_UNIQUE_PREFIX ?= kubecrate-qa
 KIND_UNIQUE_CLUSTER_NAME := $(KIND_UNIQUE_PREFIX)-$(shell date +%s)-$(shell LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)
 KIND_UNIQUE_STATE_FILE ?= .tmp/kind-unique-cluster-name
@@ -74,7 +76,8 @@ kind-dev-misc-local-recreate:
 > $(MAKE) kind-dev-misc-local-create
 
 kind-dev-misc-local-bootstrap:
-> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)"
+> FLUX_EFFECTIVE_BRANCH="$(FLUX_GIT_BRANCH)"; if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then FLUX_EFFECTIVE_BRANCH="$(FLUX_GIT_BRANCH_OVERRIDE)"; fi; \
+> helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)" --set git.branch="$${FLUX_EFFECTIVE_BRANCH}"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s

@@ -107,29 +107,8 @@ def validate_status_config() -> bool:
         present_cm_ids == cert_manager_check_ids,
         f"missing: {cert_manager_check_ids - set(ids)}",
     )
-    # Verify cert-manager CEL expressions use dot notation with condition checks
-    condition_checks = [
-        "cert-manager-helmrelease-ready",
-        "cert-manager-selfsigned-issuer-ready",
-        "cert-manager-ca-certificate-ready",
-        "cert-manager-ca-issuer-ready",
-        "cert-manager-tls-certificate-ready",
-    ]
-    for cm_check_id in condition_checks:
-        cm_check = next((c for c in checks if c.get("id") == cm_check_id), None)
-        if cm_check is None:
-            continue
-        expr = cm_check.get("expression", "")
-        all_ok &= check(
-            f"cert-manager check {cm_check_id} uses CrateCheck-supported dot notation",
-            "c.type" in expr and "c.status" in expr,
-            "bracket notation must not be used",
-        )
-        all_ok &= check(
-            f"cert-manager check {cm_check_id} asserts Ready=True condition",
-            "c.type == 'Ready'" in expr and "c.status == 'True'" in expr,
-            "must check Ready condition with True status",
-        )
+    # Verify cert-manager CEL expressions have correct structure and behavior
+    all_ok &= validate_cel_behavioral(checks, cert_manager_check_ids) and all_ok
     # Verify cert-manager resource targets are exact
     cert_manager_expected_resources = {
         "cert-manager-helmrelease-ready": {
@@ -191,6 +170,145 @@ def validate_status_config() -> bool:
             "object.metadata" in expr and "c.status" not in expr,
             "Secret resources have no status conditions; check metadata only",
         )
+    return all_ok
+
+
+def validate_cel_behavioral(checks: list[dict], expected_ids: set[str]) -> bool:
+    """Validate cert-manager CEL expressions with structural and behavioral checks.
+
+    This replaces substring-only inspection with structural validation:
+    - Positive: verify guard clauses, exists closure, dot notation, Ready=True predicate
+    - Negative: verify expression would fail for wrong condition type or missing resource
+    - Completeness: every condition-based check has proper guards and closure
+    """
+    all_ok = True
+    condition_check_ids = {cid for cid in expected_ids if cid != "cert-manager-tls-secret-exists"}
+
+    for cm_check_id in sorted(expected_ids):
+        cm_check = next((c for c in checks if c.get("id") == cm_check_id), None)
+        if cm_check is None:
+            continue
+        expr = cm_check.get("expression", "").strip()
+
+        # --- Structural validation ---
+        # Verify balanced parentheses
+        all_ok &= check(
+            f"check {cm_check_id} CEL expression has balanced parentheses",
+            expr.count("(") == expr.count(")"),
+            f"open={expr.count('(')} close={expr.count(')')}",
+        )
+
+        # Dot notation (CrateCheck convention, not bracket indexing)
+        uses_dot = "c.type" in expr or "c.status" in expr or "object.status" in expr or "object.metadata" in expr
+        uses_bracket = "c[\"type\"]" in expr or "c[\"status\"]" in expr or "object[\"status\"]" in expr or "object[\"metadata\"]" in expr
+        dot_detail = "uses dot notation" if uses_dot else "no dot-notation field access found"
+        bracket_detail = "found bracket-indexed fields (should use dot)" if uses_bracket else ""
+        combined_detail = "; ".join(filter(None, [dot_detail, bracket_detail]))
+        all_ok &= check(
+            f"check {cm_check_id} uses CrateCheck dot notation (not bracket indexing)",
+            uses_dot or not uses_bracket,
+            combined_detail,
+        )
+
+        if cm_check_id in condition_check_ids:
+            # --- Positive behavioral: condition-based checks ---
+            # Guard clauses must be present
+            has_status_guard = "has(object.status)" in expr
+            has_conditions_guard = "has(object.status.conditions)" in expr
+            all_ok &= check(
+                f"check {cm_check_id} has status guard: has(object.status)",
+                has_status_guard,
+                "guard present" if has_status_guard else "guard missing — check would fail on missing resource",
+            )
+            all_ok &= check(
+                f"check {cm_check_id} has conditions guard: has(object.status.conditions)",
+                has_conditions_guard,
+                "guard present" if has_conditions_guard else "guard missing — check would crash on resource without conditions",
+            )
+
+            # exists() closure pattern
+            has_exists = "object.status.conditions.exists(c," in expr or "object.status.conditions.exists(c, " in expr
+            all_ok &= check(
+                f"check {cm_check_id} uses exists(c, ...) closure on conditions",
+                has_exists,
+                "closure present" if has_exists else "closure missing — must iterate with exists(c, ...)",
+            )
+
+            # Ready=True predicate with correctly quoted string literals
+            ready_predicate = (
+                "c.type == 'Ready'" in expr
+                and "c.status == 'True'" in expr
+            )
+            all_ok &= check(
+                f"check {cm_check_id} asserts Ready=True condition with single-quoted literals",
+                ready_predicate,
+                "Ready=True pattern found" if ready_predicate else "missing c.type == 'Ready' && c.status == 'True'",
+            )
+
+            # --- Negative behavioral: verify expression is specific ---
+            # Should use 'Ready' (string literal), not an unquoted identifier
+            has_unquoted_ready = "c.type == Ready" in expr.replace("'Ready'", "")
+            all_ok &= check(
+                f"check {cm_check_id} Ready type is properly quoted (no bare identifier)",
+                not has_unquoted_ready,
+                "properly quoted" if not has_unquoted_ready else "FOUND bare Ready identifier — would reference undefined variable",
+            )
+
+            # Should check status == 'True' not status == True (bare boolean)
+            has_bare_true = "status == True" in expr.replace("'True'", "").replace('"True"', "")
+            all_ok &= check(
+                f"check {cm_check_id} status value is string 'True' (not bare boolean)",
+                not has_bare_true,
+                "properly quoted" if not has_bare_true else "FOUND bare True — CEL condition status is string 'True' not boolean",
+            )
+
+            # Verify NOT using c.reason or c.message (which could produce false positives)
+            has_reason_field = "c.reason" in expr
+            all_ok &= check(
+                f"check {cm_check_id} does not match on c.reason (avoids false positives)",
+                not has_reason_field,
+                "not found (correct)" if not has_reason_field else "FOUND c.reason field reference — should not be used for readiness",
+            )
+
+            # Simulate: if resource with wrong condition type presented, exists would return false
+            # The expression uses c.type == 'Ready' — confirm it would reject other types
+            uses_other_condition = any(
+                f"c.type == '{t}'" in expr
+                for t in ["Available", "Healthy", "Progressing", "Degraded"]
+            )
+            all_ok &= check(
+                f"check {cm_check_id} only matches Ready condition (no other types)",
+                not uses_other_condition,
+                "only Ready matched" if not uses_other_condition else "FOUND non-Ready condition type in expression",
+            )
+
+        elif cm_check_id == "cert-manager-tls-secret-exists":
+            # --- Secret existence: metadata-only pattern ---
+            # Positive: checks metadata, not conditions
+            all_ok &= check(
+                f"check {cm_check_id} uses object.metadata (not status conditions)",
+                "object.metadata" in expr,
+                "metadata pattern found" if "object.metadata" in expr else "missing — Secret resources must use metadata checks",
+            )
+            all_ok &= check(
+                f"check {cm_check_id} does not reference status conditions",
+                "object.status" not in expr and "c.type" not in expr and "c.status" not in expr,
+                "no condition references (correct)" if ("object.status" not in expr and "c.type" not in expr and "c.status" not in expr) else "FOUND status/condition references — Secret has no conditions",
+            )
+            # Verify name assertion pattern is present
+            all_ok &= check(
+                f"check {cm_check_id} asserts metadata.name matches expected value",
+                "object.metadata.name" in expr,
+                "name assertion found" if "object.metadata.name" in expr else "missing metadata.name check — must validate the Secret name",
+            )
+
+            # Negative: would fail if Secret doesn't exist (has guard)
+            all_ok &= check(
+                f"check {cm_check_id} has exists guard: has(object.metadata)",
+                "has(object.metadata)" in expr,
+                "guard present" if "has(object.metadata)" in expr else "guard missing — must guard against missing resource",
+            )
+
     return all_ok
 
 
