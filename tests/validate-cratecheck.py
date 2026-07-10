@@ -849,10 +849,11 @@ def validate_flux_bootstrap_behavior() -> bool:
 
     # ── shared mock script template ──────────────────────────────────
     MOCK_SCRIPT_TEMPLATE = """#!/bin/bash
-# Mock {name}: record calls, exit {exit_code}.
+# Mock {name}: record calls, persist effective Flux branch state.
 LOG_FILE="{log_file}"
 CTX_FILE="{ctx_file}"
 STDIN_DIR="{stdin_dir}"
+STATE_DIR="{state_dir}"
 
 echo "{name} $*" >> "$LOG_FILE"
 
@@ -881,6 +882,30 @@ if [ ! -t 0 ]; then
     fi
 fi
 
+# ── mock state: track effective Flux branch ────────────────────────────
+# Only kubectl can change the effective branch.
+if [ "{name}" = "kubectl" ]; then
+    STATE_FILE="$STATE_DIR/effective-branch"
+
+    # Case 1: delete of override ConfigMap resets to canonical.
+    if echo "$*" | grep -q "delete.*flux-sync-values-override"; then
+        canonical="${{MOCK_STATE_CANONICAL_BRANCH:-pivot/flux-sync-ssh-bootstrap}}"
+        printf '%s\n' "$canonical" > "$STATE_FILE"
+        echo "STATE: reset to canonical $canonical (delete)" >> "$LOG_FILE"
+    fi
+
+    # Case 2: apply -f with stdin containing a branch value.
+    if echo "$*" | grep -q "apply" && echo "$*" | grep -q -- "-f"; then
+        if [ -f "$stdin_file" ] && [ -s "$stdin_file" ]; then
+            branch=$(grep -o 'branch: *[a-zA-Z0-9_/.-]*' "$stdin_file" 2>/dev/null | head -1 | sed 's/branch: *//')
+            if [ -n "$branch" ]; then
+                printf '%s\n' "$branch" > "$STATE_FILE"
+                echo "STATE: set effective branch to $branch (apply -f)" >> "$LOG_FILE"
+            fi
+        fi
+    fi
+fi
+
 exit {exit_code}
 """
 
@@ -896,10 +921,36 @@ exit {exit_code}
         with open(ctx_file, "w") as f:
             f.write("kind-dry-run")
 
+        # ── mock state: persist effective Flux branch ──────────────────
+        state_dir = os.path.join(tmpdir, "mock-state")
+        os.makedirs(state_dir, exist_ok=True)
+        state_file = os.path.join(state_dir, "effective-branch")
+        # Initialize with sentinel so we can detect "never written".
+        with open(state_file, "w") as f:
+            f.write("uninitialized\n")
+
+        # Read canonical branch from committed source.
+        sync_values_path = (
+            REPO_ROOT / "clusters" / "kind-dev-misc-local"
+            / "platform-services" / "flux" / "helm-values-sync.yaml"
+        )
+        canonical_branch = "pivot/flux-sync-ssh-bootstrap"  # safe fallback
+        try:
+            with open(sync_values_path) as f:
+                committed_sync = yaml.safe_load(f)
+            canonical_branch = (
+                committed_sync.get("gitRepository", {})
+                .get("spec", {})
+                .get("ref", {})
+                .get("branch", canonical_branch)
+            )
+        except Exception:
+            pass
+
         for name in ("kubectl", "helm", "flux"):
             script = MOCK_SCRIPT_TEMPLATE.format(
                 name=name, log_file=log_path, ctx_file=ctx_file,
-                stdin_dir=stdin_dir, exit_code=0,
+                stdin_dir=stdin_dir, state_dir=state_dir, exit_code=0,
             )
             script_path = os.path.join(tmpdir, name)
             with open(script_path, "w") as f:
@@ -910,6 +961,7 @@ exit {exit_code}
         env_extra = {}
         env_extra["KIND_CLUSTER_NAME"] = "dry-run"
         env_extra["KIND_CONTEXT"] = "kind-dry-run"
+        env_extra["MOCK_STATE_CANONICAL_BRANCH"] = canonical_branch
         if override_branch:
             env_extra["FLUX_GIT_BRANCH_OVERRIDE"] = override_branch
         return tmpdir, log_path, env_extra
@@ -1120,14 +1172,20 @@ exit {exit_code}
         )
         return result.returncode, result.stdout, result.stderr
 
-    def _effective_branch_from_stdin(tmpdir):
-        """Parse the last override ConfigMap stdin for the effective branch."""
-        content = _get_stdin(tmpdir, "kubectl")
-        if not content:
+    def _read_effective_branch(tmpdir):
+        """Read the persisted effective Flux branch from mock state.
+
+        The mock kubectl script writes the effective branch to a state file
+        whenever it applies an override ConfigMap (via apply -f -) or deletes
+        one (which resets to canonical).  This is honest state — not a stale
+        log reread.
+        """
+        state_file = os.path.join(tmpdir, "mock-state", "effective-branch")
+        if not os.path.exists(state_file):
             return None
-        import re
-        m = re.search(r'branch:\s*([a-zA-Z0-9_\-/.]+)', content)
-        return m.group(1) if m else None
+        with open(state_file) as f:
+            branch = f.read().strip()
+        return branch if branch else None
 
     def _count_calls(calls, cmd_name, arg_substring):
         """Count how many calls for cmd_name contain arg_substring in args."""
@@ -1167,7 +1225,7 @@ exit {exit_code}
         )
 
         # D1e: effective branch is candidate
-        eff_branch = _effective_branch_from_stdin(tmpdir_d)
+        eff_branch = _read_effective_branch(tmpdir_d)
         all_ok &= check(
             "stateful (candidate): effective branch is candidate/test-envoy",
             eff_branch == "candidate/test-envoy",
@@ -1226,7 +1284,7 @@ exit {exit_code}
         )
 
         # Effective branch must still be candidate.
-        eff_after_root = _effective_branch_from_stdin(tmpdir_d)
+        eff_after_root = _read_effective_branch(tmpdir_d)
         all_ok &= check(
             "stateful (post-reconcile): effective branch still "
             "candidate/test-envoy",
@@ -1264,10 +1322,18 @@ exit {exit_code}
         )
 
         # After default bootstrap (which deletes the override CM),
-        # the effective override branch should be gone.
-        # The last apply -f stdin is from the candidate phase; the
-        # default phase has no apply -f, so the stdin is stale but
-        # the delete command proves the override is gone.
+        # the mock state MUST reflect the canonical branch.
+        # This is honest state — the mock kubectl script writes the
+        # canonical branch to the state file on delete, so we are
+        # asserting the actual lifecycle transition, not re-reading
+        # stale stdin or a static committed file.
+        final_branch = _read_effective_branch(tmpdir_d)
+        all_ok &= check(
+            "stateful (post-default): effective branch is "
+            "pivot/flux-sync-ssh-bootstrap (from mock state)",
+            final_branch == "pivot/flux-sync-ssh-bootstrap",
+            f"got {final_branch}",
+        )
         has_delete_in_final = any(
             "delete" in " ".join(args)
             and "flux-sync-values-override" in " ".join(args)
@@ -1328,7 +1394,8 @@ exit {exit_code}
             fail_script = MOCK_SCRIPT_TEMPLATE.format(
                 name="helm", log_file=tmpdir_fail + "/calls.log",
                 ctx_file=tmpdir_fail + "/ctx.txt",
-                stdin_dir=tmpdir_fail + "/stdin", exit_code=1,
+                stdin_dir=tmpdir_fail + "/stdin",
+                state_dir=tmpdir_fail + "/mock-state", exit_code=1,
             )
             with open(os.path.join(tmpdir_fail, "helm"), "w") as f:
                 f.write(fail_script)
@@ -1362,7 +1429,8 @@ exit {exit_code}
             fail_kubectl_script = MOCK_SCRIPT_TEMPLATE.format(
                 name="kubectl", log_file=tmpdir_d7 + "/calls.log",
                 ctx_file=tmpdir_d7 + "/ctx.txt",
-                stdin_dir=tmpdir_d7 + "/stdin", exit_code=1,
+                stdin_dir=tmpdir_d7 + "/stdin",
+                state_dir=tmpdir_d7 + "/mock-state", exit_code=1,
             )
             with open(os.path.join(tmpdir_d7, "kubectl"), "w") as f:
                 f.write(fail_kubectl_script)
@@ -1403,7 +1471,8 @@ exit {exit_code}
             fail_kubectl_d8 = MOCK_SCRIPT_TEMPLATE.format(
                 name="kubectl", log_file=tmpdir_d8 + "/calls.log",
                 ctx_file=tmpdir_d8 + "/ctx.txt",
-                stdin_dir=tmpdir_d8 + "/stdin", exit_code=1,
+                stdin_dir=tmpdir_d8 + "/stdin",
+                state_dir=tmpdir_d8 + "/mock-state", exit_code=1,
             )
             with open(os.path.join(tmpdir_d8, "kubectl"), "w") as f:
                 f.write(fail_kubectl_d8)
@@ -1551,7 +1620,7 @@ exit {exit_code}
         calls_e2 = _get_calls(tmpdir_e2)
 
         # Assert: effective branch is NOT candidate (override was removed)
-        eff_e2 = _effective_branch_from_stdin(tmpdir_e2)
+        eff_e2 = _read_effective_branch(tmpdir_e2)
         all_ok &= check(
             "adversarial stateful: removing override → effective branch "
             "NOT candidate/test-envoy",
@@ -1724,7 +1793,7 @@ exit {exit_code}
         calls_e4 = _get_calls(tmpdir_e4)
 
         # Assert: effective branch is NOT candidate (override was removed)
-        eff_e4 = _effective_branch_from_stdin(tmpdir_e4)
+        eff_e4 = _read_effective_branch(tmpdir_e4)
         all_ok &= check(
             "adversarial stateful: removing both → effective branch "
             "NOT candidate/test-envoy",
