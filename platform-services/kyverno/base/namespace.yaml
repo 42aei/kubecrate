@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: core-kyverno
+  labels:
+    app.kubernetes.io/name: kyverno
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services

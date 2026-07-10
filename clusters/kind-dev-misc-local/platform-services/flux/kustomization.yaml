@@ -12,3 +12,7 @@ configMapGenerator:
   - name: flux-sync-values
     files:
       - values.yaml=./helm-values-sync.yaml
+  # flux-sync-values-override is NOT managed by kustomize.
+  # It is created directly via kubectl by the bootstrap Makefile target
+  # when FLUX_GIT_BRANCH_OVERRIDE is set, so it survives GitOps
+  # reconciliation without needing a post-bootstrap kubectl patch.
