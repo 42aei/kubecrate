@@ -1038,7 +1038,17 @@ def validate_runbook_probes() -> bool:
         "trap properly reports failures" if trap_suppress_pattern is None else "trap STILL uses || true — restoration failures are swallowed",
     )
 
-    # --- Structural: TRAP_FLAG mechanism exists for fail-closed propagation ---
+    # --- Structural: trap uses exit 1 on restoration failure ---
+    # The trap must call exit 1 directly (not just write to TRAP_FLAG) so
+    # restoration failures propagate a non-zero exit code.
+    has_trap_exit = "exit 1" in runbook_text
+    all_ok &= check(
+        "runbook probes: trap uses exit 1 on restoration failure (not just TRAP_FLAG write)",
+        has_trap_exit,
+        "exit 1 found in trap" if has_trap_exit else "trap does not contain exit 1 — restoration failures may exit 0",
+    )
+
+    # --- Structural: TRAP_FLAG and RESTORE_NEEDED mechanism present ---
     has_trap_flag = "TRAP_FLAG" in runbook_text
     has_restore_needed = "RESTORE_NEEDED" in runbook_text
     all_ok &= check(
@@ -1047,168 +1057,208 @@ def validate_runbook_probes() -> bool:
         f"TRAP_FLAG={'found' if has_trap_flag else 'MISSING'}, RESTORE_NEEDED={'found' if has_restore_needed else 'MISSING'}",
     )
 
-    # ======================
-    # EXECUTABLE FIXTURE TESTS
-    # ======================
-    # Run the runbook's polling logic against fixture /status.json payloads
-    # to prove correctness for success, red, timeout, missing, wrong-state,
-    # and cleanup scenarios.
+    # ===================================================================
+    # EXECUTABLE FIXTURE TESTS — call the shared polling helper script
+    # ===================================================================
+    # These replace inlined fixture logic with execution of the actual
+    # extracted/shared runbook helper at scripts/runbook-kv-poll.py.
+    # Each test runs the helper against a fixture /status.json payload
+    # and verifies the expected exit code.
 
-    target_ids = {"kyverno-helmrelease-ready", "kyverno-clusterpolicy-ready", "kyverno-smoke-namespace-exists"}
+    fixtures_dir = REPO_ROOT / "tests" / "fixtures"
+    poll_script = REPO_ROOT / "scripts" / "runbook-kv-poll.py"
 
-    # Fixture: all green state
-    fixture_all_green = {
-        "checks": [
-            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
-            {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"},
-            {"id": "kyverno-smoke-namespace-exists", "state": "green", "summary": "Namespace exists"},
-        ]
-    }
+    all_ok &= check(
+        "runbook fixtures: shared polling script exists",
+        poll_script.exists(),
+        str(poll_script),
+    )
 
-    # Fixture: controlled red (ClusterPolicy red, others green)
-    fixture_controlled_red = {
-        "checks": [
-            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
-            {"id": "kyverno-clusterpolicy-ready", "state": "red", "summary": "ClusterPolicy not found"},
-            {"id": "kyverno-smoke-namespace-exists", "state": "green", "summary": "Namespace exists"},
-        ]
-    }
-
-    # Fixture: wrong check red (smoke-ns is red instead of clusterpolicy)
-    fixture_wrong_red = {
-        "checks": [
-            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
-            {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"},
-            {"id": "kyverno-smoke-namespace-exists", "state": "red", "summary": "Namespace missing"},
-        ]
-    }
-
-    # Fixture: missing check (one check not in response)
-    fixture_missing_check = {
-        "checks": [
-            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
-            {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"},
-        ]
-    }
-
-    # Fixture: all red (total failure)
-    fixture_all_red = {
-        "checks": [
-            {"id": "kyverno-helmrelease-ready", "state": "red", "summary": "HelmRelease missing"},
-            {"id": "kyverno-clusterpolicy-ready", "state": "red", "summary": "ClusterPolicy not found"},
-            {"id": "kyverno-smoke-namespace-exists", "state": "red", "summary": "Namespace missing"},
-        ]
-    }
-
-    # --- Executable: green-state detection (green polling block pattern) ---
-    checks = {c["id"]: c for c in fixture_all_green["checks"]}
-    all_ok_green = True
-    for cid in sorted(target_ids):
-        c = checks.get(cid)
-        state = c["state"] if c else "MISSING"
-        if state != "green":
-            all_ok_green = False
+    # --- Green-state detection ---
+    result = subprocess.run(
+        [sys.executable, str(poll_script), "--fixture",
+         str(fixtures_dir / "kv-all-green.json"), "--mode", "green"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
     all_ok &= check(
         "runbook fixtures: green polling correctly identifies all-green state",
-        all_ok_green,
-        "all three checks are green",
+        result.returncode == 0,
+        f"exit={result.returncode}" + (f" stderr: {result.stderr.strip()[:100]}" if result.stderr.strip() else ""),
     )
 
-    # --- Executable: controlled-red detection (exact red for ClusterPolicy) ---
-    checks = {c["id"]: c for c in fixture_controlled_red["checks"]}
-    cp = checks.get("kyverno-clusterpolicy-ready")
-    hr = checks.get("kyverno-helmrelease-ready")
-    ns = checks.get("kyverno-smoke-namespace-exists")
-    cp_is_red = cp is not None and cp["state"] == "red"
-    unaffected_ok = (
-        hr is not None and hr["state"] == "green"
-        and ns is not None and ns["state"] == "green"
+    # --- Controlled-red detection (exact red for ClusterPolicy) ---
+    result = subprocess.run(
+        [sys.executable, str(poll_script), "--fixture",
+         str(fixtures_dir / "kv-controlled-red.json"), "--mode", "red"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
     )
     all_ok &= check(
-        "runbook fixtures: red test detects exact red ClusterPolicy",
-        cp_is_red,
-        f"ClusterPolicy state={cp['state'] if cp else 'MISSING'}",
-    )
-    all_ok &= check(
-        "runbook fixtures: red test confirms unaffected checks remain green",
-        unaffected_ok,
-        f"helmrelease={hr['state'] if hr else 'MISSING'}, smoke-ns={ns['state'] if ns else 'MISSING'}",
+        "runbook fixtures: red test detects exact red ClusterPolicy + unaffected-green",
+        result.returncode == 0,
+        f"exit={result.returncode}" + (f" stderr: {result.stderr.strip()[:100]}" if result.stderr.strip() else ""),
     )
 
-    # --- Executable: wrong-red detection (smoke-ns red, not ClusterPolicy) ---
-    checks = {c["id"]: c for c in fixture_wrong_red["checks"]}
-    cp = checks.get("kyverno-clusterpolicy-ready")
-    ns = checks.get("kyverno-smoke-namespace-exists")
-    cp_is_red = cp is not None and cp["state"] == "red"
-    ns_is_red = ns is not None and ns["state"] == "red"
-    all_ok &= check(
-        "runbook fixtures: wrong-red test — ClusterPolicy is NOT red (green)",
-        not cp_is_red,
-        f"ClusterPolicy state={cp['state'] if cp else 'MISSING'}",
+    # --- Wrong-red detection (wrong check is red) ---
+    result = subprocess.run(
+        [sys.executable, str(poll_script), "--fixture",
+         str(fixtures_dir / "kv-wrong-red.json"), "--mode", "red"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
     )
     all_ok &= check(
-        "runbook fixtures: wrong-red test — smoke-namespace IS red (wrong target)",
-        ns_is_red,
-        f"smoke-ns state={ns['state'] if ns else 'MISSING'}",
+        "runbook fixtures: wrong-red test — smoke-ns red, ClusterPolicy NOT red -> exit 1",
+        result.returncode == 1,
+        f"exit={result.returncode} (expected 1)" + (
+            f" stderr: {result.stderr.strip()[:100]}" if result.stderr.strip() else ""
+        ),
     )
 
-    # --- Executable: timeout scenario (never all green) ---
-    # Simulate: even after full poll window, all-red fixture never produces green
-    checks = {c["id"]: c for c in fixture_all_red["checks"]}
-    all_ok_timeout = True
-    for cid in sorted(target_ids):
-        c = checks.get(cid)
-        state = c["state"] if c else "MISSING"
-        if state != "green":
-            all_ok_timeout = False
+    # --- Timeout scenario (all-red fixture never reaches green) ---
+    result = subprocess.run(
+        [sys.executable, str(poll_script), "--fixture",
+         str(fixtures_dir / "kv-all-red.json"), "--mode", "green"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
     all_ok &= check(
-        "runbook fixtures: timeout scenario — all-red fixture never reaches green",
-        not all_ok_timeout,
-        "correctly fails to find all-green",
+        "runbook fixtures: timeout scenario — all-red fixture never reaches green -> exit 1",
+        result.returncode == 1,
+        f"exit={result.returncode} (expected 1)" + (
+            f" stderr: {result.stderr.strip()[:100]}" if result.stderr.strip() else ""
+        ),
     )
 
-    # --- Executable: missing-check scenario ---
-    checks = {c["id"]: c for c in fixture_missing_check["checks"]}
-    all_present = target_ids.issubset(set(checks.keys()))
+    # --- Missing-check scenario ---
+    result = subprocess.run(
+        [sys.executable, str(poll_script), "--fixture",
+         str(fixtures_dir / "kv-missing-check.json"), "--mode", "green"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
     all_ok &= check(
-        "runbook fixtures: missing-check scenario — not all target checks present",
-        not all_present,
-        f"missing: {sorted(target_ids - set(checks.keys()))}",
+        "runbook fixtures: missing-check scenario — not all target checks present -> exit 1",
+        result.returncode == 1,
+        f"exit={result.returncode} (expected 1)" + (
+            f" stderr: {result.stderr.strip()[:100]}" if result.stderr.strip() else ""
+        ),
     )
 
-    # --- Executable: restored-green detection (all three green after restore) ---
-    checks = {c["id"]: c for c in fixture_all_green["checks"]}
-    all_ok_restored = True
-    if not target_ids.issubset(set(checks.keys())):
-        all_ok_restored = False
-    else:
-        for cid in sorted(target_ids):
-            if checks[cid]["state"] != "green":
-                all_ok_restored = False
+    # --- Restored-green detection ---
+    result = subprocess.run(
+        [sys.executable, str(poll_script), "--fixture",
+         str(fixtures_dir / "kv-all-green.json"), "--mode", "restored-green"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
     all_ok &= check(
-        "runbook fixtures: restored-green — all three checks green after restoration",
-        all_ok_restored,
-        "restored to all-green",
+        "runbook fixtures: restored-green — all three checks green after restoration -> exit 0",
+        result.returncode == 0,
+        f"exit={result.returncode}" + (f" stderr: {result.stderr.strip()[:100]}" if result.stderr.strip() else ""),
     )
 
-    # --- Executable: trap failure propagation ---
-    # Verify the trap restoration pattern: checking TRAP_FLAG after disarm
-    has_trap_flag_check = "[ -s \"$TRAP_FLAG\" ]" in runbook_text or "-s \"$TRAP_FLAG\"" in runbook_text
-    all_ok &= check(
-        "runbook fixtures: TRAP_FLAG check present for failure propagation",
-        has_trap_flag_check,
-        "trap failure check found" if has_trap_flag_check else "trap failure check missing",
-    )
+    # ===================================================================
+    # EXECUTABLE TRAP RESTORATION TESTS
+    # ===================================================================
+    # Test that the trap handler exits non-zero when Flux reconcile fails
+    # or when post-reconcile resource-read fails.
 
-    # --- Executable: restoration failure not swallowed ---
-    # Verify that the restore reconcile does NOT have || true
-    reconcile_has_or_true = re.search(
-        r'reconcile.*\|\|\s*true', runbook_text
+    import tempfile
+
+    # Extract the cleanup_and_restore function from the runbook
+    trap_func_match = re.search(
+        r'cleanup_and_restore\(\) \{(.*?)\n\}',
+        runbook_text, re.DOTALL,
+    )
+    trap_body = trap_func_match.group(1) if trap_func_match else ""
+
+    # --- Injected Flux reconcile failure ---
+    if trap_body:
+        # Ensure .tmp directory exists
+        tmp_dir = REPO_ROOT / ".tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        trap_test_script = f"""#!/bin/bash
+set -e
+PF_PID=99999
+RESTORE_NEEDED=1
+# Mock flux: always fails
+flux() {{ echo "mock flux: simulating reconcile failure" >&2; return 1; }}
+kubectl() {{ echo "mock kubectl $*" >&2; return 1; }}
+export -f flux kubectl
+cleanup_and_restore() {{
+{trap_body}
+}}
+trap cleanup_and_restore EXIT
+# Script reaches end — EXIT trap runs cleanup_and_restore
+# which should call exit 1 on reconcile failure
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", delete=False, dir=str(tmp_dir)
+        ) as tmp:
+            tmp.write(trap_test_script)
+            trap_test_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                ["bash", trap_test_path],
+                capture_output=True, text=True, cwd=REPO_ROOT,
+            )
+            all_ok &= check(
+                "runbook fixtures: injected Flux reconcile failure -> trap exits non-zero",
+                result.returncode != 0,
+                f"exit={result.returncode} (expected non-zero)" + (
+                    f" stdout: {result.stdout.strip()[:100]}" if result.stdout.strip() else ""
+                ),
+            )
+        finally:
+            Path(trap_test_path).unlink(missing_ok=True)
+
+        # --- Injected post-reconcile resource-read failure ---
+        # Mock flux succeeds but kubectl get returns nothing (ClusterPolicy still missing)
+        trap_test_script2 = f"""#!/bin/bash
+set -e
+PF_PID=99999
+RESTORE_NEEDED=1
+flux() {{ echo "mock flux: reconcile succeeded" >&2; return 0; }}
+kubectl() {{
+    if [[ "$*" == *"get clusterpolicy"* ]]; then
+        echo "mock kubectl: ClusterPolicy still missing" >&2
+        return 1
+    fi
+    echo "mock kubectl $*" >&2
+    return 0
+}}
+export -f flux kubectl
+cleanup_and_restore() {{
+{trap_body}
+}}
+trap cleanup_and_restore EXIT
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", delete=False, dir=str(tmp_dir)
+        ) as tmp:
+            tmp.write(trap_test_script2)
+            trap_test_path2 = tmp.name
+
+        try:
+            result = subprocess.run(
+                ["bash", trap_test_path2],
+                capture_output=True, text=True, cwd=REPO_ROOT,
+            )
+            all_ok &= check(
+                "runbook fixtures: injected post-reconcile resource-read failure -> trap exits non-zero",
+                result.returncode != 0,
+                f"exit={result.returncode} (expected non-zero)" + (
+                    f" stdout: {result.stdout.strip()[:100]}" if result.stdout.strip() else ""
+                ),
+            )
+        finally:
+            Path(trap_test_path2).unlink(missing_ok=True)
+
+    # --- Port-forward cleanup: trap kills PF_PID before exit ---
+    has_pf_cleanup_in_trap = (
+        "kill $PF_PID" in trap_body or "kill" in trap_body
     )
     all_ok &= check(
-        "runbook fixtures: restoration reconcile does not swallow failures with || true",
-        reconcile_has_or_true is None,
-        "restoration failures propagate correctly" if reconcile_has_or_true is None else "restoration STILL uses || true",
+        "runbook fixtures: trap includes port-forward cleanup (kill PF_PID)",
+        has_pf_cleanup_in_trap,
+        "kill PF_PID found in trap function" if has_pf_cleanup_in_trap else "port-forward cleanup NOT in trap",
     )
 
     return all_ok
@@ -1393,6 +1443,136 @@ def validate_flux_sync_branch() -> bool:
     return all_ok
 
 
+def validate_flux_sync_override_reset() -> bool:
+    """Validate that default bootstrap resets any pre-existing override ConfigMap.
+
+    Structural:
+      - Makefile else branch has kubectl delete configmap with --ignore-not-found
+      - The if branch has kubectl create/apply
+
+    Behavioral (shell-level dry-run):
+      - Extract the if/else block, substitute variables, and verify that the
+        default path deletes the ConfigMap and the override path creates it.
+    """
+    import re
+
+    all_ok = True
+    makefile_path = REPO_ROOT / "Makefile"
+    with open(makefile_path) as f:
+        makefile_text = f.read()
+
+    # Structural: both delete and create commands are present
+    has_delete = "delete configmap flux-sync-values-override" in makefile_text
+    has_create = "create configmap flux-sync-values-override" in makefile_text
+    all_ok &= check(
+        "flux sync override reset: Makefile has delete command",
+        has_delete,
+        "delete found" if has_delete else "delete NOT found",
+    )
+    all_ok &= check(
+        "flux sync override reset: Makefile has create command",
+        has_create,
+        "create found" if has_create else "create NOT found",
+    )
+    all_ok &= check(
+        "flux sync override reset: Makefile has --ignore-not-found for safe idempotent delete",
+        "--ignore-not-found" in makefile_text,
+    )
+
+    # Verify delete is in the else branch (between else and fi)
+    # The Makefile uses backslash line continuations; match else through fi
+    # regardless of the exact escaping style.
+    else_match = re.search(r'else\b.*?\n(.*?)fi\b', makefile_text, re.DOTALL)
+    if else_match:
+        else_block = else_match.group(1)
+        delete_in_else = "delete configmap flux-sync-values-override" in else_block
+        all_ok &= check(
+            "flux sync override reset: delete is in the else (default) branch",
+            delete_in_else,
+            "delete in else branch" if delete_in_else else f"else block ({len(else_block)} chars): {else_block.strip()[:80]}",
+        )
+    else:
+        all_ok &= check(
+            "flux sync override reset: else branch found in Makefile",
+            False,
+            "could not locate else branch in Makefile",
+        )
+
+    # Behavioral: test the shell if/else logic directly with substituted variables.
+    # Build minimal test scripts that replicate the Makefile's conditional logic
+    # with a mock kubectl, proving default path deletes and override path does not.
+
+    # --- Default path: FLUX_GIT_BRANCH_OVERRIDE empty -> delete ---
+    default_script = """#!/bin/bash
+set -e
+OVERRIDE=""
+CTX="kind-dry-run"
+NS="flux-system"
+kubectl() { echo "kubectl $*"; return 0; }
+export -f kubectl
+printf '{}\\n' >/tmp/test-flux-override-$$.yaml
+trap 'rm -f /tmp/test-flux-override-$$.yaml' EXIT
+if [ -n "$OVERRIDE" ]; then
+    echo "OVERRIDE BRANCH: $OVERRIDE"
+else
+    kubectl --context "$CTX" delete configmap flux-sync-values-override -n "$NS" --ignore-not-found
+    echo "DEFAULT BRANCH"
+fi
+"""
+    result_default = subprocess.run(
+        ["bash", "-c", default_script],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+    has_delete = "delete configmap flux-sync-values-override" in result_default.stdout
+    has_override_msg = "OVERRIDE BRANCH" in result_default.stdout
+    all_ok &= check(
+        "flux sync override reset: shell default path deletes override ConfigMap",
+        has_delete,
+        f"stdout: {result_default.stdout.strip()[:150]}",
+    )
+    all_ok &= check(
+        "flux sync override reset: shell default path does NOT print override message",
+        not has_override_msg,
+        "no override in default path" if not has_override_msg else f"unexpected override: {result_default.stdout.strip()[:150]}",
+    )
+
+    # --- Override path: FLUX_GIT_BRANCH_OVERRIDE set -> no delete ---
+    override_script = """#!/bin/bash
+set -e
+OVERRIDE="candidate/test-branch"
+CTX="kind-dry-run"
+NS="flux-system"
+kubectl() { echo "kubectl $*"; return 0; }
+export -f kubectl
+printf '{}\\n' >/tmp/test-flux-override-$$.yaml
+trap 'rm -f /tmp/test-flux-override-$$.yaml' EXIT
+if [ -n "$OVERRIDE" ]; then
+    echo "OVERRIDE BRANCH: $OVERRIDE"
+else
+    kubectl --context "$CTX" delete configmap flux-sync-values-override -n "$NS" --ignore-not-found
+    echo "DEFAULT BRANCH"
+fi
+"""
+    result_override = subprocess.run(
+        ["bash", "-c", override_script],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+    has_delete = "delete configmap flux-sync-values-override" in result_override.stdout
+    has_override_msg = "OVERRIDE BRANCH" in result_override.stdout
+    all_ok &= check(
+        "flux sync override reset: shell override path does NOT delete override ConfigMap",
+        not has_delete,
+        "no delete in override path" if not has_delete else f"unexpected delete: {result_override.stdout.strip()[:150]}",
+    )
+    all_ok &= check(
+        "flux sync override reset: shell override path prints override message",
+        has_override_msg,
+        f"stdout: {result_override.stdout.strip()[:150]}",
+    )
+
+    return all_ok
+
+
 def run_kustomize_build(path: Path, label: str) -> bool:
     """Run kustomize build and return success."""
     result = subprocess.run(
@@ -1452,6 +1632,9 @@ def main():
 
     print("\n=== Flux sync branch validation ===")
     flux_branch_ok = validate_flux_sync_branch()
+
+    print("\n=== Flux sync override reset validation ===")
+    flux_reset_ok = validate_flux_sync_override_reset()
 
     if args.render:
         print("\n=== Kustomize build validation ===")

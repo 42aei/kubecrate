@@ -8,13 +8,13 @@ The slice proves admission control enforcement through a `require-ns-label` Clus
 
 ## Quick reference: candidate branch override for disposable QA clusters
 
-This is required when the live Flux `GitRepository` must reconcile a candidate branch different from the default. The bootstrap target creates a `flux-sync-values-override` ConfigMap directly via kubectl — not through kustomize — so it survives the root GitOps Kustomization reconciliation with no post-bootstrap `kubectl patch` needed. 
+This is required when the live Flux `GitRepository` must reconcile a candidate branch different from the default. The bootstrap target creates a `flux-sync-values-override` ConfigMap directly via kubectl — not through kustomize — so it survives the root GitOps Kustomization reconciliation with no post-bootstrap `kubectl patch` needed.
 
 ```sh
 # Bootstrap with a candidate branch override
 make kind-dev-misc-local-bootstrap FLUX_GIT_BRANCH_OVERRIDE="kubecrate/cratecheck-restack-kyverno"
 
-# Verify the GitRepository references the expected candidate branch  
+# Verify the GitRepository references the expected candidate branch
 kubectl --context kind-kind-dev-misc-local get gitrepository flux-system -n flux-system \
   -o jsonpath='{.spec.ref.branch}{"\n"}'
 # Expected: kubecrate/cratecheck-restack-kyverno
@@ -210,10 +210,10 @@ cleanup_and_restore() {
         echo "=== TRAP: restoring ClusterPolicy via Flux reconciliation ==="
         if ! flux --context kind-kind-dev-misc-local reconcile kustomization kyverno-smoke-policy -n flux-system --timeout 120s; then
             echo "FAIL: trap restoration — Flux reconcile failed" >&2
-            echo "FAIL" > "$TRAP_FLAG"
+            exit 1
         elif ! kubectl --context kind-kind-dev-misc-local get clusterpolicy require-ns-label --no-headers >/dev/null 2>&1; then
             echo "FAIL: trap restoration — ClusterPolicy still missing after reconcile" >&2
-            echo "FAIL" > "$TRAP_FLAG"
+            exit 1
         else
             echo "TRAP: ClusterPolicy restored successfully."
         fi

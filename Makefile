@@ -82,6 +82,8 @@ kind-dev-misc-local-bootstrap:
     printf 'gitRepository:\n  spec:\n    ref:\n      branch: %s\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" >"$(FLUX_SYNC_OVERRIDE_FILE)"; \
     printf 'bootstrap: overriding sync branch to %s (via %s)\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" "$(FLUX_SYNC_OVERRIDE_FILE)"; \
   else \
+    kubectl --context "$(KIND_CONTEXT)" delete configmap flux-sync-values-override -n "$(FLUX_NAMESPACE)" --ignore-not-found; \
+    printf 'bootstrap: removed any pre-existing flux-sync-values-override ConfigMap\n'; \
     printf 'bootstrap: using committed default sync branch\n'; \
   fi
 > helm upgrade --install "$(FLUX_RELEASE_NAME)" "$(FLUX_CHART)" $(HELM_CONTEXT_ARGS) --version "$(FLUX_CHART_VERSION)" --namespace "$(FLUX_NAMESPACE)" --create-namespace -f "$(FLUX_HELM_VALUES)"
