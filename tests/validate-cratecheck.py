@@ -13,6 +13,7 @@ Validates:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -234,6 +235,39 @@ def run_kubeconform(label: str) -> bool:
     )
 
 
+def validate_cel_expressions() -> bool:
+    """Validate ESO CEL expressions against representative mock objects using cratecheck Go tests."""
+    cratecheck_repo = Path("/home/hermes/repos/cratecheck")
+    if not cratecheck_repo.exists():
+        return check("ESO CEL expression validation", False, "cratecheck repo not found")
+    
+    # Ensure the ESO test file exists
+    test_file = cratecheck_repo / "internal" / "cel" / "eso_test.go"
+    if not test_file.exists():
+        return check("ESO CEL test file exists", False, f"{test_file} not found")
+    
+    go_bin = os.environ.get("GO_BIN", "")
+    if not go_bin:
+        for candidate in ["/tmp/go/go/bin/go", "/usr/local/go/bin/go", "/snap/go/current/bin/go"]:
+            if Path(candidate).exists():
+                go_bin = candidate
+                break
+    if not go_bin:
+        return check("go binary found", False, "go not installed")
+    
+    result = subprocess.run(
+        [go_bin, "test", "./internal/cel/", "-run", "TestESO", "-v", "-count=1"],
+        capture_output=True, text=True, cwd=cratecheck_repo,
+        timeout=60,
+    )
+    ok = result.returncode == 0
+    return check(
+        "ESO CEL expression validation (SecretStore + ExternalSecret conditions)",
+        ok,
+        result.stderr.strip()[:200] if not ok else "",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate CrateCheck manifests")
     parser.add_argument("--render", action="store_true", help="Run kustomize build + kubeconform")
@@ -247,6 +281,9 @@ def main():
 
     print("\n=== CrateCheck Deployment validation ===")
     deploy_ok = validate_deployment()
+
+    print("\n=== CrateCheck CEL expression validation ===")
+    cel_ok = validate_cel_expressions()
 
     if args.render:
         print("\n=== Kustomize build validation ===")
