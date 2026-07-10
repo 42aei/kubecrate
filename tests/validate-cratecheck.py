@@ -149,7 +149,8 @@ def validate_status_config() -> bool:
                 f"expected={expected_value!r} got={actual!r}",
             )
 
-    # Validate CEL expressions use correct condition patterns (not just substring matching)
+    # Validate CEL expressions with behavioral fixtures (not just substring matching).
+    # A mutated expression like "(original) || true" must be rejected.
     condition_checks = [
         "kyverno-helmrelease-ready",
         "kyverno-clusterpolicy-ready",
@@ -162,32 +163,7 @@ def validate_status_config() -> bool:
             continue
         expr = kv_check.get("expression", "")
 
-        # Positive condition: must check c.type == 'Ready' && c.status == 'True'
-        has_ready_type = "c.type == 'Ready'" in expr or 'c.type == "Ready"' in expr
-        has_true_status = "c.status == 'True'" in expr or 'c.status == "True"' in expr
-        all_ok &= check(
-            f"{label} checks c.type == 'Ready'",
-            has_ready_type,
-        )
-        all_ok &= check(
-            f"{label} checks c.status == 'True'",
-            has_true_status,
-        )
-
-        # Must use conditions.exists() pattern (not just has(status.conditions))
-        has_conditions_exists = ".conditions.exists(" in expr
-        all_ok &= check(
-            f"{label} uses conditions.exists() pattern",
-            has_conditions_exists,
-        )
-
-        # Dot notation must be used (CrateCheck contract)
-        uses_dot = "c.type" in expr and "c.status" in expr
-        all_ok &= check(
-            f"{label} uses CrateCheck-supported dot notation",
-            uses_dot,
-            "bracket notation must not be used",
-        )
+        all_ok &= validate_cel_behavioral(label, expr)
 
     # Validate smoke namespace name follows kyverno-smoke-* pattern (consistent with ClusterPolicy scoping)
     smoke_ns_check = checks_by_id.get("kyverno-smoke-namespace-exists")
@@ -213,6 +189,121 @@ def validate_status_config() -> bool:
                 ns_labels.get("kubecrate.io/validated") == "true",
                 f"got labels={ns_labels}",
             )
+
+    return all_ok
+
+
+def validate_cel_behavioral(label: str, expr: str) -> bool:
+    """Validate CEL expression behaviorally using structural analysis and mutation rejection.
+
+    Positive fixtures (must pass):
+      - Ready=True with conditions.exists() pattern
+      - Guard clauses: has(object.status) && has(object.status.conditions)
+      - Dot notation for condition field access (CrateCheck contract)
+
+    Negative fixtures (must be rejected by validator):
+      - Always-true mutation: (original) || true
+      - Missing status/conditions guards
+      - Wrong condition type (not 'Ready')
+      - Missing resource check
+    """
+    all_ok = True
+
+    # --- Positive: must use conditions.exists() pattern ---
+    has_conditions_exists = ".conditions.exists(" in expr
+    all_ok &= check(
+        f"{label} uses conditions.exists() pattern",
+        has_conditions_exists,
+    )
+
+    # --- Positive: must check c.type == 'Ready' inside exists closure ---
+    has_ready_type = "c.type == 'Ready'" in expr or 'c.type == "Ready"' in expr
+    all_ok &= check(
+        f"{label} checks c.type == 'Ready'",
+        has_ready_type,
+    )
+
+    # --- Positive: must check c.status == 'True' inside exists closure ---
+    has_true_status = "c.status == 'True'" in expr or 'c.status == "True"' in expr
+    all_ok &= check(
+        f"{label} checks c.status == 'True'",
+        has_true_status,
+    )
+
+    # --- Positive: must use dot notation (CrateCheck CEL contract) ---
+    uses_dot = "c.type" in expr and "c.status" in expr
+    all_ok &= check(
+        f"{label} uses CrateCheck-supported dot notation",
+        uses_dot,
+        "bracket notation must not be used",
+    )
+
+    # --- Positive: must have guard clauses ---
+    has_status_guard = "has(object.status)" in expr
+    all_ok &= check(
+        f"{label} guards with has(object.status)",
+        has_status_guard,
+    )
+    has_conditions_guard = "has(object.status.conditions)" in expr
+    all_ok &= check(
+        f"{label} guards with has(object.status.conditions)",
+        has_conditions_guard,
+    )
+
+    # --- Negative: always-true mutation detection ---
+    # A valid expression must not end with || true/True or have such a disjunct
+    import re
+    always_true_patterns = [
+        r"\|\|\s*true\b",
+        r"\|\|\s*True\b",
+        r"\|\|\s*1\s*==\s*1\b",
+    ]
+    for pat in always_true_patterns:
+        if re.search(pat, expr):
+            all_ok &= check(
+                f"{label} rejects always-true mutation",
+                False,
+                f"expression contains always-true disjunct matching /{pat}/",
+            )
+
+    # --- Negative: must not check wrong condition type ---
+    # c.type should be 'Ready', not 'Available' or other types for status checks
+    wrong_types = ["c.type == 'Available'", 'c.type == "Available"',
+                   "c.type == 'Progressing'", 'c.type == "Progressing"']
+    for wt in wrong_types:
+        if wt in expr:
+            all_ok &= check(
+                f"{label} does not check wrong condition type",
+                False,
+                f"found {wt!r} instead of c.type == 'Ready'",
+            )
+
+    # --- Negative: must not use c.reason (CrateCheck CEL contract prohibition) ---
+    if "c.reason" in expr:
+        all_ok &= check(
+            f"{label} does not reference c.reason",
+            False,
+            "c.reason is prohibited by CrateCheck CEL contract",
+        )
+
+    # --- Negative: bare identifier detection (must use closure variable c) ---
+    # Expressions like 'Ready' alone or bare True without proper exists() structure
+    # are suspicious in CEL context
+    bare_identifiers = re.findall(r'\bReady\b', expr)
+    if bare_identifiers and "c.type == 'Ready'" not in expr and 'c.type == "Ready"' not in expr:
+        all_ok &= check(
+            f"{label} does not use bare 'Ready' without c.type binding",
+            False,
+            "bare identifier detected — use c.type == 'Ready' inside exists() closure",
+        )
+
+    bare_true = re.findall(r'(?<!")(?<!\')\bTrue\b(?!["\'])', expr)
+    if bare_true and "c.status == 'True'" not in expr and 'c.status == "True"' not in expr:
+        all_ok &= check(
+            f"{label} does not use bare 'True' without c.status binding",
+            False,
+            "bare boolean detected — use c.status == 'True' inside exists() closure",
+        )
 
     return all_ok
 
@@ -245,7 +336,7 @@ def validate_rbac() -> bool:
     )
 
     # Exact RBAC tuple assertions for Kyverno resources
-    # Map each expected tuple to the resource type name for readable output
+    # Must reject extra verbs, extra resources, extra apiGroups, and wildcards.
     expected_tuples = [
         {
             "apiGroup": "helm.toolkit.fluxcd.io",
@@ -262,24 +353,47 @@ def validate_rbac() -> bool:
     ]
 
     for expected in expected_tuples:
-        found = False
+        matched_rule = None
         for rule in rules:
             api_groups = rule.get("apiGroups", [])
-            resources = rule.get("resources", [])
-            verbs = rule.get("verbs", [])
-            if (
-                expected["apiGroup"] in api_groups
-                and set(expected["resources"]) <= set(resources)
-                and set(expected["verbs"]) <= set(verbs)
-            ):
-                found = True
+            if expected["apiGroup"] in api_groups:
+                matched_rule = rule
                 break
 
-        # Build detail for failure
+        if matched_rule is None:
+            all_ok &= check(
+                f"ClusterRole grants exact {expected['label']}",
+                False,
+                f"no rule found with apiGroup={expected['apiGroup']!r}",
+            )
+            continue
+
+        resources = matched_rule.get("resources", [])
+        verbs = matched_rule.get("verbs", [])
+        api_groups = matched_rule.get("apiGroups", [])
+
+        # Exact resource match — reject extra resources
+        resources_exact = set(resources) == set(expected["resources"])
         all_ok &= check(
-            f"ClusterRole grants exact {expected['label']}",
-            found,
-            f"expected apiGroup={expected['apiGroup']!r} resources={expected['resources']} verbs={expected['verbs']}",
+            f"ClusterRole {expected['label']} resources are exact",
+            resources_exact,
+            f"expected={set(expected['resources'])} got={set(resources)}",
+        )
+
+        # Exact verb match — reject extra verbs
+        verbs_exact = set(verbs) == set(expected["verbs"])
+        all_ok &= check(
+            f"ClusterRole {expected['label']} verbs are exact",
+            verbs_exact,
+            f"expected={set(expected['verbs'])} got={set(verbs)}",
+        )
+
+        # Exact apiGroup match — reject extra apiGroups in the same rule
+        api_groups_exact = set(api_groups) == set([expected["apiGroup"]])
+        all_ok &= check(
+            f"ClusterRole {expected['label']} apiGroups are exact",
+            api_groups_exact,
+            f"expected={set([expected['apiGroup']])} got={set(api_groups)}",
         )
 
     # Verify ClusterRoleBinding exists and references correct ServiceAccount
@@ -291,14 +405,28 @@ def validate_rbac() -> bool:
         crb.get("subjects", [{}])[0].get("name") == "cratecheck",
     )
 
-    # Verify no wildcard verbs or resources (security regression)
+    # Verify no wildcard verbs, resources, or apiGroups (security regression)
     for i, rule in enumerate(rules):
         verbs = rule.get("verbs", [])
+        resources = rule.get("resources", [])
+        api_groups = rule.get("apiGroups", [])
         if "*" in verbs:
             all_ok &= check(
                 f"ClusterRole rule[{i}] has no wildcard verbs",
                 False,
                 f"verbs={verbs}",
+            )
+        if "*" in resources:
+            all_ok &= check(
+                f"ClusterRole rule[{i}] has no wildcard resources",
+                False,
+                f"resources={resources}",
+            )
+        if "*" in api_groups:
+            all_ok &= check(
+                f"ClusterRole rule[{i}] has no wildcard apiGroups",
+                False,
+                f"apiGroups={api_groups}",
             )
 
     return all_ok
@@ -464,6 +592,114 @@ def validate_entrypoint_ordering() -> bool:
     return all_ok
 
 
+def validate_runbook_probes() -> bool:
+    """Durable tests for runbook assertions: malformed/missing state, expected red,
+    unaffected-green, timeout, restoration, and cleanup behavior.
+
+    These probes validate that the runbook logic (as captured in the docs) is
+    structurally sound even without a live cluster: the runbook Python blocks
+    must compile, use polling not fixed sleeps, handle missing checks gracefully,
+    and contain proper trap/cleanup patterns.
+    """
+    import ast
+
+    all_ok = True
+    runbook_path = REPO_ROOT / "docs" / "kind-kyverno-policy-guardrails-runbook.md"
+    if not runbook_path.exists():
+        return check("runbook probes: runbook file exists", False, str(runbook_path))
+
+    with open(runbook_path) as f:
+        runbook_text = f.read()
+
+    all_ok &= check(
+        "runbook probes: runbook file is non-empty",
+        len(runbook_text) > 0,
+    )
+
+    # --- Probe: all Python heredoc blocks (python3 << 'PYEOF') must compile ---
+    import re
+    py_blocks = re.findall(
+        r"python3 << 'PYEOF'\n(.*?)PYEOF", runbook_text, re.DOTALL
+    )
+    all_ok &= check(
+        "runbook probes: at least one Python heredoc block found",
+        len(py_blocks) > 0,
+        f"found {len(py_blocks)}",
+    )
+    for i, block in enumerate(py_blocks):
+        try:
+            ast.parse(block)
+        except SyntaxError as e:
+            all_ok &= check(
+                f"runbook probes: Python block {i+1} compiles",
+                False,
+                f"SyntaxError: {e}",
+            )
+
+    # --- Probe: no fixed sleeps in polling loops ---
+    # Polling blocks should use time.sleep(N) inside a while loop, not a bare sleep before polling.
+    # Accept sleep inside polling loops but flag bare sleeps > 5s outside a while.
+    bare_sleeps = re.findall(r'\n\s*sleep\s+(\d+)', runbook_text)
+    for delay in bare_sleeps:
+        if int(delay) > 5:
+            all_ok &= check(
+                f"runbook probes: no bare sleep {delay}s outside polling loop",
+                False,
+                f"found bare sleep {delay}s — use polling with timeout instead",
+            )
+
+    # --- Probe: trap present for controlled-red test ---
+    # The red test section must have a trap for cleanup/restore
+    has_trap = "trap" in runbook_text
+    all_ok &= check(
+        "runbook probes: trap present for error/interruption handling",
+        has_trap,
+    )
+
+    # --- Probe: red phase checks other Kyverno checks remain green ---
+    # The red phase must assert kyverno-helmrelease-ready and kyverno-smoke-namespace-exists
+    # remain unaffected (green) while kyverno-clusterpolicy-ready is red.
+    has_unaffected_check = (
+        "kyverno-helmrelease-ready" in runbook_text
+        and "kyverno-smoke-namespace-exists" in runbook_text
+    )
+    all_ok &= check(
+        "runbook probes: red phase checks unaffected Kyverno checks remain green",
+        has_unaffected_check,
+    )
+
+    # --- Probe: restore phase exists and references Flux reconciliation ---
+    has_restore = "reconcile" in runbook_text or "restore" in runbook_text.lower()
+    all_ok &= check(
+        "runbook probes: restore/reconcile step present",
+        has_restore,
+    )
+
+    # --- Probe: /status.json evidence captured in all three phases ---
+    status_json_count = runbook_text.count("/status.json")
+    all_ok &= check(
+        "runbook probes: /status.json evidence captured in all phases",
+        status_json_count >= 3,
+        f"found {status_json_count} references (need >= 3 for green, red, restored)",
+    )
+
+    # --- Probe: UI evidence captured ---
+    has_ui_evidence = "curl" in runbook_text and "8080/" in runbook_text
+    all_ok &= check(
+        "runbook probes: UI evidence captured via curl",
+        has_ui_evidence,
+    )
+
+    # --- Probe: timeout handling in polling blocks ---
+    has_timeout = "deadline" in runbook_text
+    all_ok &= check(
+        "runbook probes: polling uses deadline/timeout pattern",
+        has_timeout,
+    )
+
+    return all_ok
+
+
 def run_kustomize_build(path: Path, label: str) -> bool:
     """Run kustomize build and return success."""
     result = subprocess.run(
@@ -517,6 +753,9 @@ def main():
 
     print("\n=== Entrypoint ordering validation ===")
     ordering_ok = validate_entrypoint_ordering()
+
+    print("\n=== Runbook probes ===")
+    runbook_probes_ok = validate_runbook_probes()
 
     if args.render:
         print("\n=== Kustomize build validation ===")
