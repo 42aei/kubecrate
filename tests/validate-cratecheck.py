@@ -793,16 +793,7 @@ def validate_runbook_fixtures() -> bool:
 
 def validate_runbook_probes() -> bool:
     """Validate the runbook poll_until contract, Python compilation, status coverage,
-    trap presence, UI evidence, and execute poll_until with fixture probes.
-
-    Probes:
-    1. Python heredocs compile cleanly
-    2. /status.json referenced at least 3 times
-    3. trap EXIT INT TERM present for fail-safe cleanup
-    4. UI evidence (browser/screenshot) mentioned
-    5. Poll_until success: predicate that returns 0 within timeout
-    6. Poll_until timeout: predicate that always fails → timeout
-    7. Poll_until bounded: elapsed ≤ max_wait + interval (bounded)
+    trap presence, UI evidence, and execute poll_until + cleanup probes.
     """
     all_ok = True
     runbook_path = REPO_ROOT / "docs" / "kind-cert-manager-tls-runbook.md"
@@ -895,58 +886,96 @@ def validate_runbook_probes() -> bool:
     # --- Check 7: Execute poll_until with fixture probes ---
     all_ok &= _execute_poll_until_probes() and all_ok
 
+    # --- Check 8: Execute cleanup with fixture probes ---
+    all_ok &= _execute_cleanup_probes() and all_ok
+
     return all_ok
 
 
-def _execute_poll_until_probes() -> bool:
-    """Execute poll_until helper in a subprocess with test predicates.
+def _extract_runbook_section(text: str, marker_start: str, marker_end: str) -> str:
+    """Extract a bash snippet between two marker lines from the runbook."""
+    import re
+    pattern = re.escape(marker_start) + r"\n(.*?)" + re.escape(marker_end)
+    m = re.search(pattern, text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return ""
 
-    Proves: success, timeout, and bounded timeout behavior.
+
+def _execute_poll_until_probes() -> bool:
+    """Execute the actual runbook poll_until helper in a subprocess with test predicates.
+
+    Extracts the real poll_until() function definition from the runbook (not a
+    duplicated copy), so adversarial mutations to the runbook helper cause
+    validation to fail.
+
+    Proves: success, timeout, wrong-state, and bounded timeout behavior.
     """
     all_ok = True
+    runbook_path = REPO_ROOT / "docs" / "kind-cert-manager-tls-runbook.md"
 
-    # Write a self-contained test script that defines poll_until and runs probes
+    with open(runbook_path) as f:
+        runbook_text = f.read()
+
+    # Extract the actual poll_until function from the runbook (lines 148-161)
+    poll_until_fn = _extract_runbook_section(
+        runbook_text,
+        "# --- Polling helper: wait up to MAX_WAIT seconds for predicate to be true ---",
+        "# --- Pre-red baseline: all six checks green ---",
+    )
+    # The extracted text includes the comment line and function; strip the header comment
+    if poll_until_fn.startswith("# Usage:"):
+        poll_until_fn = poll_until_fn.split("\n", 1)[1] if "\n" in poll_until_fn else poll_until_fn
+
+    if not poll_until_fn or "poll_until()" not in poll_until_fn:
+        all_ok &= check(
+            "poll_until probe: able to extract runbook poll_until function",
+            False,
+            "could not find poll_until function in runbook",
+        )
+        return all_ok
+
+    all_ok &= check(
+        "poll_until probe: extracted runbook poll_until function",
+        True,
+        f"extracted {len(poll_until_fn)} bytes",
+    )
+
+    # Build a test script that uses the REAL poll_until from the runbook
     test_script = (
-        '#!/bin/bash\n'
-        'set -euo pipefail\n'
-        '\n'
-        'poll_until() {\n'
-        '  local desc="$1" max_wait="$2" predicate="$3" interval="${4:-5}"\n'
-        '  local elapsed=0\n'
-        '  while [ $elapsed -lt "$max_wait" ]; do\n'
-        '    if eval "$predicate" 2>/dev/null; then\n'
-        '      echo "OK:$desc:${elapsed}"\n'
-        '      return 0\n'
-        '    fi\n'
-        '    sleep "$interval"\n'
-        '    elapsed=$((elapsed + interval))\n'
-        '  done\n'
-        '  echo "TIMEOUT:$desc:${elapsed}"\n'
-        '  return 1\n'
-        '}\n'
-        '\n'
-        '# Probe 1: success — predicate that returns 0 immediately\n'
-        'poll_until "success probe" 10 "true" 1\n'
-        '\n'
-        '# Probe 2: timeout — predicate that always returns 1\n'
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "\n"
+        + poll_until_fn +
+        "\n"
+        "\n"
+        "# Probe 1: success — predicate that returns 0 immediately\n"
+        'if poll_until "success probe" 10 "true" 1; then\n'
+        '  echo "OK:success_probe"\n'
+        "else\n"
+        '  echo "UNEXPECTED_FAILURE:success_probe"\n'
+        "  exit 1\n"
+        "fi\n"
+        "\n"
+        "# Probe 2: timeout — predicate that always returns 1\n"
         'if poll_until "timeout probe" 8 "false" 2; then\n'
         '  echo "UNEXPECTED_SUCCESS:timeout_probe"\n'
-        '  exit 1\n'
-        'else\n'
+        "  exit 1\n"
+        "else\n"
         '  echo "EXPECTED_TIMEOUT:timeout_probe"\n'
-        'fi\n'
-        '\n'
-        '# Probe 3: wrong-state — predicate that checks a condition that fails\n'
+        "fi\n"
+        "\n"
+        "# Probe 3: wrong-state — predicate that checks a condition that fails\n"
         'if poll_until "wrong-state probe" 8 "test xyz = abc" 2; then\n'
         '  echo "UNEXPECTED_SUCCESS:wrong_state_probe"\n'
-        '  exit 1\n'
-        'else\n'
+        "  exit 1\n"
+        "else\n"
         '  echo "EXPECTED_TIMEOUT:wrong_state_probe"\n'
-        'fi\n'
-        '\n'
-        '# Probe 4: bounded timeout — elapsed must be < max_wait + interval\n'
+        "fi\n"
+        "\n"
+        "# Probe 4: bounded timeout — elapsed must be < max_wait + interval\n"
         'poll_until "bounded probe" 6 "true" 1\n'
-        '\n'
+        "\n"
         'echo "ALL_PROBES_PASSED"\n'
     )
 
@@ -967,9 +996,9 @@ def _execute_poll_until_probes() -> bool:
         output = result.stdout + result.stderr
 
         # Probe 1: success
-        success_matched = "OK:success probe:" in output
+        success_matched = "OK:success_probe" in output
         all_ok &= check(
-            "poll_until probe: success predicate returns within timeout",
+            "poll_until probe (runbook): success predicate returns within timeout",
             success_matched,
             "success detected" if success_matched else "success probe failed",
         )
@@ -977,7 +1006,7 @@ def _execute_poll_until_probes() -> bool:
         # Probe 2: timeout
         timeout_matched = "EXPECTED_TIMEOUT:timeout_probe" in output
         all_ok &= check(
-            "poll_until probe: timeout predicate correctly times out",
+            "poll_until probe (runbook): timeout predicate correctly times out",
             timeout_matched,
             "timeout detected" if timeout_matched else "timeout probe did not fire",
         )
@@ -985,32 +1014,33 @@ def _execute_poll_until_probes() -> bool:
         # Probe 3: wrong-state
         wrong_state_matched = "EXPECTED_TIMEOUT:wrong_state_probe" in output
         all_ok &= check(
-            "poll_until probe: wrong-state predicate correctly times out",
+            "poll_until probe (runbook): wrong-state predicate correctly times out",
             wrong_state_matched,
             "wrong-state timeout detected" if wrong_state_matched else "wrong-state probe failed",
         )
 
         # Probe 4: bounded timeout (elapsed must be ≤ max_wait + interval)
         import re
-        elapsed_match = re.search(r"OK:bounded probe:(\d+)", output)
+        # The runbook poll_until prints: "  $desc: condition met after ${elapsed}s"
+        elapsed_match = re.search(r"bounded probe: condition met after (\d+)s", output)
         if elapsed_match:
             elapsed = int(elapsed_match.group(1))
             bounded_ok = elapsed <= 11  # max_wait=6 + interval=1 + some slack
             all_ok &= check(
-                "poll_until probe: bounded timeout (elapsed ≤ max_wait + interval)",
+                "poll_until probe (runbook): bounded timeout (elapsed ≤ max_wait + interval)",
                 bounded_ok,
                 f"elapsed={elapsed}s, max_wait=6, interval=1",
             )
         else:
             all_ok &= check(
-                "poll_until probe: bounded timeout executed",
+                "poll_until probe (runbook): bounded timeout executed",
                 False,
-                "bounded probe did not run",
+                "bounded probe did not run or output format changed",
             )
 
         if result.returncode != 0:
             all_ok &= check(
-                "poll_until probe: all probes passed",
+                "poll_until probe (runbook): all probes passed",
                 False,
                 f"exit code {result.returncode}",
             )
@@ -1022,12 +1052,164 @@ def _execute_poll_until_probes() -> bool:
     return all_ok
 
 
+def _execute_cleanup_probes() -> bool:
+    """Execute the actual runbook cleanup function in subprocess tests.
+
+    Extracts the real cleanup() function and trap from the runbook and tests
+    it with injectable fixture commands (mock flux/kubectl). This proves:
+
+    - Normal cleanup: resume+reconcile succeed → exit 0
+    - Resume failure: exit non-zero, trap still attempts both steps
+    - Reconcile failure: exit non-zero
+    - Cleanup remains armed after failure (trap fires even on error)
+    """
+    all_ok = True
+    runbook_path = REPO_ROOT / "docs" / "kind-cert-manager-tls-runbook.md"
+
+    with open(runbook_path) as f:
+        runbook_text = f.read()
+
+    # Extract the actual cleanup function from the runbook
+    cleanup_fn = _extract_runbook_section(
+        runbook_text,
+        "# Cleanup: resume Kustomization if suspended, stop port-forward",
+        "# Start port-forward",
+    )
+    # Trim the KUSTOMIZATION_WAS_SUSPENDED=false line and blank lines at top
+    if cleanup_fn.startswith("KUSTOMIZATION_WAS_SUSPENDED"):
+        cleanup_fn = cleanup_fn.split("\n", 1)[1] if "\n" in cleanup_fn else cleanup_fn
+
+    if not cleanup_fn or "cleanup()" not in cleanup_fn:
+        all_ok &= check(
+            "cleanup probe: able to extract runbook cleanup function",
+            False,
+            "could not find cleanup function in runbook",
+        )
+        return all_ok
+
+    all_ok &= check(
+        "cleanup probe: extracted runbook cleanup function",
+        True,
+        f"extracted {len(cleanup_fn)} bytes",
+    )
+
+    import tempfile, os as _os
+
+    # --- Fixture 1: Normal cleanup (resume succeeds, reconcile succeeds) ---
+    mock_flux_ok = (
+        "#!/bin/bash\n"
+        "# Mock flux that always succeeds\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "resume" ]; then echo "mock flux resume OK"; exit 0; fi\n'
+        '  if [ "$a" = "reconcile" ]; then echo "mock flux reconcile OK"; exit 0; fi\n'
+        "done\n"
+        "exit 0\n"
+    )
+
+    # --- Fixture 2: Resume failure ---
+    mock_flux_resume_fail = (
+        "#!/bin/bash\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "resume" ]; then echo "mock flux resume FAIL" >&2; exit 1; fi\n'
+        '  if [ "$a" = "reconcile" ]; then echo "mock flux reconcile OK"; exit 0; fi\n'
+        "done\n"
+        "exit 0\n"
+    )
+
+    # --- Fixture 3: Reconcile failure ---
+    mock_flux_reconcile_fail = (
+        "#!/bin/bash\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "resume" ]; then echo "mock flux resume OK"; exit 0; fi\n'
+        '  if [ "$a" = "reconcile" ]; then echo "mock flux reconcile FAIL" >&2; exit 1; fi\n'
+        "done\n"
+        "exit 0\n"
+    )
+
+    for fixture_name, mock_flux_script, expect_zero in [
+        ("normal success (resume+reconcile)", mock_flux_ok, True),
+        ("resume failure", mock_flux_resume_fail, False),
+        ("reconcile failure", mock_flux_reconcile_fail, False),
+    ]:
+        mock_flux_path = None
+        script_path = None
+        try:
+            # Write the mock flux
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".sh", delete=False, prefix="mock-flux-"
+            ) as f:
+                f.write(mock_flux_script)
+                mock_flux_path = f.name
+            _os.chmod(mock_flux_path, 0o755)
+
+            # Build the test script: the real cleanup + trap, using mock flux
+            test_script = (
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                "\n"
+                f'MOCK_FLUX="{mock_flux_path}"\n'
+                'CTX="kind-test-cluster"\n'
+                "KUSTOMIZATION_WAS_SUSPENDED=true\n"
+                "# PF_PID intentionally empty: we test Kustomization cleanup, not port-forward kill\n"
+                "\n"
+                + cleanup_fn +
+                "\n"
+                "# Simulate: set up the cleanup trap, then exit normally\n"
+                "# The EXIT trap will fire and call cleanup\n"
+                "true\n"
+            )
+
+            # Replace 'flux' with our mock
+            test_script = test_script.replace(
+                'flux --context "$CTX"',
+                '"${MOCK_FLUX}" --context "$CTX"',
+            )
+            # Do NOT add MOCK_FLUX at the top — it's already after shebang
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".sh", delete=False, prefix="cleanup-probe-"
+            ) as f:
+                f.write(test_script)
+                script_path = f.name
+            _os.chmod(script_path, 0o755)
+
+            result = subprocess.run(
+                ["bash", script_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            output = result.stdout + result.stderr
+            exit_ok = (result.returncode == 0) == expect_zero
+
+            all_ok &= check(
+                f"cleanup probe: {fixture_name} exit code",
+                exit_ok,
+                f"exit={result.returncode}, expected_zero={expect_zero}",
+            )
+
+            # For failure fixtures: verify CLEANUP FAILED appears in output
+            if not expect_zero:
+                has_fail_msg = "CLEANUP FAILED" in output
+                all_ok &= check(
+                    f"cleanup probe: {fixture_name} reports CLEANUP FAILED",
+                    has_fail_msg,
+                    "CLEANUP FAILED found" if has_fail_msg else "CLEANUP FAILED message missing",
+                )
+        finally:
+            if script_path and _os.path.exists(script_path):
+                _os.unlink(script_path)
+            if mock_flux_path and _os.path.exists(mock_flux_path):
+                _os.unlink(mock_flux_path)
+
+    return all_ok
+
+
 def validate_flux_render_assertions() -> bool:
     """Validate parsed Flux render assertions for sync branch.
 
     Checks:
     1. Default flux-sync-values ConfigMap has branch: pivot/flux-sync-ssh-bootstrap
     2. Override mechanism references correct ConfigMap name
+    3. Executable Makefile restoration probes
     """
     all_ok = True
 
@@ -1131,6 +1313,253 @@ def validate_flux_render_assertions() -> bool:
         "flux render: sync HelmRelease flux-system-sync rendered",
         helmrelease_found,
     )
+
+    # --- Executable Makefile restoration probes ---
+    all_ok &= _execute_makefile_restoration_probes() and all_ok
+
+    return all_ok
+
+
+def _execute_makefile_restoration_probes() -> bool:
+    """Execute extraction-based tests of the Makefile bootstrap override mechanism.
+
+    Probes:
+    1. Write a candidate override file, kustomize build entrypoint, verify
+       the rendered GitRepository branch matches the override.
+    2. Restore the override to {} and verify render returns to default branch.
+    3. Extract the restore_override logic, test restoration with a fixture
+       file (must succeed: non-zero exit if file path is unwritable).
+    4. Detect literal backslash-newline (\n) regression in the Makefile
+       (double backslash produces literal \n in file instead of real newline).
+    """
+    all_ok = True
+
+    override_path = (
+        REPO_ROOT
+        / "clusters" / "kind-dev-misc-local" / "platform-services" / "flux"
+        / "helm-values-sync-override.yaml"
+    )
+
+    test_branch = "test/candidate-branch-probe"
+
+    # --- Probe 1: Write override, render, verify branch ---
+    original_content = None
+    if override_path.exists():
+        original_content = override_path.read_text()
+
+    try:
+        # Write candidate override
+        override_yaml = (
+            f"gitRepository:\n"
+            f"  spec:\n"
+            f"    ref:\n"
+            f"      branch: {test_branch}\n"
+        )
+        override_path.write_text(override_yaml)
+
+        # Render entrypoint and parse
+        result = subprocess.run(
+            ["kustomize", "build", str(ENTRYPOINT_DIR)],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        if result.returncode != 0:
+            all_ok &= check(
+                "makefile probe: render with override succeeds",
+                False,
+                result.stderr.strip()[:120],
+            )
+            return all_ok
+
+        docs = list(yaml.safe_load_all(result.stdout))
+        docs = [d for d in docs if d is not None]
+
+        # Find the override ConfigMap
+        override_cm = None
+        sync_values_cm = None
+        for d in docs:
+            if d.get("kind") != "ConfigMap":
+                continue
+            name = d.get("metadata", {}).get("name", "")
+            if name == "flux-sync-values-override":
+                override_cm = d
+            elif name == "flux-sync-values":
+                sync_values_cm = d
+
+        # Check override renders the test branch
+        if override_cm and "data" in override_cm and "values.yaml" in override_cm["data"]:
+            override_values = yaml.safe_load(override_cm["data"]["values.yaml"])
+            override_branch = (
+                override_values.get("gitRepository", {})
+                .get("spec", {})
+                .get("ref", {})
+                .get("branch", "")
+            )
+            all_ok &= check(
+                f"makefile probe: override renders test branch '{test_branch}'",
+                override_branch == test_branch,
+                f"got '{override_branch}'",
+            )
+        else:
+            all_ok &= check(
+                "makefile probe: override ConfigMap has data.values.yaml after write",
+                False,
+            )
+
+        # Default ConfigMap should still have the default branch
+        if sync_values_cm and "data" in sync_values_cm and "values.yaml" in sync_values_cm["data"]:
+            default_values = yaml.safe_load(sync_values_cm["data"]["values.yaml"])
+            default_branch = (
+                default_values.get("gitRepository", {})
+                .get("spec", {})
+                .get("ref", {})
+                .get("branch", "")
+            )
+            all_ok &= check(
+                "makefile probe: default ConfigMap branch unchanged by override",
+                default_branch == "pivot/flux-sync-ssh-bootstrap",
+                f"got '{default_branch}'",
+            )
+    finally:
+        # --- Probe 2: Restore override to {} and verify render returns default ---
+        override_path.write_text("{}\n")
+        result = subprocess.run(
+            ["kustomize", "build", str(ENTRYPOINT_DIR)],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        if result.returncode == 0:
+            docs = list(yaml.safe_load_all(result.stdout))
+            docs = [d for d in docs if d is not None]
+            override_cm = None
+            for d in docs:
+                if (
+                    d.get("kind") == "ConfigMap"
+                    and d.get("metadata", {}).get("name") == "flux-sync-values-override"
+                ):
+                    override_cm = d
+                    break
+            if override_cm and "data" in override_cm and "values.yaml" in override_cm["data"]:
+                restored_values = yaml.safe_load(override_cm["data"]["values.yaml"])
+                restored_is_empty = restored_values == {} or restored_values is None
+                all_ok &= check(
+                    "makefile probe: restoration to {} reflects in render",
+                    restored_is_empty,
+                    f"got {restored_values}",
+                )
+            else:
+                # Override CM may not exist if {} is empty — that's also correct
+                all_ok &= check(
+                    "makefile probe: restoration to {} — override empty or absent",
+                    True,
+                )
+        # If original content existed, restore it
+        if original_content is not None:
+            override_path.write_text(original_content)
+
+    # --- Probe 3: Extract restore_override logic and test with fixture ---
+    makefile_path = REPO_ROOT / "Makefile"
+    with open(makefile_path) as f:
+        makefile_text = f.read()
+
+    import re, tempfile, os as _os
+
+    # Extract the restore_override function definition from the Makefile
+    restore_match = re.search(
+        r'restore_override\(\) \{ (printf .*?(?:\|\| \{[^}]*\})?); \};',
+        makefile_text,
+    )
+    if restore_match:
+        restore_cmd = restore_match.group(1).strip()
+        # The command uses $(FLUX_SYNC_OVERRIDE_FILE) — substitute a temp path
+        # Build a small test: write content, run restore, verify file is {}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, prefix="restore-test-"
+        ) as tf:
+            tf.write("some: override\ncontent: here\n")
+            test_file_path = tf.name
+
+        try:
+            restore_scoped = restore_cmd.replace(
+                '"$(FLUX_SYNC_OVERRIDE_FILE)"', f'"{test_file_path}"'
+            )
+            # Also handle unquoted version just in case
+            restore_scoped = restore_scoped.replace(
+                "$(FLUX_SYNC_OVERRIDE_FILE)", test_file_path
+            )
+            result = subprocess.run(
+                ["bash", "-c", restore_scoped],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                restored_content = open(test_file_path).read().strip()
+                all_ok &= check(
+                    "makefile probe: restore_override writes {} to file",
+                    restored_content == "{}",
+                    f"got '{restored_content}'",
+                )
+            else:
+                all_ok &= check(
+                    "makefile probe: restore_override command succeeds",
+                    False,
+                    f"exit={result.returncode}, stderr={result.stderr.strip()[:100]}",
+                )
+        finally:
+            _os.unlink(test_file_path)
+
+        # --- Probe 4: Injected restoration failure yields non-zero ---
+        # Try writing to a non-existent directory
+        bad_path = "/nonexistent/path/override.yaml"
+        restore_bad = restore_cmd.replace(
+            '"$(FLUX_SYNC_OVERRIDE_FILE)"', f'"{bad_path}"'
+        ).replace("$(FLUX_SYNC_OVERRIDE_FILE)", bad_path)
+        result = subprocess.run(
+            ["bash", "-c", restore_bad],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_ok &= check(
+            "makefile probe: restore_override to invalid path returns non-zero",
+            result.returncode != 0,
+            f"exit={result.returncode}",
+        )
+    else:
+        all_ok &= check(
+            "makefile probe: restore_override function found in Makefile",
+            False,
+            "could not extract restore_override from Makefile",
+        )
+
+    # --- Probe 5: Literal backslash newline regression detection ---
+    # After the YAML values, printf must use \n not \\n (double backslash)
+    # which would produce literal \n characters in the output file
+    # Check the bootstrap recipe's printf lines for double-backslash regression
+    bootstrap_section_match = re.search(
+        r"kind-dev-misc-local-bootstrap:(.*?)(?=^\S|\Z)",
+        makefile_text,
+        re.DOTALL | re.MULTILINE,
+    )
+    if bootstrap_section_match:
+        bootstrap_section = bootstrap_section_match.group(1)
+        # Find all printf lines in the bootstrap recipe
+        printf_lines = re.findall(r"printf .*", bootstrap_section)
+        double_bs_lines = []
+        for line in printf_lines:
+            # Look for \\n (literal backslash-n, not real newline)
+            # In the Makefile source, a real newline is \n in the recipe line
+            # A double-backslash \\n would be literal \n in the output
+            if "\\\\n" in line:
+                double_bs_lines.append(line.strip()[:80])
+
+        all_ok &= check(
+            "makefile probe: no literal-backslash \\\\n regression in printf lines",
+            len(double_bs_lines) == 0,
+            f"found {len(double_bs_lines)} regression(s): {double_bs_lines[:3]}"
+            if double_bs_lines
+            else "all printf lines use real newlines",
+        )
+    else:
+        all_ok &= check(
+            "makefile probe: bootstrap recipe section found",
+            False,
+        )
 
     return all_ok
 

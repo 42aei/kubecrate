@@ -110,6 +110,8 @@ RED_IDS=("cert-manager-tls-certificate-ready" "cert-manager-tls-secret-exists")
 # Cleanup: resume Kustomization if suspended, stop port-forward
 KUSTOMIZATION_WAS_SUSPENDED=false
 cleanup() {
+  local original_exit=$?
+  local cleanup_failed=0
   echo "--- cleanup ---"
   if [ "${PF_PID:-}" ] && kill -0 "$PF_PID" 2>/dev/null; then
     kill "$PF_PID" 2>/dev/null || true
@@ -119,12 +121,18 @@ cleanup() {
     echo "resuming cert-manager-local-issuer Kustomization..."
     if ! flux --context "$CTX" resume kustomization cert-manager-local-issuer -n flux-system; then
       echo "  CLEANUP FAILED: could not resume Kustomization" >&2
+      cleanup_failed=1
     elif ! flux --context "$CTX" reconcile kustomization cert-manager-local-issuer -n flux-system --timeout 180s; then
       echo "  CLEANUP FAILED: Kustomization resumed but reconcile failed" >&2
+      cleanup_failed=1
     else
       echo "  Kustomization resumed and reconciled successfully"
     fi
   fi
+  if [ $cleanup_failed -ne 0 ]; then
+    exit 1
+  fi
+  exit $original_exit
 }
 trap cleanup EXIT INT TERM
 

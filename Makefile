@@ -78,7 +78,7 @@ kind-dev-misc-local-recreate:
 
 kind-dev-misc-local-bootstrap:
 > printf '{}\n' >"$(FLUX_SYNC_OVERRIDE_FILE)"; \
-> restore_override() { printf '{}\n' >"$(FLUX_SYNC_OVERRIDE_FILE)" 2>/dev/null || true; }; \
+> restore_override() { printf '{}\n' >"$(FLUX_SYNC_OVERRIDE_FILE)" || { echo 'ERROR: restore_override failed' >&2; false; }; }; \
 > trap restore_override EXIT INT TERM; \
 > if [ -n "$(FLUX_GIT_BRANCH_OVERRIDE)" ]; then \
 >   printf 'gitRepository:\n  spec:\n    ref:\n      branch: %s\n' "$(FLUX_GIT_BRANCH_OVERRIDE)" >"$(FLUX_SYNC_OVERRIDE_FILE)"; \
