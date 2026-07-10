@@ -368,6 +368,27 @@ def _evaluate_cel_behavioral(check_id: str, expr: str) -> bool:
     ]
 
     try:
+        # Auto-detect repo .venv so the exact system-Python invocation works
+        # without a machine-specific PYTHONPATH injection.
+        # Also probe the main repo root when running inside a git worktree.
+        _venv_roots = [REPO_ROOT]
+        _gitfile = REPO_ROOT / ".git"
+        if _gitfile.is_file():
+            _first_line = _gitfile.read_text().split("\n", 1)[0]
+            if _first_line.startswith("gitdir: "):
+                _gitdir = _first_line.removeprefix("gitdir: ").strip()
+                _main_repo = Path(_gitdir).parent.parent.parent
+                if _main_repo.is_dir():
+                    _venv_roots.append(_main_repo)
+        for _root in _venv_roots:
+            _venv_site = (
+                _root / ".venv" / "lib"
+                / f"python{sys.version_info.major}.{sys.version_info.minor}"
+                / "site-packages"
+            )
+            if _venv_site.is_dir() and str(_venv_site) not in sys.path:
+                sys.path.insert(0, str(_venv_site))
+
         from celpy import Environment
         from celpy.adapter import json_to_cel
 
