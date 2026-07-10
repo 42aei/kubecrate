@@ -6,4 +6,5 @@ resources:
   - ../platform-services/flux
   - ../application-services/cratecheck
   - ./kyverno-kustomization.yaml
+  - ./kyverno-smoke-policy-kustomization.yaml
   - ./kyverno-smoke-kustomization.yaml

@@ -9,7 +9,10 @@ Validates:
     1. check YAML parses and has required fields
     2. Kustomize build succeeds for base, cluster binding, and entrypoint
     3. kubeconform validates generated manifests (optional, requires kubeconform)
-    4. RBAC rules are present and minimal
+    4. RBAC rules are present and minimal with exact tuple assertions
+    5. Kyverno check resource targets match expected values exactly
+    6. CEL expressions use correct condition checks (not just substring matching)
+    7. Regression coverage for runbook smoke-policy scoping
 """
 
 import argparse
@@ -72,9 +75,9 @@ def validate_status_config() -> bool:
         len(checks) >= 1,
         f"found {len(checks)}",
     )
+    check_ids: list[str] = []
     for i, c in enumerate(checks):
         prefix = f"checks[{i}]"
-        check_ids: list[str] = []
         for field in ("id", "name", "severity", "resource", "expression"):
             all_ok &= check(
                 f"{prefix}.{field} is present",
@@ -86,12 +89,16 @@ def validate_status_config() -> bool:
             f"got {c.get('severity')}",
         )
         check_ids.append(c.get("id", ""))
+
     # No duplicate IDs
     ids = [c.get("id", "") for c in checks]
     all_ok &= check(
         "no duplicate check IDs",
         len(ids) == len(set(ids)),
     )
+
+    # ---- Kyverno-specific validations ----
+
     # Verify Kyverno check IDs are present
     kyverno_check_ids = {
         "kyverno-helmrelease-ready",
@@ -104,26 +111,114 @@ def validate_status_config() -> bool:
         present_kv_ids == kyverno_check_ids,
         f"missing: {kyverno_check_ids - set(ids)}",
     )
-    # Verify Kyverno CEL expressions use dot notation with condition checks
+
+    # Assert exact resource targets for each Kyverno check
+    kyverno_resource_targets = {
+        "kyverno-helmrelease-ready": {
+            "apiVersion": "helm.toolkit.fluxcd.io/v2",
+            "kind": "HelmRelease",
+            "namespace": "core-kyverno",
+            "name": "kyverno",
+        },
+        "kyverno-clusterpolicy-ready": {
+            "apiVersion": "kyverno.io/v1",
+            "kind": "ClusterPolicy",
+            "namespace": "",
+            "name": "require-ns-label",
+        },
+        "kyverno-smoke-namespace-exists": {
+            "apiVersion": "v1",
+            "kind": "Namespace",
+            "namespace": "",
+            "name": "kyverno-smoke-allowed",
+        },
+    }
+    checks_by_id = {c.get("id"): c for c in checks}
+    for cid, expected in kyverno_resource_targets.items():
+        c = checks_by_id.get(cid)
+        label = f"Kyverno check {cid} resource target"
+        if c is None:
+            all_ok &= check(label, False, "check not found")
+            continue
+        resource = c.get("resource", {})
+        for field, expected_value in expected.items():
+            actual = resource.get(field)
+            all_ok &= check(
+                f"{label} {field}",
+                actual == expected_value,
+                f"expected={expected_value!r} got={actual!r}",
+            )
+
+    # Validate CEL expressions use correct condition patterns (not just substring matching)
     condition_checks = [
         "kyverno-helmrelease-ready",
         "kyverno-clusterpolicy-ready",
     ]
     for kv_check_id in condition_checks:
-        kv_check = next((c for c in checks if c.get("id") == kv_check_id), None)
+        kv_check = checks_by_id.get(kv_check_id)
+        label = f"Kyverno check {kv_check_id} CEL expression"
         if kv_check is None:
+            all_ok &= check(label, False, "check not found")
             continue
         expr = kv_check.get("expression", "")
+
+        # Positive condition: must check c.type == 'Ready' && c.status == 'True'
+        has_ready_type = "c.type == 'Ready'" in expr or 'c.type == "Ready"' in expr
+        has_true_status = "c.status == 'True'" in expr or 'c.status == "True"' in expr
         all_ok &= check(
-            f"Kyverno check {kv_check_id} uses CrateCheck-supported dot notation",
-            "c.type" in expr and "c.status" in expr,
+            f"{label} checks c.type == 'Ready'",
+            has_ready_type,
+        )
+        all_ok &= check(
+            f"{label} checks c.status == 'True'",
+            has_true_status,
+        )
+
+        # Must use conditions.exists() pattern (not just has(status.conditions))
+        has_conditions_exists = ".conditions.exists(" in expr
+        all_ok &= check(
+            f"{label} uses conditions.exists() pattern",
+            has_conditions_exists,
+        )
+
+        # Dot notation must be used (CrateCheck contract)
+        uses_dot = "c.type" in expr and "c.status" in expr
+        all_ok &= check(
+            f"{label} uses CrateCheck-supported dot notation",
+            uses_dot,
             "bracket notation must not be used",
         )
+
+    # Validate smoke namespace name follows kyverno-smoke-* pattern (consistent with ClusterPolicy scoping)
+    smoke_ns_check = checks_by_id.get("kyverno-smoke-namespace-exists")
+    if smoke_ns_check:
+        ns_name = smoke_ns_check.get("resource", {}).get("name", "")
+        all_ok &= check(
+            "kyverno-smoke-namespace-exists resource name uses kyverno-smoke-* prefix",
+            ns_name.startswith("kyverno-smoke-"),
+            f"got {ns_name!r}",
+        )
+        # The allowed fixture namespace must carry the required label in its manifest
+        ns_manifest_path = (
+            REPO_ROOT
+            / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke"
+            / "smoke-allowed-namespace.yaml"
+        )
+        if ns_manifest_path.exists():
+            with open(ns_manifest_path) as f:
+                ns_manifest = yaml.safe_load(f)
+            ns_labels = ns_manifest.get("metadata", {}).get("labels", {})
+            all_ok &= check(
+                "allowed fixture namespace has kubecrate.io/validated=true label",
+                ns_labels.get("kubecrate.io/validated") == "true",
+                f"got labels={ns_labels}",
+            )
+
     return all_ok
 
 
 def validate_rbac() -> bool:
-    """Validate RBAC rules are present and minimal."""
+    """Validate RBAC rules are present and minimal with exact tuple assertions."""
     cr_path = BASE_DIR / "clusterrole.yaml"
     with open(cr_path) as f:
         cr = yaml.safe_load(f)
@@ -138,6 +233,7 @@ def validate_rbac() -> bool:
         "ClusterRole has rules",
         len(rules) > 0,
     )
+
     # Check for discovery access
     has_discovery = any(
         r.get("nonResourceURLs")
@@ -147,20 +243,46 @@ def validate_rbac() -> bool:
         "ClusterRole includes discovery API access",
         has_discovery,
     )
-    # Verify Kyverno resource rules are present
-    kv_api_groups = set()
-    for r in rules:
-        for g in r.get("apiGroups", []):
-            kv_api_groups.add(g)
-    all_ok &= check(
-        "ClusterRole grants helmreleases read access",
-        "helm.toolkit.fluxcd.io" in kv_api_groups,
-    )
-    all_ok &= check(
-        "ClusterRole grants kyverno read access",
-        "kyverno.io" in kv_api_groups,
-    )
-    # Verify ClusterRoleBinding exists
+
+    # Exact RBAC tuple assertions for Kyverno resources
+    # Map each expected tuple to the resource type name for readable output
+    expected_tuples = [
+        {
+            "apiGroup": "helm.toolkit.fluxcd.io",
+            "resources": ["helmreleases"],
+            "verbs": ["get"],
+            "label": "HelmRelease read access",
+        },
+        {
+            "apiGroup": "kyverno.io",
+            "resources": ["clusterpolicies"],
+            "verbs": ["get"],
+            "label": "ClusterPolicy read access",
+        },
+    ]
+
+    for expected in expected_tuples:
+        found = False
+        for rule in rules:
+            api_groups = rule.get("apiGroups", [])
+            resources = rule.get("resources", [])
+            verbs = rule.get("verbs", [])
+            if (
+                expected["apiGroup"] in api_groups
+                and set(expected["resources"]) <= set(resources)
+                and set(expected["verbs"]) <= set(verbs)
+            ):
+                found = True
+                break
+
+        # Build detail for failure
+        all_ok &= check(
+            f"ClusterRole grants exact {expected['label']}",
+            found,
+            f"expected apiGroup={expected['apiGroup']!r} resources={expected['resources']} verbs={expected['verbs']}",
+        )
+
+    # Verify ClusterRoleBinding exists and references correct ServiceAccount
     crb_path = BASE_DIR / "clusterrolebinding.yaml"
     with open(crb_path) as f:
         crb = yaml.safe_load(f)
@@ -168,6 +290,17 @@ def validate_rbac() -> bool:
         "ClusterRoleBinding references cratecheck ServiceAccount",
         crb.get("subjects", [{}])[0].get("name") == "cratecheck",
     )
+
+    # Verify no wildcard verbs or resources (security regression)
+    for i, rule in enumerate(rules):
+        verbs = rule.get("verbs", [])
+        if "*" in verbs:
+            all_ok &= check(
+                f"ClusterRole rule[{i}] has no wildcard verbs",
+                False,
+                f"verbs={verbs}",
+            )
+
     return all_ok
 
 
@@ -204,6 +337,130 @@ def validate_deployment() -> bool:
         "Deployment mounts cratecheck-status-config ConfigMap",
         has_config_volume,
     )
+    return all_ok
+
+
+def validate_smoke_policy_scoping() -> bool:
+    """Validate smoke ClusterPolicy is scoped to kyverno-smoke-* namespaces only."""
+    all_ok = True
+
+    policy_paths = [
+        REPO_ROOT
+        / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke"
+        / "require-ns-label-policy.yaml",
+        REPO_ROOT
+        / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke-policy"
+        / "require-ns-label-policy.yaml",
+    ]
+
+    for policy_path in policy_paths:
+        if not policy_path.exists():
+            continue
+        with open(policy_path) as f:
+            policy = yaml.safe_load(f)
+
+        label = f"ClusterPolicy ({policy_path.relative_to(REPO_ROOT)})"
+
+        all_ok &= check(
+            f"{label} uses Enforce mode",
+            policy.get("spec", {}).get("validationFailureAction") == "Enforce",
+        )
+
+        rules = policy.get("spec", {}).get("rules", [])
+        if not rules:
+            all_ok &= check(f"{label} has rules", False)
+            continue
+
+        rule = rules[0]
+        match_any = rule.get("match", {}).get("any", [])
+
+        # Verify match is scoped to kyverno-smoke-* names only
+        names_scoped = False
+        for m in match_any:
+            resources = m.get("resources", {})
+            names = resources.get("names", [])
+            if "kyverno-smoke-*" in names:
+                names_scoped = True
+                break
+
+        all_ok &= check(
+            f"{label} match is scoped to kyverno-smoke-* names",
+            names_scoped,
+            "policy must not match all Namespaces cluster-wide",
+        )
+
+        # Verify the policy message references the expected label
+        message = rule.get("validate", {}).get("message", "")
+        all_ok &= check(
+            f"{label} deny message references kubecrate.io/validated label",
+            "kubecrate.io/validated" in message,
+            f"got message={message!r}",
+        )
+
+    return all_ok
+
+
+def validate_entrypoint_ordering() -> bool:
+    """Validate the entrypoint Kustomization ordering for Kyverno smoke."""
+    all_ok = True
+
+    entrypoint_path = ENTRYPOINT_DIR / "kustomization.yaml"
+    with open(entrypoint_path) as f:
+        ep = yaml.safe_load(f)
+
+    resources = ep.get("resources", [])
+    all_ok &= check(
+        "Entrypoint includes kyverno-kustomization.yaml",
+        "./kyverno-kustomization.yaml" in resources,
+    )
+    all_ok &= check(
+        "Entrypoint includes kyverno-smoke-policy-kustomization.yaml",
+        "./kyverno-smoke-policy-kustomization.yaml" in resources,
+    )
+    all_ok &= check(
+        "Entrypoint includes kyverno-smoke-kustomization.yaml",
+        "./kyverno-smoke-kustomization.yaml" in resources,
+    )
+
+    # Verify ordering: kyverno before smoke-policy before smoke
+    kv_idx = resources.index("./kyverno-kustomization.yaml") if "./kyverno-kustomization.yaml" in resources else -1
+    sp_idx = resources.index("./kyverno-smoke-policy-kustomization.yaml") if "./kyverno-smoke-policy-kustomization.yaml" in resources else -1
+    s_idx = resources.index("./kyverno-smoke-kustomization.yaml") if "./kyverno-smoke-kustomization.yaml" in resources else -1
+    all_ok &= check(
+        "Entrypoint ordering: kyverno before smoke-policy",
+        kv_idx >= 0 and sp_idx >= 0 and kv_idx < sp_idx,
+        f"kyverno index={kv_idx}, smoke-policy index={sp_idx}",
+    )
+    all_ok &= check(
+        "Entrypoint ordering: smoke-policy before smoke",
+        sp_idx >= 0 and s_idx >= 0 and sp_idx < s_idx,
+        f"smoke-policy index={sp_idx}, smoke index={s_idx}",
+    )
+
+    # Verify smoke-policy Kustomization dependsOn kyverno
+    sp_k_path = ENTRYPOINT_DIR / "kyverno-smoke-policy-kustomization.yaml"
+    if sp_k_path.exists():
+        with open(sp_k_path) as f:
+            sp_k = yaml.safe_load(f)
+        depends_on = sp_k.get("spec", {}).get("dependsOn", [])
+        all_ok &= check(
+            "kyverno-smoke-policy dependsOn kyverno",
+            any(d.get("name") == "kyverno" for d in depends_on),
+            f"dependsOn={depends_on}",
+        )
+
+    # Verify smoke Kustomization dependsOn smoke-policy
+    s_k_path = ENTRYPOINT_DIR / "kyverno-smoke-kustomization.yaml"
+    if s_k_path.exists():
+        with open(s_k_path) as f:
+            s_k = yaml.safe_load(f)
+        depends_on = s_k.get("spec", {}).get("dependsOn", [])
+        all_ok &= check(
+            "kyverno-smoke dependsOn kyverno-smoke-policy",
+            any(d.get("name") == "kyverno-smoke-policy" for d in depends_on),
+            f"dependsOn={depends_on}",
+        )
+
     return all_ok
 
 
@@ -255,10 +512,20 @@ def main():
     print("\n=== CrateCheck Deployment validation ===")
     deploy_ok = validate_deployment()
 
+    print("\n=== Smoke ClusterPolicy scoping validation ===")
+    policy_ok = validate_smoke_policy_scoping()
+
+    print("\n=== Entrypoint ordering validation ===")
+    ordering_ok = validate_entrypoint_ordering()
+
     if args.render:
         print("\n=== Kustomize build validation ===")
         base_ok = run_kustomize_build(BASE_DIR, "base")
         binding_ok = run_kustomize_build(CLUSTER_BINDING_DIR, "cluster-binding")
+        smoke_policy_ok = run_kustomize_build(
+            REPO_ROOT / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke-policy",
+            "smoke-policy",
+        )
         entrypoint_ok = run_kustomize_build(ENTRYPOINT_DIR, "entrypoint")
 
         print("\n=== kubeconform schema validation ===")
@@ -266,8 +533,8 @@ def main():
 
     if FAILURES:
         print(f"\n{len(FAILURES)} FAILURE(S):")
-        for f in FAILURES:
-            print(f"  - {f}")
+        for f_item in FAILURES:
+            print(f"  - {f_item}")
         sys.exit(1)
     else:
         print("\nAll checks passed.")

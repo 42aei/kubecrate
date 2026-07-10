@@ -19,7 +19,7 @@ spec:
         kind: HelmRepository
         name: kyverno
         namespace: core-kyverno
-      version: 1.13.4
+      version: 3.3.7
   install:
     createNamespace: false
     crds: CreateReplace

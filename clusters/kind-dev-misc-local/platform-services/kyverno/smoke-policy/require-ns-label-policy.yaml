@@ -17,6 +17,8 @@ spec:
           - resources:
               kinds:
                 - Namespace
+              names:
+                - "kyverno-smoke-*"
       validate:
         message: "Namespace must have label kubecrate.io/validated: 'true'"
         pattern:
