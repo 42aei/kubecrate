@@ -1,0 +1,35 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager-local-issuer
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+spec:
+  dependsOn:
+    - name: cert-manager
+  interval: 1m0s
+  path: ./clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 5m0s
+  wait: true
+  healthChecks:
+    - apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      name: kubecrate-local-selfsigned
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      name: cratecheck-local-ca
+      namespace: cratecheck
+    - apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      name: kubecrate-local-ca
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      name: cratecheck-tls
+      namespace: cratecheck
