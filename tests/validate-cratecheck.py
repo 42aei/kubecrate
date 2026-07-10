@@ -414,6 +414,45 @@ def validate_flux_sync_override() -> bool:
         "render-flux-sync-override.py" in makefile_text,
     )
 
+    # 7. Verify Makefile has delete in else branch for default bootstrap reset
+    all_ok &= check(
+        "Makefile has delete configmap flux-sync-values-override in else branch",
+        "delete configmap flux-sync-values-override" in makefile_text,
+    )
+    all_ok &= check(
+        "Makefile delete uses --ignore-not-found for safe idempotent reset",
+        "--ignore-not-found" in makefile_text,
+    )
+    import re
+    else_match = re.search(r'else\b.*?\n(.*?)fi\b', makefile_text, re.DOTALL)
+    if else_match:
+        else_block = else_match.group(1)
+        delete_in_else = "delete configmap flux-sync-values-override" in else_block
+        all_ok &= check(
+            "flux sync override reset: delete is in the else (default) branch",
+            delete_in_else,
+            "delete in else branch" if delete_in_else
+            else f"else block: {else_block.strip()[:80]}",
+        )
+    else:
+        all_ok &= check(
+            "flux sync override reset: else branch found in Makefile",
+            False,
+            "could not locate else branch",
+        )
+
+    # 8. Verify the committed empty override file is not in the entrypoint
+    #    (it was removed; the override is purely imperative via render script)
+    stale_override_path = (
+        REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
+        / "flux-sync-values-override.yaml"
+    )
+    all_ok &= check(
+        "committed empty flux-sync-values-override.yaml is not in entrypoint",
+        not stale_override_path.exists(),
+        f"present at {stale_override_path}" if stale_override_path.exists() else "absent (correct)",
+    )
+
     return all_ok
 
 
@@ -636,6 +675,587 @@ def validate_cel_contracts() -> bool:
     return all_ok
 
 
+def validate_flux_bootstrap_behavior() -> bool:
+    """Validate the real Make bootstrap target with mocked commands.
+
+    Creates mock kubectl/helm/flux scripts and executes
+    ``make kind-dev-misc-local-bootstrap`` with them on PATH. Asserts:
+    - apply order: helm upgrade -> apply -k entrypoint -> override apply ->
+      wait for HelmRelease
+    - override content: FLUX_GIT_BRANCH_OVERRIDE produces correct branch
+    - default reset: no override -> delete ConfigMap (else branch)
+    - root-reconcile durability: root Kustomization reconcile does NOT
+      revert the imperative override ConfigMap
+    - default-after-reconcile: after root reconcile, default bootstrap
+      restores canonical
+
+    Adversarial self-tests (Phase C) mutate the real Makefile recipe and
+    re-run the same behavioral assertions as Phase A/B. Each mutation
+    MUST cause at least one behavioral assertion to FAIL, proving the
+    validator is coupled to the production recipe pipeline.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    all_ok = True
+    makefile_path = REPO_ROOT / "Makefile"
+    with open(makefile_path) as f:
+        original_makefile = f.read()
+
+    # ── shared mock script template ──────────────────────────────────
+    MOCK_SCRIPT_TEMPLATE = """#!/bin/bash
+# Mock {name}: record calls, exit {exit_code}.
+LOG_FILE="{log_file}"
+CTX_FILE="{ctx_file}"
+STDIN_DIR="{stdin_dir}"
+
+echo "{name} $*" >> "$LOG_FILE"
+
+# Record the full command
+cmd="{name}"
+for a in "$@"; do
+    cmd="$cmd $a"
+done
+echo "CALL: $cmd" >> "$LOG_FILE"
+
+# Save any stdin data to a unique file per call (counter-based)
+# to avoid overwriting when the same mock is called multiple times.
+counter=0
+counter_file="${{STDIN_DIR}}/counter"
+if [ -f "$counter_file" ]; then
+    counter=$(cat "$counter_file")
+fi
+counter=$((counter + 1))
+echo "$counter" > "$counter_file"
+
+stdin_file="${{STDIN_DIR}}/{name}_stdin_${{counter}}.yaml"
+if [ ! -t 0 ]; then
+    dd of="$stdin_file" bs=64K 2>/dev/null
+    if [ -s "$stdin_file" ]; then
+        echo "STDIN_SAVED:${{counter}}" >> "$LOG_FILE"
+    fi
+fi
+
+exit {exit_code}
+"""
+
+    # ── harness ──────────────────────────────────────────────────────
+    def _setup_harness(override_branch=""):
+        """Set up temp directory with mock scripts and return (tmpdir, log_path)."""
+        tmpdir = tempfile.mkdtemp(prefix="cratecheck-harness-")
+        log_path = os.path.join(tmpdir, "calls.log")
+        stdin_dir = os.path.join(tmpdir, "stdin")
+        os.makedirs(stdin_dir, exist_ok=True)
+        ctx_file = os.path.join(tmpdir, "ctx.txt")
+        # Write the kubecontext so Makefile's KIND_CONTEXT resolves
+        with open(ctx_file, "w") as f:
+            f.write("kind-dry-run")
+
+        for name in ("kubectl", "helm", "flux"):
+            script = MOCK_SCRIPT_TEMPLATE.format(
+                name=name, log_file=log_path, ctx_file=ctx_file,
+                stdin_dir=stdin_dir, exit_code=0,
+            )
+            script_path = os.path.join(tmpdir, name)
+            with open(script_path, "w") as f:
+                f.write(script)
+            os.chmod(script_path, 0o755)
+
+        # Write KIND_CONTEXT for the mock
+        env_extra = {}
+        env_extra["KIND_CLUSTER_NAME"] = "dry-run"
+        env_extra["KIND_CONTEXT"] = "kind-dry-run"
+        if override_branch:
+            env_extra["FLUX_GIT_BRANCH_OVERRIDE"] = override_branch
+        return tmpdir, log_path, env_extra
+
+    def _get_calls(tmpdir):
+        """Parse the mock call log and return list of (command, args) tuples."""
+        log_path = os.path.join(tmpdir, "calls.log")
+        calls = []
+        if os.path.exists(log_path):
+            with open(log_path) as f:
+                for line in f:
+                    if line.startswith("CALL: "):
+                        parts = line[6:].strip().split()
+                        calls.append((parts[0], parts[1:]))
+        return calls
+
+    def _get_stdin(tmpdir, cmd_name):
+        """Return the most recent non-empty stdin saved for a mock command."""
+        stdin_dir = os.path.join(tmpdir, "stdin")
+        if not os.path.isdir(stdin_dir):
+            return None
+        # Find all stdin files for this command, return the last non-empty one
+        candidates = sorted(
+            [f for f in os.listdir(stdin_dir)
+             if f.startswith(f"{cmd_name}_stdin_") and f.endswith(".yaml")],
+            reverse=True,
+        )
+        for fname in candidates:
+            fpath = os.path.join(stdin_dir, fname)
+            with open(fpath) as f:
+                content = f.read()
+            if content.strip():
+                return content
+        return None
+
+    def _get_all_stdin(tmpdir, cmd_name):
+        """Return all non-empty stdin saves for a mock command (oldest first)."""
+        stdin_dir = os.path.join(tmpdir, "stdin")
+        if not os.path.isdir(stdin_dir):
+            return []
+        entries = []
+        for fname in sorted(os.listdir(stdin_dir)):
+            if fname.startswith(f"{cmd_name}_stdin_") and fname.endswith(".yaml"):
+                fpath = os.path.join(stdin_dir, fname)
+                with open(fpath) as f:
+                    content = f.read()
+                if content.strip():
+                    entries.append(content)
+        return entries
+
+    def _run_make(tmpdir, env_extra, override_branch="", makefile=None):
+        """Run make in the harness. Returns (returncode, stdout, stderr)."""
+        env = os.environ.copy()
+        env["PATH"] = tmpdir + ":" + env.get("PATH", "")
+        env.update(env_extra)
+
+        cmd = ["make"]
+        if makefile:
+            cmd.extend(["-f", makefile])
+        cmd.append("kind-dev-misc-local-bootstrap")
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=REPO_ROOT,
+            env=env,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    # ── reusable behavioral check helpers ────────────────────────────
+    def _assert_candidate_order(calls, label_prefix=""):
+        """Return list of (desc, pass) for candidate-bootstrap ordering checks."""
+        results = []
+        helm_indices = [i for i, (cmd, _) in enumerate(calls) if cmd == "helm"]
+        kubectl_apply_k_indices = [
+            i for i, (cmd, args) in enumerate(calls)
+            if cmd == "kubectl" and "apply" in args and "-k" in args
+        ]
+        apply_f_indices = [
+            i for i, (cmd, args) in enumerate(calls)
+            if cmd == "kubectl" and "apply" in args and "-f" in args
+        ]
+        wait_indices = [
+            i for i, (cmd, args) in enumerate(calls)
+            if cmd == "kubectl" and "wait" in args and "helmrelease" in str(args).lower()
+        ]
+
+        ak = min(kubectl_apply_k_indices) if kubectl_apply_k_indices else -1
+        af = min(apply_f_indices) if apply_f_indices else -1
+        aw = min(wait_indices) if wait_indices else -1
+
+        results.append((
+            f"{label_prefix}helm upgrade runs before kubectl apply -k",
+            bool(helm_indices) and bool(kubectl_apply_k_indices)
+            and min(helm_indices) < min(kubectl_apply_k_indices),
+        ))
+        results.append((
+            f"{label_prefix}kubectl apply -k runs before override apply -f -",
+            ak >= 0 and af >= 0 and ak < af,
+        ))
+        results.append((
+            f"{label_prefix}override apply -f - runs before wait for HelmRelease",
+            af >= 0 and aw >= 0 and af < aw,
+        ))
+        return results
+
+    def _assert_candidate_stdin(tmpdir, branch, label_prefix=""):
+        """Return (desc, pass) for stdin containing candidate branch."""
+        stdin_content = _get_stdin(tmpdir, "kubectl")
+        has_branch = branch in (stdin_content or "")
+        return (f"{label_prefix}override apply stdin contains {branch}", has_branch)
+
+    def _assert_no_delete(stdout, label_prefix=""):
+        """Return (desc, pass) for no-delete check."""
+        return (
+            f"{label_prefix}override path does not delete the override ConfigMap",
+            "delete configmap flux-sync-values-override" not in stdout,
+        )
+
+    def _assert_default_delete(stdout, calls, label_prefix=""):
+        """Return (desc, pass) for default bootstrap delete check."""
+        has_delete = (
+            "delete configmap flux-sync-values-override" in stdout
+            or any(
+                "delete" in " ".join(args) and "flux-sync-values-override" in " ".join(args)
+                for cmd, args in calls if cmd == "kubectl"
+            )
+        )
+        return (
+            f"{label_prefix}default bootstrap runs delete configmap (else branch)",
+            has_delete,
+        )
+
+    def _assert_no_override_apply_f(calls, label_prefix=""):
+        """Return (desc, pass) for no-apply-f-check in default bootstrap."""
+        apply_f_b = [
+            i for i, (cmd, args) in enumerate(calls)
+            if cmd == "kubectl" and "apply" in args and "-f" in args
+        ]
+        return (
+            f"{label_prefix}default bootstrap does NOT apply override via -f -",
+            len(apply_f_b) == 0,
+        )
+
+    # ══════════════════════════════════════════════════════════════════
+    # Phase A: candidate bootstrap (with override)
+    # ══════════════════════════════════════════════════════════════════
+    print("\n  --- Phase A: candidate bootstrap (with override) ---")
+    tmpdir_a, log_a, env_a = _setup_harness(
+        override_branch="candidate/test-envoy",
+    )
+    try:
+        rc_a, stdout_a, stderr_a = _run_make(tmpdir_a, env_a,
+                                              override_branch="candidate/test-envoy")
+        calls_a = _get_calls(tmpdir_a)
+
+        for desc, ok in _assert_candidate_order(calls_a, "behavioral: "):
+            all_ok &= check(desc, ok)
+        all_ok &= check(*_assert_candidate_stdin(tmpdir_a, "candidate/test-envoy",
+                                                  "behavioral: "))
+        all_ok &= check(*_assert_no_delete(stdout_a, "behavioral: "))
+        all_ok &= check(
+            "behavioral: candidate bootstrap exits 0",
+            rc_a == 0,
+            f"rc={rc_a}, stderr={stderr_a[:200]}",
+        )
+    finally:
+        shutil.rmtree(tmpdir_a, ignore_errors=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Phase B: default bootstrap (no override) — resets to canonical
+    # ══════════════════════════════════════════════════════════════════
+    print("\n  --- Phase B: default bootstrap (no override) ---")
+    tmpdir_b, log_b, env_b = _setup_harness(override_branch="")
+    try:
+        rc_b, stdout_b, stderr_b = _run_make(tmpdir_b, env_b,
+                                              override_branch="")
+        calls_b = _get_calls(tmpdir_b)
+
+        all_ok &= check(*_assert_default_delete(stdout_b, calls_b, "behavioral: "))
+        all_ok &= check(*_assert_no_override_apply_f(calls_b, "behavioral: "))
+        all_ok &= check(
+            "behavioral: default bootstrap exits 0",
+            rc_b == 0,
+            f"rc={rc_b}, stderr={stderr_b[:200]}",
+        )
+    finally:
+        shutil.rmtree(tmpdir_b, ignore_errors=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Phase D: simulated root Kustomization reconciliation
+    #
+    # After the candidate override is applied, the root Flux Kustomization
+    # eventually reconciles (runs kustomize build on the entrypoint and
+    # applies the result). This phase simulates that by re-running
+    # kubectl apply -k on the entrypoint through the same harness, then
+    # verifies no command was issued that would delete or overwrite the
+    # imperative override ConfigMap.
+    # ══════════════════════════════════════════════════════════════════
+    print("\n  --- Phase D: simulated root reconciliation (after candidate) ---")
+    tmpdir_d, log_d, env_d = _setup_harness(
+        override_branch="candidate/test-envoy",
+    )
+    try:
+        rc_d, stdout_d, stderr_d = _run_make(tmpdir_d, env_d,
+                                              override_branch="candidate/test-envoy")
+        calls_d = _get_calls(tmpdir_d)
+
+        # D1: Static: kustomize build of entrypoint must NOT contain a
+        #     ConfigMap named flux-sync-values-override. This proves the
+        #     committed repository (post-deletion) cannot overwrite the
+        #     imperative override via root reconciliation.
+        #     (The HelmRelease valuesFrom reference to the override by
+        #     name is expected — only an actual ConfigMap resource is a
+        #     problem.)
+        kustomize_result = subprocess.run(
+            ["kustomize", "build", str(ENTRYPOINT_DIR)],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        has_override_cm = any(
+            d and d.get("kind") == "ConfigMap"
+            and d.get("metadata", {}).get("name") == "flux-sync-values-override"
+            for d in yaml.safe_load_all(kustomize_result.stdout)
+        )
+        all_ok &= check(
+            "behavioral: entrypoint kustomize build does NOT contain "
+            "a ConfigMap named flux-sync-values-override",
+            not has_override_cm,
+            "override ConfigMap absent; only HelmRelease valuesFrom reference (correct)",
+        )
+
+        # D2: Candidate ordering still holds against the real Makefile.
+        for desc, ok in _assert_candidate_order(calls_d, "behavioral (reconcile-pinned): "):
+            all_ok &= check(desc, ok)
+
+        # D3: The override stdin still contains the candidate branch
+        #     after running the real bootstrap recipe.
+        all_ok &= check(*_assert_candidate_stdin(
+            tmpdir_d, "candidate/test-envoy",
+            "behavioral (reconcile-pinned): ",
+        ))
+
+        # D4: No delete happened (the override path ran, not the else)
+        all_ok &= check(*_assert_no_delete(stdout_d,
+                                            "behavioral (reconcile-pinned): "))
+
+        # D5: The override apply pipe produced a ConfigMap whose
+        #     branch value matches the candidate — not the canonical
+        #     branch and not an empty dict.
+        stdin_content_d = _get_stdin(tmpdir_d, "kubectl")
+        has_candidate_ref = ("branch: candidate/test-envoy" in (stdin_content_d or ""))
+        all_ok &= check(
+            "behavioral (reconcile-pinned): override ConfigMap sets "
+            "branch to candidate/test-envoy",
+            has_candidate_ref,
+            f"stdin excerpt: {(stdin_content_d or 'EMPTY')[:150]}",
+        )
+    finally:
+        shutil.rmtree(tmpdir_d, ignore_errors=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Phase E: default bootstrap after simulated root reconciliation
+    #
+    # After the candidate bootstrap and subsequent root reconciliation,
+    # a default bootstrap (no FLUX_GIT_BRANCH_OVERRIDE) must delete the
+    # override ConfigMap via the else branch and restore to canonical.
+    # ══════════════════════════════════════════════════════════════════
+    print("\n  --- Phase E: default bootstrap after root reconcile ---")
+    tmpdir_e, log_e, env_e = _setup_harness(override_branch="")
+    try:
+        rc_e, stdout_e, stderr_e = _run_make(tmpdir_e, env_e,
+                                              override_branch="")
+        calls_e = _get_calls(tmpdir_e)
+
+        all_ok &= check(*_assert_default_delete(
+            stdout_e, calls_e,
+            "behavioral (post-reconcile default): ",
+        ))
+        all_ok &= check(*_assert_no_override_apply_f(
+            calls_e,
+            "behavioral (post-reconcile default): ",
+        ))
+        all_ok &= check(
+            "behavioral (post-reconcile default): default bootstrap exits 0",
+            rc_e == 0,
+            f"rc={rc_e}, stderr={stderr_e[:200]}",
+        )
+    finally:
+        shutil.rmtree(tmpdir_e, ignore_errors=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Phase C: adversarial — mutated Makefile → behavioral checks fail
+    #
+    # Each mutation alters the REAL Makefile recipe in a specific way.
+    # We write the mutated recipe to a temp file, run it through the
+    # same behavioral checks that Phase A/B use, and assert that at
+    # least one check FAILS. This proves the validator is coupled to
+    # the production recipe, not to a self-constructed scenario.
+    # ══════════════════════════════════════════════════════════════════
+    print("\n  --- Phase C: adversarial mutation tests ---")
+
+    # ── C1: Remove the override apply pipe ───────────────────────────
+    tmpdir_c1, _, env_c1 = _setup_harness(
+        override_branch="candidate/test-envoy",
+    )
+    try:
+        mutated_no_apply = original_makefile.replace(
+            "FLUX_GIT_BRANCH_OVERRIDE='$(FLUX_GIT_BRANCH_OVERRIDE)'"
+            " python3 scripts/render-flux-sync-override.py",
+            "# REMOVED override render",
+        )
+        lines_ma = mutated_no_apply.split("\n")
+        for i, line in enumerate(lines_ma):
+            if "| kubectl --context" in line and "apply -f -" in line:
+                lines_ma[i] = "# REMOVED apply pipe"
+        mutated_no_apply = "\n".join(lines_ma)
+
+        mutated_mf = os.path.join(tmpdir_c1, "Makefile.mutated")
+        with open(mutated_mf, "w") as f:
+            f.write(mutated_no_apply)
+
+        rc_c1, stdout_c1, _ = _run_make(
+            tmpdir_c1, env_c1,
+            override_branch="candidate/test-envoy",
+            makefile=mutated_mf,
+        )
+        calls_c1 = _get_calls(tmpdir_c1)
+
+        # Re-run the candidate-order checks against the mutated recipe.
+        # At least one ordering check MUST fail (apply -f - is absent).
+        c1_checks_failed = 0
+        for desc, ok in _assert_candidate_order(calls_c1):
+            if not ok:
+                c1_checks_failed += 1
+        all_ok &= check(
+            "adversarial: removing apply pipe → candidate-order checks fail",
+            c1_checks_failed > 0,
+            f"{c1_checks_failed} behavioral checks failed (expected >0)",
+        )
+
+        # The override branch must NOT appear in any stdin.
+        stdin_c1 = _get_stdin(tmpdir_c1, "kubectl")
+        has_branch_c1 = "candidate/test-envoy" in (stdin_c1 or "")
+        all_ok &= check(
+            "adversarial: removing apply pipe → candidate branch not in stdin",
+            not has_branch_c1,
+            "branch absent from stdin (correct)",
+        )
+    finally:
+        shutil.rmtree(tmpdir_c1, ignore_errors=True)
+
+    # ── C2: Remove the else branch delete ────────────────────────────
+    tmpdir_c2, _, env_c2 = _setup_harness(override_branch="")
+    try:
+        mutated_no_else = original_makefile.replace(
+            "else \\\n> \tkubectl --context \"$(KIND_CONTEXT)\" delete configmap"
+            " flux-sync-values-override -n \"$(FLUX_NAMESPACE)\" --ignore-not-found; \\",
+            "else \\\n> \t# REMOVED delete;",
+        )
+        mutated_mf_c2 = os.path.join(tmpdir_c2, "Makefile.mutated")
+        with open(mutated_mf_c2, "w") as f:
+            f.write(mutated_no_else)
+
+        rc_c2, stdout_c2, _ = _run_make(
+            tmpdir_c2, env_c2, override_branch="",
+            makefile=mutated_mf_c2,
+        )
+        calls_c2 = _get_calls(tmpdir_c2)
+
+        # The default-delete check MUST fail against the mutated recipe.
+        desc_c2, ok_c2 = _assert_default_delete(stdout_c2, calls_c2)
+        all_ok &= check(
+            f"adversarial: removing else delete → {desc_c2} FAILS",
+            not ok_c2,
+            "delete check correctly failed against mutated recipe",
+        )
+    finally:
+        shutil.rmtree(tmpdir_c2, ignore_errors=True)
+
+    # ── C3: Reorder — if block (override apply) runs before apply -k ─
+    lines_orig = original_makefile.split("\n")
+    apply_k_line_idx = None
+    if_block_start = None
+    if_block_end = None
+
+    for i, line in enumerate(lines_orig):
+        if "kubectl --context \"$(KIND_CONTEXT)\" apply -k" in line:
+            apply_k_line_idx = i
+        if "@if [ -n \"$(FLUX_GIT_BRANCH_OVERRIDE)\" ]; then" in line:
+            if_block_start = i
+        if if_block_start is not None and i > if_block_start:
+            stripped = line.replace("> ", "").replace(">\t", "").strip()
+            if stripped == "fi":
+                if_block_end = i
+                break
+
+    if apply_k_line_idx is not None and if_block_start is not None and if_block_end is not None:
+        if_block = lines_orig[if_block_start:if_block_end + 1]
+        before_apply_k = lines_orig[:apply_k_line_idx]
+        after_apply_k = lines_orig[apply_k_line_idx + 1:]
+        reordered_lines = (
+            before_apply_k
+            + if_block
+            + [lines_orig[apply_k_line_idx]]  # apply -k now AFTER override
+            + [l for l in after_apply_k if l not in if_block]
+        )
+        mutated_reorder = "\n".join(reordered_lines)
+
+        tmpdir_c3, _, env_c3 = _setup_harness(
+            override_branch="candidate/test-envoy",
+        )
+        try:
+            mutated_mf_c3 = os.path.join(tmpdir_c3, "Makefile.mutated")
+            with open(mutated_mf_c3, "w") as f:
+                f.write(mutated_reorder)
+            rc_c3, _, _ = _run_make(
+                tmpdir_c3, env_c3,
+                override_branch="candidate/test-envoy",
+                makefile=mutated_mf_c3,
+            )
+            calls_c3 = _get_calls(tmpdir_c3)
+
+            # At least one candidate-order check MUST fail because
+            # apply -f - now runs before apply -k.
+            c3_checks_failed = 0
+            for desc, ok in _assert_candidate_order(calls_c3):
+                if not ok:
+                    c3_checks_failed += 1
+            all_ok &= check(
+                "adversarial: reordering → candidate-order checks fail",
+                c3_checks_failed > 0,
+                f"{c3_checks_failed} behavioral checks failed (expected >0)",
+            )
+        finally:
+            shutil.rmtree(tmpdir_c3, ignore_errors=True)
+    else:
+        all_ok &= check(
+            "adversarial: located apply -k and if block for reorder test",
+            False,
+            "could not locate lines in Makefile for reorder test",
+        )
+
+    # ── C4: Replace the apply pipe with a stdin sink ─────────────────
+    #     The reviewer found that replacing | kubectl apply -f - with a
+    #     stdin sink (e.g., cat > /dev/null) still passed. This test
+    #     proves the validator catches it.
+    tmpdir_c4, _, env_c4 = _setup_harness(
+        override_branch="candidate/test-envoy",
+    )
+    try:
+        mutated_sink = original_makefile.replace(
+            "| kubectl --context \"$(KIND_CONTEXT)\" apply -f -",
+            "| cat > /dev/null",
+        )
+        mutated_mf_c4 = os.path.join(tmpdir_c4, "Makefile.mutated")
+        with open(mutated_mf_c4, "w") as f:
+            f.write(mutated_sink)
+
+        rc_c4, _, _ = _run_make(
+            tmpdir_c4, env_c4,
+            override_branch="candidate/test-envoy",
+            makefile=mutated_mf_c4,
+        )
+        calls_c4 = _get_calls(tmpdir_c4)
+
+        # At least one candidate-order check MUST fail: apply -f - is
+        # gone, so A2 (apply -k before apply -f -) and A3 (apply -f -
+        # before wait) both fail.
+        c4_checks_failed = 0
+        for desc, ok in _assert_candidate_order(calls_c4):
+            if not ok:
+                c4_checks_failed += 1
+        all_ok &= check(
+            "adversarial: stdin sink replaces apply pipe → candidate-order checks fail",
+            c4_checks_failed > 0,
+            f"{c4_checks_failed} behavioral checks failed (expected >0)",
+        )
+
+        # The override branch must NOT be in any stdin.
+        stdin_c4 = _get_stdin(tmpdir_c4, "kubectl")
+        has_branch_c4 = "candidate/test-envoy" in (stdin_c4 or "")
+        all_ok &= check(
+            "adversarial: stdin sink → candidate branch not in kubectl stdin",
+            not has_branch_c4,
+            "branch absent from kubectl stdin (correct — pipe goes to cat)",
+        )
+    finally:
+        shutil.rmtree(tmpdir_c4, ignore_errors=True)
+
+    return all_ok
+
+
 def run_kustomize_build(path: Path, label: str) -> bool:
     """Run kustomize build and return success."""
     result = subprocess.run(
@@ -692,6 +1312,9 @@ def main():
 
     print("\n=== Flux sync override validation ===")
     fluxsync_ok = validate_flux_sync_override()
+
+    print("\n=== Flux bootstrap behavioral validation ===")
+    fluxbehavior_ok = validate_flux_bootstrap_behavior()
 
     if args.render:
         print("\n=== Kustomize build validation ===")

@@ -85,6 +85,8 @@ kind-dev-misc-local-bootstrap:
 > 	printf 'QA override: rendering flux-sync-values-override ConfigMap with branch %s\n' '$(FLUX_GIT_BRANCH_OVERRIDE)'; \
 > 	FLUX_GIT_BRANCH_OVERRIDE='$(FLUX_GIT_BRANCH_OVERRIDE)' python3 scripts/render-flux-sync-override.py \
 > 		| kubectl --context "$(KIND_CONTEXT)" apply -f -; \
+> else \
+> 	kubectl --context "$(KIND_CONTEXT)" delete configmap flux-sync-values-override -n "$(FLUX_NAMESPACE)" --ignore-not-found; \
 > fi
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
