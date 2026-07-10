@@ -2651,7 +2651,7 @@ except Exception as e:
         )
         return result.returncode, result.stdout.strip()
 
-    def _simulate_flux_root_reconcile(inject_failure: bool = False) -> tuple[int, str]:
+    def _simulate_flux_root_reconcile(inject_failure: bool = False) -> tuple[int, int, str]:
         """Simulate Flux root reconciliation as an EXPLICIT BASH SUBPROCESS.
 
         Flux applies committed config from git. Since the override
@@ -2663,7 +2663,10 @@ except Exception as e:
         When inject_failure=True, the reconciliation script exits
         non-zero to prove failure propagation.
 
-        Returns (exit_code, effective_branch_after).
+        Returns (reconcile_rc, read_rc, effective_branch_after).
+        Both RCs are returned separately so callers can assert
+        reconciliation success/failure independently from the
+        post-reconcile state-reader process health.
         """
         reconcile_script = tmp_dir / "reconcile-sim.sh"
         reconcile_script.write_text(f"""#!/bin/bash
@@ -2694,17 +2697,16 @@ exit 0
         read_rc, branch_after = _read_effective_branch_subprocess(
             "post-reconcile" + ("-fail" if inject_failure else "")
         )
-        if read_rc != 0:
-            return read_rc, branch_after
+        return result.returncode, read_rc, branch_after
 
-        return result.returncode, branch_after
-
-    def _run_stateful_phase(override_branch: str, phase_label: str) -> tuple[int, str, str]:
+    def _run_stateful_phase(override_branch: str, phase_label: str) -> tuple[int, str, str, int]:
         """Run one phase of the lifecycle with shared mock state.
 
-        Returns (exit_code, trace_snapshot, effective_branch).
-        The effective branch is read via an independent subprocess
-        with its return code asserted by the caller.
+        Returns (exit_code, trace_snapshot, effective_branch, read_rc).
+        The effective branch is read via an independent subprocess;
+        read_rc is returned explicitly so callers can assert
+        the reader process itself succeeded (RC == 0) independently
+        from the exact persisted branch value.
         """
         safe_branch = (override_branch or "default").replace("/", "-")
         shell_recipe = re.sub(r'\$\((\w+)\)', r'${\1}', recipe)
@@ -2739,20 +2741,19 @@ export ENTRYPOINT_ROOT="{entrypoint}"
         )
         trace_snapshot = stateful_trace.read_text()
         read_rc, effective = _read_effective_branch_subprocess(phase_label)
-        if read_rc != 0:
-            # Propagate read failure — the caller will see an unexpected
-            # branch value and the read RC is asserted in the phase checks.
-            effective = f"READ-ERROR-rc={read_rc}"
-        return result.returncode, trace_snapshot, effective
+        return result.returncode, trace_snapshot, effective, read_rc
 
     # --- Phase 1: Candidate bootstrap ---
-    exit_cand, trace_cand, branch_cand = _run_stateful_phase("candidate/test-stateful", "candidate")
-    # Assert the independent state read subprocess exited 0
-    cand_read_rc = 0 if branch_cand == "candidate/test-stateful" else 1
+    exit_cand, trace_cand, branch_cand, read_rc_cand = _run_stateful_phase("candidate/test-stateful", "candidate")
     all_ok &= check(
         "flux sync override reset: stateful lifecycle phase-1 — candidate bootstrap exits 0",
         exit_cand == 0,
         f"exit={exit_cand}",
+    )
+    all_ok &= check(
+        "flux sync override reset: stateful lifecycle phase-1 — read subprocess exits 0",
+        read_rc_cand == 0,
+        f"read_rc={read_rc_cand}",
     )
     all_ok &= check(
         "flux sync override reset: stateful lifecycle phase-1 — effective branch is candidate/test-stateful",
@@ -2766,11 +2767,16 @@ export ENTRYPOINT_ROOT="{entrypoint}"
     # Reconciliation re-applies committed config; since the override
     # ConfigMap exists and is NOT managed by kustomize, the effective
     # branch remains candidate.
-    reconcile1_rc, reconcile1_branch = _simulate_flux_root_reconcile(inject_failure=False)
+    reconcile1_rc, read1_rc, reconcile1_branch = _simulate_flux_root_reconcile(inject_failure=False)
     all_ok &= check(
         "flux sync override reset: stateful lifecycle phase-1 reconcile — subprocess exits 0",
         reconcile1_rc == 0,
         f"exit={reconcile1_rc}",
+    )
+    all_ok &= check(
+        "flux sync override reset: stateful lifecycle phase-1 reconcile — read subprocess exits 0",
+        read1_rc == 0,
+        f"read_rc={read1_rc}",
     )
     all_ok &= check(
         "flux sync override reset: stateful lifecycle after phase-1 reconcile — effective branch remains candidate/test-stateful",
@@ -2781,11 +2787,16 @@ export ENTRYPOINT_ROOT="{entrypoint}"
     )
 
     # --- Phase 2: Default bootstrap (overrides empty) ---
-    exit_def, trace_def, branch_def = _run_stateful_phase("", "default")
+    exit_def, trace_def, branch_def, read_rc_def = _run_stateful_phase("", "default")
     all_ok &= check(
         "flux sync override reset: stateful lifecycle phase-2 — default bootstrap exits 0",
         exit_def == 0,
         f"exit={exit_def}",
+    )
+    all_ok &= check(
+        "flux sync override reset: stateful lifecycle phase-2 — read subprocess exits 0",
+        read_rc_def == 0,
+        f"read_rc={read_rc_def}",
     )
     all_ok &= check(
         "flux sync override reset: stateful lifecycle phase-2 — effective branch is pivot/flux-sync-ssh-bootstrap",
@@ -2798,11 +2809,16 @@ export ENTRYPOINT_ROOT="{entrypoint}"
     # --- Explicit simulated Flux root reconciliation after phase 2 ---
     # Default bootstrap removed the override → reconciliation resolves to
     # the committed default branch exactly pivot/flux-sync-ssh-bootstrap.
-    reconcile2_rc, reconcile2_branch = _simulate_flux_root_reconcile(inject_failure=False)
+    reconcile2_rc, read2_rc, reconcile2_branch = _simulate_flux_root_reconcile(inject_failure=False)
     all_ok &= check(
         "flux sync override reset: stateful lifecycle phase-2 reconcile — subprocess exits 0",
         reconcile2_rc == 0,
         f"exit={reconcile2_rc}",
+    )
+    all_ok &= check(
+        "flux sync override reset: stateful lifecycle phase-2 reconcile — read subprocess exits 0",
+        read2_rc == 0,
+        f"read_rc={read2_rc}",
     )
     all_ok &= check(
         "flux sync override reset: stateful lifecycle after phase-2 reconcile — effective branch is exactly pivot/flux-sync-ssh-bootstrap",
@@ -2814,19 +2830,37 @@ export ENTRYPOINT_ROOT="{entrypoint}"
 
     # --- Injected reconciliation failure: proves nonzero propagation ---
     # Run candidate bootstrap to set up state, then inject a reconcile
-    # failure. The reconcile subprocess must exit non-zero and the failure
-    # must be observable.
-    exit_cand2, _, branch_cand2 = _run_stateful_phase("candidate/test-stateful", "candidate-fail-prep")
+    # failure. The reconcile subprocess must exit exactly 3 and the failure
+    # must be observable. The post-failure state-read subprocess must
+    # exit 0 independently, and the persisted branch must remain candidate.
+    exit_cand2, _, branch_cand2, read_rc_cand2 = _run_stateful_phase("candidate/test-stateful", "candidate-fail-prep")
     all_ok &= check(
         "flux sync override reset: stateful lifecycle fail-prep — candidate bootstrap exits 0",
         exit_cand2 == 0,
         f"exit={exit_cand2}",
     )
-    fail_reconcile_rc, fail_reconcile_branch = _simulate_flux_root_reconcile(inject_failure=True)
     all_ok &= check(
-        "flux sync override reset: injected reconcile failure — reconcile subprocess exits non-zero",
-        fail_reconcile_rc != 0,
-        f"exit={fail_reconcile_rc} (expected non-zero — failure propagation proved)",
+        "flux sync override reset: stateful lifecycle fail-prep — read subprocess exits 0",
+        read_rc_cand2 == 0,
+        f"read_rc={read_rc_cand2}",
+    )
+    fail_rc, fail_read_rc, fail_reconcile_branch = _simulate_flux_root_reconcile(inject_failure=True)
+    all_ok &= check(
+        "flux sync override reset: injected reconcile failure — reconcile subprocess exits exactly 3",
+        fail_rc == 3,
+        f"exit={fail_rc} (expected 3 — intentional failure propagation)",
+    )
+    all_ok &= check(
+        "flux sync override reset: injected reconcile failure — post-failure read subprocess exits 0",
+        fail_read_rc == 0,
+        f"read_rc={fail_read_rc}",
+    )
+    all_ok &= check(
+        "flux sync override reset: injected reconcile failure — effective branch remains candidate/test-stateful",
+        fail_reconcile_branch == "candidate/test-stateful",
+        "candidate branch persisted through reconcile failure"
+        if fail_reconcile_branch == "candidate/test-stateful"
+        else f"effective-branch={fail_reconcile_branch!r} — branch lost on reconcile failure",
     )
 
     # Clean up mock traces
