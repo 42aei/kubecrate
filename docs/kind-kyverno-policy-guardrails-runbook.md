@@ -8,18 +8,24 @@ The slice proves admission control enforcement through a `require-ns-label` Clus
 
 ## Quick reference: candidate branch override for disposable QA clusters
 
-This is required when the live Flux `GitRepository` must reconcile a candidate branch different from the default. The bootstrap target writes a `helm-values-sync-override.yaml` file with the candidate branch reference before applying the entrypoint Kustomization, and restores it to an empty override after the apply — creating a durable GitRepository reference before its first reconciliation with no post-bootstrap `kubectl patch` needed.
+This is required when the live Flux `GitRepository` must reconcile a candidate branch different from the default. The bootstrap target creates a `flux-sync-values-override` ConfigMap directly via kubectl — not through kustomize — so it survives the root GitOps Kustomization reconciliation with no post-bootstrap `kubectl patch` needed. 
 
 ```sh
 # Bootstrap with a candidate branch override
 make kind-dev-misc-local-bootstrap FLUX_GIT_BRANCH_OVERRIDE="kubecrate/cratecheck-restack-kyverno"
 
-# Verify the GitRepository references the expected candidate branch
+# Verify the GitRepository references the expected candidate branch  
 kubectl --context kind-kind-dev-misc-local get gitrepository flux-system -n flux-system \
   -o jsonpath='{.spec.ref.branch}{"\n"}'
 # Expected: kubecrate/cratecheck-restack-kyverno
 
-# After GitOps reconciliation, verify the exact reconciled revision
+# After GitOps root reconciliation (make kind-dev-misc-local-await-gitops), verify the
+# candidate branch PERSISTS (override ConfigMap survives kustomize reconciliation)
+kubectl --context kind-kind-dev-misc-local get gitrepository flux-system -n flux-system \
+  -o jsonpath='{.spec.ref.branch}{"\n"}'
+# Expected: kubecrate/cratecheck-restack-kyverno (NOT pivot/flux-sync-ssh-bootstrap)
+
+# Verify the exact reconciled revision
 kubectl --context kind-kind-dev-misc-local get gitrepository flux-system -n flux-system \
   -o jsonpath='{.status.artifact.revision}{"\n"}'
 # Expected: kubecrate/cratecheck-restack-kyverno@sha1:<commit-hash>
@@ -182,20 +188,36 @@ kubectl --context kind-kind-dev-misc-local delete namespace kyverno-smoke-allowe
 
 ### 7. Controlled red test with fail-closed restoration
 
-This test temporarily breaks the Kyverno path by deleting the ClusterPolicy, verifies CrateCheck detects exactly the red state (with other Kyverno checks remaining green), then restores through Flux reconciliation. The test is fail-closed: a trap ensures the ClusterPolicy is restored on errors or interruption.
+This test temporarily breaks the Kyverno path by deleting the ClusterPolicy, verifies CrateCheck detects exactly the red state (with other Kyverno checks remaining green), then restores through Flux reconciliation. The test is fail-closed: a trap ensures the ClusterPolicy is restored on errors or interruption, and restoration failures propagate as non-zero exit codes.
 
 > Only run this on an authorized disposable QA cluster or with explicit approval for the exact target.
 
 ```sh
-# Fail-closed wrapper: trap to restore ClusterPolicy on error/interruption
+# Fail-closed wrapper: trap to restore ClusterPolicy on error/interruption.
+# Uses a temp flag file so trap failures survive the EXIT handler and
+# are reported at the final verdict.
+
+TRAP_FLAG=$(mktemp)
+RESTORE_NEEDED=1
+
 cleanup_and_restore() {
     echo ""
-    echo "=== TRAP: killing port-forward and restoring ClusterPolicy via Flux reconciliation ==="
+    echo "=== TRAP: killing port-forward ==="
     kill $PF_PID 2>/dev/null || true
     wait $PF_PID 2>/dev/null || true
-    flux --context kind-kind-dev-misc-local reconcile kustomization kyverno-smoke-policy -n flux-system --timeout 120s 2>/dev/null || true
-    kubectl --context kind-kind-dev-misc-local get clusterpolicy require-ns-label --no-headers 2>/dev/null || \
-      echo "WARN: ClusterPolicy still missing after trap restore attempt"
+
+    if [ "$RESTORE_NEEDED" = "1" ]; then
+        echo "=== TRAP: restoring ClusterPolicy via Flux reconciliation ==="
+        if ! flux --context kind-kind-dev-misc-local reconcile kustomization kyverno-smoke-policy -n flux-system --timeout 120s; then
+            echo "FAIL: trap restoration — Flux reconcile failed" >&2
+            echo "FAIL" > "$TRAP_FLAG"
+        elif ! kubectl --context kind-kind-dev-misc-local get clusterpolicy require-ns-label --no-headers >/dev/null 2>&1; then
+            echo "FAIL: trap restoration — ClusterPolicy still missing after reconcile" >&2
+            echo "FAIL" > "$TRAP_FLAG"
+        else
+            echo "TRAP: ClusterPolicy restored successfully."
+        fi
+    fi
     echo "=== TRAP: cleanup complete ==="
 }
 trap cleanup_and_restore EXIT INT TERM
@@ -403,8 +425,18 @@ echo ""
 # Clean up port-forward
 kill $PF_PID 2>/dev/null
 wait $PF_PID 2>/dev/null
+# Successful normal-path restoration completed — disarm the trap's restore logic
+RESTORE_NEEDED=0
 # Disarm the fail-closed trap (restore already done above)
 trap - EXIT INT TERM
+
+# Check for trap failures (from interrupt or early exit paths)
+if [ -s "$TRAP_FLAG" ]; then
+    echo "FAIL: trap restoration failure detected"
+    rm -f "$TRAP_FLAG"
+    exit 1
+fi
+rm -f "$TRAP_FLAG"
 
 # Final verdict
 if [ $RED_EXIT -ne 0 ]; then
@@ -439,6 +471,6 @@ Capture all of the following:
 - [ ] ClusterPolicy Ready=True confirmed via polling (not fixed sleep)
 - [ ] CrateCheck /status.json — all three Kyverno checks green after restoration
 - [ ] CrateCheck HTML UI snippet — restored green state
-- [ ] Fail-closed trap: ClusterPolicy restored even on error/interruption
+- [ ] Fail-closed trap: ClusterPolicy restored even on error/interruption; restoration failure propagates non-zero exit (no `|| true` swallowing)
 
 Do not claim final success from static rendering alone. Capture runtime evidence for each phase.

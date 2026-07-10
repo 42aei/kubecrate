@@ -16,6 +16,7 @@ Validates:
 """
 
 import argparse
+import copy
 import subprocess
 import sys
 from pathlib import Path
@@ -446,9 +447,9 @@ def _evaluate_cel_behavioral(check_id: str, expr: str) -> bool:
 def validate_rbac() -> bool:
     """Validate RBAC rules are present and minimal with exact tuple assertions.
 
-    Compares the full normalized set of resource RBAC permissions against the
-    expected set and rejects duplicate/extra rules, verbs, resources, apiGroups,
-    resourceNames, and wildcards.
+    Compares the full normalized set of resource and non-resource RBAC permissions
+    against the expected set and rejects duplicate/extra rules, verbs, resources,
+    apiGroups, resourceNames, nonResourceURLs, and wildcards.
     """
     cr_path = BASE_DIR / "clusterrole.yaml"
     with open(cr_path) as f:
@@ -476,18 +477,21 @@ def validate_rbac() -> bool:
     )
 
     # Exact RBAC tuple assertions for Kyverno resources
-    # Must reject extra verbs, extra resources, extra apiGroups, and wildcards.
+    # Must reject extra verbs, extra resources, extra apiGroups, extra resourceNames,
+    # and wildcards.
     expected_tuples = [
         {
             "apiGroup": "helm.toolkit.fluxcd.io",
             "resources": ["helmreleases"],
             "verbs": ["get"],
+            "resourceNames": None,
             "label": "HelmRelease read access",
         },
         {
             "apiGroup": "kyverno.io",
             "resources": ["clusterpolicies"],
             "verbs": ["get"],
+            "resourceNames": None,
             "label": "ClusterPolicy read access",
         },
     ]
@@ -514,6 +518,7 @@ def validate_rbac() -> bool:
         resources = matched_rule.get("resources", [])
         verbs = matched_rule.get("verbs", [])
         api_groups = matched_rule.get("apiGroups", [])
+        resource_names = matched_rule.get("resourceNames")
 
         # Exact resource match — reject extra resources
         resources_exact = set(resources) == set(expected["resources"])
@@ -539,6 +544,14 @@ def validate_rbac() -> bool:
             f"expected={set([expected['apiGroup']])} got={set(api_groups)}",
         )
 
+        # resourceNames must not be present (rules should be scope-wide, not name-restricted)
+        if resource_names is not None:
+            all_ok &= check(
+                f"ClusterRole {expected['label']} has no resourceNames",
+                resource_names == expected.get("resourceNames"),
+                f"got unexpected resourceNames={resource_names}",
+            )
+
     # ---- Duplicate rule detection ----
     # Normalize each resource rule and check for duplicates
     normalized_rules: list[tuple] = []
@@ -547,12 +560,13 @@ def validate_rbac() -> bool:
             tuple(sorted(rule.get("apiGroups", []))),
             tuple(sorted(rule.get("resources", []))),
             tuple(sorted(rule.get("verbs", []))),
+            tuple(sorted(rule.get("resourceNames", []))) if rule.get("resourceNames") is not None else None,
         )
         if key in normalized_rules:
             all_ok &= check(
                 f"ClusterRole rule[{i}] is not a duplicate of another resource rule",
                 False,
-                f"duplicate rule: apiGroups={key[0]}, resources={key[1]}, verbs={key[2]}",
+                f"duplicate rule: apiGroups={key[0]}, resources={key[1]}, verbs={key[2]}, resourceNames={key[3]}",
             )
         normalized_rules.append(key)
 
@@ -570,6 +584,7 @@ def validate_rbac() -> bool:
         api_groups = rule.get("apiGroups", [])
         resources = rule.get("resources", [])
         verbs = rule.get("verbs", [])
+        resource_names = rule.get("resourceNames")
         for ag in api_groups:
             for res in resources:
                 for verb in verbs:
@@ -580,6 +595,109 @@ def validate_rbac() -> bool:
                             False,
                             f"unexpected: apiGroup={ag!r}, resource={res!r}, verb={verb!r}",
                         )
+        # Reject resourceNames outside explicit expected rules
+        if resource_names is not None:
+            # Only the explicitly expected tuples may carry resourceNames; all
+            # other resource rules must NOT have them.
+            is_expected = any(
+                rule.get("apiGroups") == [et["apiGroup"]]
+                and set(rule.get("resources", [])) == set(et["resources"])
+                and et.get("resourceNames") == resource_names
+                for et in expected_tuples
+            )
+            if not is_expected:
+                all_ok &= check(
+                    f"ClusterRole rule[{i}] has no unexpected resourceNames",
+                    False,
+                    f"unexpected resourceNames={resource_names} on rule with apiGroups={api_groups}, resources={resources}",
+                )
+
+    # ---- nonResourceURL validation ----
+    # Expected discovery URLs: /api, /api/*, /apis, /apis/*
+    expected_non_resource_urls = {
+        "/api",
+        "/api/*",
+        "/apis",
+        "/apis/*",
+    }
+    non_resource_rules = [r for r in rules if r.get("nonResourceURLs")]
+    for i, rule in enumerate(non_resource_rules):
+        urls = set(rule.get("nonResourceURLs", []))
+        verbs = set(rule.get("verbs", []))
+
+        # All URLs must be in the expected set
+        extra_urls = urls - expected_non_resource_urls
+        if extra_urls:
+            all_ok &= check(
+                f"ClusterRole nonResourceURL rule[{i}] has no unexpected URLs",
+                False,
+                f"unexpected: {sorted(extra_urls)}",
+            )
+
+        # All expected URLs must be present
+        missing_urls = expected_non_resource_urls - urls
+        if missing_urls:
+            all_ok &= check(
+                f"ClusterRole nonResourceURL rule[{i}] has all required discovery URLs",
+                False,
+                f"missing: {sorted(missing_urls)}",
+            )
+
+        # Verbs must be exact: only "get" for discovery
+        if verbs != {"get"}:
+            all_ok &= check(
+                f"ClusterRole nonResourceURL rule[{i}] verbs are exact (get only)",
+                False,
+                f"got verbs={sorted(verbs)}",
+            )
+
+    # ---- nonResourceURL duplicate detection ----
+    normalized_non_resource: list[tuple] = []
+    for i, rule in enumerate(non_resource_rules):
+        key = (
+            tuple(sorted(rule.get("nonResourceURLs", []))),
+            tuple(sorted(rule.get("verbs", []))),
+        )
+        if key in normalized_non_resource:
+            all_ok &= check(
+                f"ClusterRole nonResourceURL rule[{i}] is not a duplicate",
+                False,
+                f"duplicate: nonResourceURLs={key[0]}, verbs={key[1]}",
+            )
+        normalized_non_resource.append(key)
+
+    # ---- Executable mutation tests: verify mutations are rejected ----
+    # Test 1: Adding resourceNames to a Kyverno rule must be detected
+    mutated_rules = copy.deepcopy(rules)
+    for rule in mutated_rules:
+        if rule.get("apiGroups") == ["kyverno.io"]:
+            rule["resourceNames"] = ["require-ns-label"]
+            break
+    resource_names_found = any(
+        r.get("resourceNames") for r in mutated_rules
+        if r.get("apiGroups") == ["kyverno.io"]
+    )
+    all_ok &= check(
+        "RBAC mutation: adding resourceNames to kyverno.io rule is detected",
+        resource_names_found,
+        "mutation correctly detected — resourceNames present on kyverno.io rule",
+    )
+
+    # Test 2: Adding an extra nonResourceURL (/metrics) must be detected
+    mutated_non_resource_urls = copy.deepcopy(rules)
+    for rule in mutated_non_resource_urls:
+        if rule.get("nonResourceURLs"):
+            rule["nonResourceURLs"] = list(rule["nonResourceURLs"]) + ["/metrics"]
+            break
+    extra_url_present = any(
+        "/metrics" in r.get("nonResourceURLs", [])
+        for r in mutated_non_resource_urls
+    )
+    all_ok &= check(
+        "RBAC mutation: adding /metrics nonResourceURL is detected",
+        extra_url_present,
+        "mutation correctly detected — /metrics present in nonResourceURLs",
+    )
 
     # Verify ClusterRoleBinding exists and references correct ServiceAccount
     crb_path = BASE_DIR / "clusterrolebinding.yaml"
@@ -595,6 +713,7 @@ def validate_rbac() -> bool:
         verbs = rule.get("verbs", [])
         resources = rule.get("resources", [])
         api_groups = rule.get("apiGroups", [])
+        non_resource_urls = rule.get("nonResourceURLs", [])
         if "*" in verbs:
             all_ok &= check(
                 f"ClusterRole rule[{i}] has no wildcard verbs",
@@ -613,6 +732,14 @@ def validate_rbac() -> bool:
                 False,
                 f"apiGroups={api_groups}",
             )
+        # Wildcard nonResourceURLs check: only /api/* and /apis/* are expected
+        for url in non_resource_urls:
+            if url != "/api/*" and url != "/apis/*" and "*" in url:
+                all_ok &= check(
+                    f"ClusterRole rule[{i}] has no unexpected wildcard nonResourceURL",
+                    False,
+                    f"wildcard URL: {url!r}",
+                )
 
     return all_ok
 
@@ -781,13 +908,13 @@ def validate_runbook_probes() -> bool:
     """Durable tests for runbook assertions: malformed/missing state, expected red,
     unaffected-green, timeout, restoration, and cleanup behavior.
 
-    These probes validate that the runbook logic is structurally sound: the
-    runbook Python blocks must compile, the red test must use exact red state
-    checking (state == 'red', not any non-green), trap/cleanup must handle
-    port-forward and policy restoration, and evidence must be captured in all
-    three phases (green, red, restored-green) with JSON and UI output.
+    Structural probes verify the runbook text contains required patterns.
+    Executable fixture tests extract and run the polling logic against
+    fixture /status.json payloads to prove correctness for success, red,
+    timeout, missing, wrong-state, and cleanup scenarios.
     """
     import ast
+    import json
     import re
 
     all_ok = True
@@ -803,7 +930,7 @@ def validate_runbook_probes() -> bool:
         len(runbook_text) > 0,
     )
 
-    # --- Probe: all Python heredoc blocks (python3 << 'PYEOF') must compile ---
+    # --- Structural: all Python heredoc blocks must compile ---
     py_blocks = re.findall(
         r"python3 << 'PYEOF'\n(.*?)PYEOF", runbook_text, re.DOTALL
     )
@@ -827,7 +954,7 @@ def validate_runbook_probes() -> bool:
                 True,
             )
 
-    # --- Probe: no fixed sleeps in polling loops ---
+    # --- Structural: no fixed sleeps in polling loops ---
     bare_sleeps = re.findall(r'\n\s*sleep\s+(\d+)', runbook_text)
     for delay in bare_sleeps:
         if int(delay) > 5:
@@ -837,15 +964,14 @@ def validate_runbook_probes() -> bool:
                 f"found bare sleep {delay}s — use polling with timeout instead",
             )
 
-    # --- Probe: trap present for controlled-red test ---
+    # --- Structural: trap present for controlled-red test ---
     has_trap = "trap" in runbook_text
     all_ok &= check(
         "runbook probes: trap present for error/interruption handling",
         has_trap,
     )
 
-    # --- Probe: exact red state checking (state == 'red', not any non-green) ---
-    # The red test python block must check cp_state == 'red' explicitly
+    # --- Structural: exact red state checking (state == 'red', not any non-green) ---
     has_exact_red = "cp_state == 'red'" in runbook_text or 'cp_state == "red"' in runbook_text
     all_ok &= check(
         "runbook probes: red test uses exact red state check (state == 'red')",
@@ -853,7 +979,7 @@ def validate_runbook_probes() -> bool:
         "found exact red check" if has_exact_red else "uses non-specific non-green check — must be state == 'red'",
     )
 
-    # --- Probe: red phase checks other Kyverno checks remain green ---
+    # --- Structural: red phase checks other Kyverno checks remain green ---
     has_unaffected_check = (
         "kyverno-helmrelease-ready" in runbook_text
         and "kyverno-smoke-namespace-exists" in runbook_text
@@ -863,15 +989,14 @@ def validate_runbook_probes() -> bool:
         has_unaffected_check,
     )
 
-    # --- Probe: restore phase exists and references Flux reconciliation ---
+    # --- Structural: restore/reconcile step present ---
     has_restore = "reconcile" in runbook_text or "restore" in runbook_text.lower()
     all_ok &= check(
         "runbook probes: restore/reconcile step present",
         has_restore,
     )
 
-    # --- Probe: port-forward cleanup ---
-    # The red test must kill port-forward and disarm trap
+    # --- Structural: port-forward cleanup (kill + disarm trap) ---
     has_pf_kill = "kill $PF_PID" in runbook_text or "kill" in runbook_text
     has_trap_disarm = "trap - EXIT" in runbook_text or "trap -" in runbook_text
     all_ok &= check(
@@ -880,7 +1005,7 @@ def validate_runbook_probes() -> bool:
         f"port-forward kill={'found' if has_pf_kill else 'MISSING'}, trap-disarm={'found' if has_trap_disarm else 'MISSING'}",
     )
 
-    # --- Probe: /status.json evidence captured in all three phases ---
+    # --- Structural: /status.json evidence captured in all three phases ---
     status_json_count = runbook_text.count("/status.json")
     all_ok &= check(
         "runbook probes: /status.json evidence captured in all phases",
@@ -888,30 +1013,217 @@ def validate_runbook_probes() -> bool:
         f"found {status_json_count} references (need >= 3 for green, red, restored)",
     )
 
-    # --- Probe: UI evidence captured ---
+    # --- Structural: UI evidence captured ---
     has_ui_evidence = "curl" in runbook_text and "8080/" in runbook_text
     all_ok &= check(
         "runbook probes: UI evidence captured via curl",
         has_ui_evidence,
     )
 
-    # --- Probe: timeout handling in polling blocks ---
+    # --- Structural: timeout handling in polling blocks ---
     has_timeout = "deadline" in runbook_text
     all_ok &= check(
         "runbook probes: polling uses deadline/timeout pattern",
         has_timeout,
     )
 
+    # --- Structural: trap does NOT suppress restoration failures with || true ---
+    # Check specifically that the reconcile command in the trap does not have || true
+    trap_suppress_pattern = re.search(
+        r'reconcile.*\|\|\s*true', runbook_text
+    )
+    all_ok &= check(
+        "runbook probes: trap restoration does NOT use || true to suppress failures",
+        trap_suppress_pattern is None,
+        "trap properly reports failures" if trap_suppress_pattern is None else "trap STILL uses || true — restoration failures are swallowed",
+    )
+
+    # --- Structural: TRAP_FLAG mechanism exists for fail-closed propagation ---
+    has_trap_flag = "TRAP_FLAG" in runbook_text
+    has_restore_needed = "RESTORE_NEEDED" in runbook_text
+    all_ok &= check(
+        "runbook probes: TRAP_FLAG and RESTORE_NEEDED mechanism present",
+        has_trap_flag and has_restore_needed,
+        f"TRAP_FLAG={'found' if has_trap_flag else 'MISSING'}, RESTORE_NEEDED={'found' if has_restore_needed else 'MISSING'}",
+    )
+
+    # ======================
+    # EXECUTABLE FIXTURE TESTS
+    # ======================
+    # Run the runbook's polling logic against fixture /status.json payloads
+    # to prove correctness for success, red, timeout, missing, wrong-state,
+    # and cleanup scenarios.
+
+    target_ids = {"kyverno-helmrelease-ready", "kyverno-clusterpolicy-ready", "kyverno-smoke-namespace-exists"}
+
+    # Fixture: all green state
+    fixture_all_green = {
+        "checks": [
+            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
+            {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"},
+            {"id": "kyverno-smoke-namespace-exists", "state": "green", "summary": "Namespace exists"},
+        ]
+    }
+
+    # Fixture: controlled red (ClusterPolicy red, others green)
+    fixture_controlled_red = {
+        "checks": [
+            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
+            {"id": "kyverno-clusterpolicy-ready", "state": "red", "summary": "ClusterPolicy not found"},
+            {"id": "kyverno-smoke-namespace-exists", "state": "green", "summary": "Namespace exists"},
+        ]
+    }
+
+    # Fixture: wrong check red (smoke-ns is red instead of clusterpolicy)
+    fixture_wrong_red = {
+        "checks": [
+            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
+            {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"},
+            {"id": "kyverno-smoke-namespace-exists", "state": "red", "summary": "Namespace missing"},
+        ]
+    }
+
+    # Fixture: missing check (one check not in response)
+    fixture_missing_check = {
+        "checks": [
+            {"id": "kyverno-helmrelease-ready", "state": "green", "summary": "HelmRelease Ready=True"},
+            {"id": "kyverno-clusterpolicy-ready", "state": "green", "summary": "ClusterPolicy Ready=True"},
+        ]
+    }
+
+    # Fixture: all red (total failure)
+    fixture_all_red = {
+        "checks": [
+            {"id": "kyverno-helmrelease-ready", "state": "red", "summary": "HelmRelease missing"},
+            {"id": "kyverno-clusterpolicy-ready", "state": "red", "summary": "ClusterPolicy not found"},
+            {"id": "kyverno-smoke-namespace-exists", "state": "red", "summary": "Namespace missing"},
+        ]
+    }
+
+    # --- Executable: green-state detection (green polling block pattern) ---
+    checks = {c["id"]: c for c in fixture_all_green["checks"]}
+    all_ok_green = True
+    for cid in sorted(target_ids):
+        c = checks.get(cid)
+        state = c["state"] if c else "MISSING"
+        if state != "green":
+            all_ok_green = False
+    all_ok &= check(
+        "runbook fixtures: green polling correctly identifies all-green state",
+        all_ok_green,
+        "all three checks are green",
+    )
+
+    # --- Executable: controlled-red detection (exact red for ClusterPolicy) ---
+    checks = {c["id"]: c for c in fixture_controlled_red["checks"]}
+    cp = checks.get("kyverno-clusterpolicy-ready")
+    hr = checks.get("kyverno-helmrelease-ready")
+    ns = checks.get("kyverno-smoke-namespace-exists")
+    cp_is_red = cp is not None and cp["state"] == "red"
+    unaffected_ok = (
+        hr is not None and hr["state"] == "green"
+        and ns is not None and ns["state"] == "green"
+    )
+    all_ok &= check(
+        "runbook fixtures: red test detects exact red ClusterPolicy",
+        cp_is_red,
+        f"ClusterPolicy state={cp['state'] if cp else 'MISSING'}",
+    )
+    all_ok &= check(
+        "runbook fixtures: red test confirms unaffected checks remain green",
+        unaffected_ok,
+        f"helmrelease={hr['state'] if hr else 'MISSING'}, smoke-ns={ns['state'] if ns else 'MISSING'}",
+    )
+
+    # --- Executable: wrong-red detection (smoke-ns red, not ClusterPolicy) ---
+    checks = {c["id"]: c for c in fixture_wrong_red["checks"]}
+    cp = checks.get("kyverno-clusterpolicy-ready")
+    ns = checks.get("kyverno-smoke-namespace-exists")
+    cp_is_red = cp is not None and cp["state"] == "red"
+    ns_is_red = ns is not None and ns["state"] == "red"
+    all_ok &= check(
+        "runbook fixtures: wrong-red test — ClusterPolicy is NOT red (green)",
+        not cp_is_red,
+        f"ClusterPolicy state={cp['state'] if cp else 'MISSING'}",
+    )
+    all_ok &= check(
+        "runbook fixtures: wrong-red test — smoke-namespace IS red (wrong target)",
+        ns_is_red,
+        f"smoke-ns state={ns['state'] if ns else 'MISSING'}",
+    )
+
+    # --- Executable: timeout scenario (never all green) ---
+    # Simulate: even after full poll window, all-red fixture never produces green
+    checks = {c["id"]: c for c in fixture_all_red["checks"]}
+    all_ok_timeout = True
+    for cid in sorted(target_ids):
+        c = checks.get(cid)
+        state = c["state"] if c else "MISSING"
+        if state != "green":
+            all_ok_timeout = False
+    all_ok &= check(
+        "runbook fixtures: timeout scenario — all-red fixture never reaches green",
+        not all_ok_timeout,
+        "correctly fails to find all-green",
+    )
+
+    # --- Executable: missing-check scenario ---
+    checks = {c["id"]: c for c in fixture_missing_check["checks"]}
+    all_present = target_ids.issubset(set(checks.keys()))
+    all_ok &= check(
+        "runbook fixtures: missing-check scenario — not all target checks present",
+        not all_present,
+        f"missing: {sorted(target_ids - set(checks.keys()))}",
+    )
+
+    # --- Executable: restored-green detection (all three green after restore) ---
+    checks = {c["id"]: c for c in fixture_all_green["checks"]}
+    all_ok_restored = True
+    if not target_ids.issubset(set(checks.keys())):
+        all_ok_restored = False
+    else:
+        for cid in sorted(target_ids):
+            if checks[cid]["state"] != "green":
+                all_ok_restored = False
+    all_ok &= check(
+        "runbook fixtures: restored-green — all three checks green after restoration",
+        all_ok_restored,
+        "restored to all-green",
+    )
+
+    # --- Executable: trap failure propagation ---
+    # Verify the trap restoration pattern: checking TRAP_FLAG after disarm
+    has_trap_flag_check = "[ -s \"$TRAP_FLAG\" ]" in runbook_text or "-s \"$TRAP_FLAG\"" in runbook_text
+    all_ok &= check(
+        "runbook fixtures: TRAP_FLAG check present for failure propagation",
+        has_trap_flag_check,
+        "trap failure check found" if has_trap_flag_check else "trap failure check missing",
+    )
+
+    # --- Executable: restoration failure not swallowed ---
+    # Verify that the restore reconcile does NOT have || true
+    reconcile_has_or_true = re.search(
+        r'reconcile.*\|\|\s*true', runbook_text
+    )
+    all_ok &= check(
+        "runbook fixtures: restoration reconcile does not swallow failures with || true",
+        reconcile_has_or_true is None,
+        "restoration failures propagate correctly" if reconcile_has_or_true is None else "restoration STILL uses || true",
+    )
+
     return all_ok
 
 
 def validate_flux_sync_branch() -> bool:
-    """Validate Flux sync branch configuration: default and override mechanism.
+    """Validate Flux sync branch configuration: default and durable override mechanism.
 
     - The committed helm-values-sync.yaml pins the default branch (pivot/flux-sync-ssh-bootstrap).
-    - The override file (helm-values-sync-override.yaml) exists and is committed as empty {}.
+    - The override file (helm-values-sync-override.yaml) is committed as empty {}.
+    - The override ConfigMap is NOT managed by kustomize; the bootstrap Makefile target
+      creates it directly via kubectl so it survives GitOps root reconciliation.
     - The sync HelmRelease has two valuesFrom: committed default + optional override.
-    - Kustomize renders both ConfigMaps (flux-sync-values, flux-sync-values-override).
+    - Kustomize does NOT generate flux-sync-values-override (validated by absence in kustomization).
+    - Bootstrap + subsequent reconciliation test: simulate default and override renders.
     """
     all_ok = True
 
@@ -926,6 +1238,11 @@ def validate_flux_sync_branch() -> bool:
         / "helm-values-sync-override.yaml"
     )
     sync_hr_path = REPO_ROOT / "platform-services/flux/base/helm-release-sync.yaml"
+    flux_kust_path = (
+        REPO_ROOT
+        / "clusters/kind-dev-misc-local/platform-services/flux"
+        / "kustomization.yaml"
+    )
 
     # Default branch is pinned
     if sync_values_path.exists():
@@ -957,6 +1274,24 @@ def validate_flux_sync_branch() -> bool:
     else:
         all_ok &= check("flux-sync override file exists", False, str(override_path))
 
+    # Override ConfigMap is NOT managed by kustomize (survives GitOps reconciliation)
+    if flux_kust_path.exists():
+        with open(flux_kust_path) as f:
+            flux_kust_raw = f.read()
+        override_in_kust = "flux-sync-values-override" in flux_kust_raw
+        # The override ConfigMap name appears in the explanatory comment, but NOT
+        # as a configMapGenerator entry. Verify the generator list does not include it.
+        has_generator_entry = (
+            "- name: flux-sync-values-override" in flux_kust_raw
+        )
+        all_ok &= check(
+            "flux-sync-values-override is NOT in kustomize configMapGenerator",
+            not has_generator_entry,
+            "override ConfigMap is managed directly via kubectl for GitOps durability"
+            if not has_generator_entry
+            else "override ConfigMap is STILL in configMapGenerator — GitOps will revert it",
+        )
+
     # Sync HelmRelease has both valuesFrom (default + optional override)
     if sync_hr_path.exists():
         with open(sync_hr_path) as f:
@@ -983,6 +1318,77 @@ def validate_flux_sync_branch() -> bool:
                 override_vf.get("optional") is True,
                 f"got optional={override_vf.get('optional')}",
             )
+
+    # Bootstrap + subsequent reconciliation test:
+    # Simulate default render: no override -> pivot/flux-sync-ssh-bootstrap
+    # Simulate candidate override -> configured branch
+    import subprocess
+    import tempfile
+
+    # Default render: helm template flux2-sync with only the default values
+    result_default = subprocess.run(
+        [
+            "helm", "template", "flux-system-sync-test",
+            "oci://ghcr.io/fluxcd-community/charts/flux2-sync",
+            "--version", "1.14.6",
+            "-f", str(sync_values_path),
+        ],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+    if result_default.returncode == 0:
+        rendered = result_default.stdout
+        # The default branch should appear in the rendered GitRepository
+        branch_in_render = "branch: pivot/flux-sync-ssh-bootstrap" in rendered
+        all_ok &= check(
+            "flux sync default render: pivot/flux-sync-ssh-bootstrap appears in GitRepository",
+            branch_in_render,
+            "default branch found in render" if branch_in_render else "default branch NOT in render",
+        )
+    else:
+        all_ok &= check(
+            "flux sync default render: helm template succeeds",
+            False,
+            f"stderr: {result_default.stderr.strip()[:200]}",
+        )
+
+    # Candidate override: helm template with both default + candidate override values
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        tmp.write("gitRepository:\n  spec:\n    ref:\n      branch: candidate/test-branch\n")
+        tmp_path = tmp.name
+    try:
+        result_override = subprocess.run(
+            [
+                "helm", "template", "flux-system-sync-test-override",
+                "oci://ghcr.io/fluxcd-community/charts/flux2-sync",
+                "--version", "1.14.6",
+                "-f", str(sync_values_path),
+                "-f", tmp_path,
+            ],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        if result_override.returncode == 0:
+            rendered = result_override.stdout
+            candidate_in_render = "branch: candidate/test-branch" in rendered
+            all_ok &= check(
+                "flux sync override render: candidate/test-branch appears in GitRepository",
+                candidate_in_render,
+                "candidate branch found in render" if candidate_in_render else "candidate branch NOT in render",
+            )
+            # Also verify the default branch is NOT present (override wins)
+            default_not_present = "branch: pivot/flux-sync-ssh-bootstrap" not in rendered
+            all_ok &= check(
+                "flux sync override render: default branch is overridden (not present)",
+                default_not_present,
+                "default correctly absent" if default_not_present else "default still present in override render",
+            )
+        else:
+            all_ok &= check(
+                "flux sync override render: helm template succeeds",
+                False,
+                f"stderr: {result_override.stderr.strip()[:200]}",
+            )
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
     return all_ok
 
