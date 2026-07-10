@@ -21,7 +21,7 @@ MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 FLUX_SYNC_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync.yaml
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate-cratecheck
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -104,3 +104,11 @@ kind-dev-misc-local-evidence:
 > flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+
+VENV_DIR ?= .venv
+VENV_PYTHON := $(VENV_DIR)/bin/python
+
+validate-cratecheck:
+> test -x "$(VENV_PYTHON)" || python3 -m venv "$(VENV_DIR)"
+> $(VENV_PYTHON) -m pip install --upgrade --quiet -r requirements-dev.txt
+> $(VENV_PYTHON) tests/validate-cratecheck.py
