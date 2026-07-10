@@ -53,6 +53,10 @@ def poll_all_green(
     """Poll until all TARGET_IDS are green (or deadline expires).
 
     Returns (all_green: bool, final_check_map: dict).
+    When operating against a fixture (static data), one pass suffices.
+    When operating against live /status.json polling, the deadline
+    and poll interval govern retry behavior — the function loops until
+    the deadline is reached.
     """
     if deadline is None:
         deadline = time.time() + 60
@@ -75,7 +79,15 @@ def poll_all_green(
 
         if all_ok:
             return (True, checks)
-        return (False, checks)
+
+        # Not all green yet — sleep and retry
+        remaining = deadline - time.time()
+        if remaining > poll_interval:
+            time.sleep(poll_interval)
+        elif remaining > 0:
+            time.sleep(remaining)
+        else:
+            break
 
     return (False, build_check_map(fixture))
 
@@ -115,7 +127,15 @@ def poll_exact_red(
 
         if cp_is_red and unaffected_ok:
             return (True, True, checks)
-        return (cp_is_red, unaffected_ok, checks)
+
+        # Not yet in expected state — sleep and retry
+        remaining = deadline - time.time()
+        if remaining > poll_interval:
+            time.sleep(poll_interval)
+        elif remaining > 0:
+            time.sleep(remaining)
+        else:
+            break
 
     checks = build_check_map(fixture)
     cp = checks.get(RED_TARGET_ID)
@@ -170,7 +190,15 @@ def poll_general_state(
 
         if all_matched:
             return (True, checks)
-        return (False, checks)
+
+        # Not all matched yet — sleep and retry
+        remaining = deadline - time.time()
+        if remaining > poll_interval:
+            time.sleep(poll_interval)
+        elif remaining > 0:
+            time.sleep(remaining)
+        else:
+            break
 
     return (False, build_check_map(fixture))
 

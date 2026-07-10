@@ -1101,7 +1101,8 @@ def validate_runbook_probes() -> bool:
     # --- Wrong-red detection (wrong check is red) ---
     result = subprocess.run(
         [sys.executable, str(poll_script), "--fixture",
-         str(fixtures_dir / "kv-wrong-red.json"), "--mode", "red"],
+         str(fixtures_dir / "kv-wrong-red.json"), "--mode", "red",
+         "--deadline-offset", "10"],
         capture_output=True, text=True, cwd=REPO_ROOT,
     )
     all_ok &= check(
@@ -1113,9 +1114,13 @@ def validate_runbook_probes() -> bool:
     )
 
     # --- Timeout scenario (all-red fixture never reaches green) ---
+    # Use a short deadline offset (10s) so the always-failing predicate
+    # consumes the configured bound quickly while still proving the loop
+    # respects the deadline.
     result = subprocess.run(
         [sys.executable, str(poll_script), "--fixture",
-         str(fixtures_dir / "kv-all-red.json"), "--mode", "green"],
+         str(fixtures_dir / "kv-all-red.json"), "--mode", "green",
+         "--deadline-offset", "10"],
         capture_output=True, text=True, cwd=REPO_ROOT,
     )
     all_ok &= check(
@@ -1129,7 +1134,8 @@ def validate_runbook_probes() -> bool:
     # --- Missing-check scenario ---
     result = subprocess.run(
         [sys.executable, str(poll_script), "--fixture",
-         str(fixtures_dir / "kv-missing-check.json"), "--mode", "green"],
+         str(fixtures_dir / "kv-missing-check.json"), "--mode", "green",
+         "--deadline-offset", "10"],
         capture_output=True, text=True, cwd=REPO_ROOT,
     )
     all_ok &= check(
@@ -1251,15 +1257,121 @@ trap cleanup_and_restore EXIT
         finally:
             Path(trap_test_path2).unlink(missing_ok=True)
 
-    # --- Port-forward cleanup: trap kills PF_PID before exit ---
-    has_pf_cleanup_in_trap = (
-        "kill $PF_PID" in trap_body or "kill" in trap_body
-    )
-    all_ok &= check(
-        "runbook fixtures: trap includes port-forward cleanup (kill PF_PID)",
-        has_pf_cleanup_in_trap,
-        "kill PF_PID found in trap function" if has_pf_cleanup_in_trap else "port-forward cleanup NOT in trap",
-    )
+    # --- Port-forward cleanup: behavioral test — trap actually kills PF_PID ---
+    # Prove the exact PF PID is terminated and waited under safe mocks.
+    # This is NOT just a string search; it executes the trap handler with a
+    # mock kill that records its target PID to a trace file.
+
+    if trap_body:
+        pf_trace = tmp_dir / "pf-cleanup-trace.txt"
+        pf_trace.write_text("")
+
+        pf_test_script = f"""#!/bin/bash
+set -e
+PF_PID=424242
+RESTORE_NEEDED=0
+# Mock kill: records the PID to the trace file
+kill() {{
+    echo "kill $*" >> "{pf_trace}"
+    return 0
+}}
+wait() {{
+    echo "wait $*" >> "{pf_trace}"
+    return 0
+}}
+flux() {{ echo "mock flux: skipping" >&2; return 0; }}
+kubectl() {{ echo "mock kubectl $*" >&2; return 0; }}
+export -f kill wait flux kubectl
+cleanup_and_restore() {{
+{trap_body}
+}}
+trap cleanup_and_restore EXIT
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", delete=False, dir=str(tmp_dir)
+        ) as tmp:
+            tmp.write(pf_test_script)
+            pf_test_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                ["bash", pf_test_path],
+                capture_output=True, text=True, cwd=REPO_ROOT,
+            )
+            pf_trace_content = pf_trace.read_text()
+            pf_kill_called = f"kill {424242}" in pf_trace_content or "kill 424242" in pf_trace_content
+            pf_wait_called = f"wait {424242}" in pf_trace_content or "wait 424242" in pf_trace_content
+
+            all_ok &= check(
+                "runbook fixtures: trap actually calls kill on PF_PID (behavioral)",
+                pf_kill_called,
+                f"kill 424242 found in trace" if pf_kill_called
+                else f"trace ({len(pf_trace_content)} chars): {pf_trace_content.strip()[:200]}",
+            )
+            all_ok &= check(
+                "runbook fixtures: trap actually calls wait on PF_PID (behavioral)",
+                pf_wait_called,
+                f"wait 424242 found in trace" if pf_wait_called
+                else f"trace: {pf_trace_content.strip()[:200]}",
+            )
+            all_ok &= check(
+                "runbook fixtures: port-forward cleanup exits 0",
+                result.returncode == 0,
+                f"exit={result.returncode}" + (
+                    f" stderr: {result.stderr.strip()[:200]}" if result.stderr.strip() else ""
+                ),
+            )
+
+            # --- Adversarial: if kill PF_PID line is removed, the behavioral test fails ---
+            # Build a mutated version without kill
+            mutated_body = re.sub(
+                r'kill\s+\$PF_PID\s+2>/dev/null\s*;?\s*',
+                '# kill removed\n',
+                trap_body,
+            )
+            if mutated_body != trap_body:
+                pf_mutated_trace = tmp_dir / "pf-mutated-trace.txt"
+                pf_mutated_trace.write_text("")
+                mutated_script = f"""#!/bin/bash
+set -e
+PF_PID=424242
+RESTORE_NEEDED=0
+kill() {{
+    echo "kill $*" >> "{pf_mutated_trace}"
+    return 0
+}}
+wait() {{ echo "wait $*" >> "{pf_mutated_trace}"; return 0; }}
+flux() {{ echo "mock flux" >&2; return 0; }}
+kubectl() {{ echo "mock kubectl $*" >&2; return 0; }}
+export -f kill wait flux kubectl
+cleanup_and_restore() {{
+{mutated_body}
+}}
+trap cleanup_and_restore EXIT
+"""
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".sh", delete=False, dir=str(tmp_dir)
+                ) as tmp_mut:
+                    tmp_mut.write(mutated_script)
+                    pf_mutated_path = tmp_mut.name
+
+                try:
+                    subprocess.run(
+                        ["bash", pf_mutated_path],
+                        capture_output=True, text=True, cwd=REPO_ROOT,
+                    )
+                    mutated_trace_content = pf_mutated_trace.read_text()
+                    kill_still_present = "kill 424242" in mutated_trace_content
+                    all_ok &= check(
+                        "runbook fixtures: adversarial — removing kill PF_PID removes kill from trace",
+                        not kill_still_present,
+                        "kill correctly absent after mutation" if not kill_still_present
+                        else "kill STILL present after mutation — mutation did not work",
+                    )
+                finally:
+                    Path(pf_mutated_path).unlink(missing_ok=True)
+        finally:
+            Path(pf_test_path).unlink(missing_ok=True)
 
     return all_ok
 
@@ -1443,132 +1555,364 @@ def validate_flux_sync_branch() -> bool:
     return all_ok
 
 
-def validate_flux_sync_override_reset() -> bool:
-    """Validate that default bootstrap resets any pre-existing override ConfigMap.
+def _extract_make_recipe(makefile_text: str, target: str) -> str | None:
+    """Extract the recipe body for a Makefile target.
 
-    Structural:
-      - Makefile else branch has kubectl delete configmap with --ignore-not-found
-      - The if branch has kubectl create/apply
-
-    Behavioral (shell-level dry-run):
-      - Extract the if/else block, substitute variables, and verify that the
-        default path deletes the ConfigMap and the override path creates it.
+    The Makefile uses .RECIPEPREFIX := > so recipe lines start with '>'.
+    Returns the recipe text with the prefix stripped, suitable for shell execution,
+    or None if the target is not found.
     """
     import re
+
+    # Find the target line: "target-name:"
+    target_pat = re.compile(rf"^{re.escape(target)}:\s*$", re.MULTILINE)
+    m = target_pat.search(makefile_text)
+    if not m:
+        return None
+
+    start = m.end()
+    # Collect recipe lines (start with >) and continuation lines (start with whitespace + shell)
+    lines = []
+    recipe_prefix_len = len("> ")
+    for line in makefile_text[start:].split("\n"):
+        if line.startswith(">"):
+            lines.append(line[recipe_prefix_len:])
+        elif line.startswith("    ") or line.startswith("\t"):
+            # Continuation of previous recipe line
+            if lines:
+                lines[-1] = lines[-1] + "\n" + line
+            else:
+                lines.append(line)
+        elif line.strip() == "":
+            if lines:
+                # Empty line inside recipe body
+                lines.append("")
+            else:
+                continue
+        elif line.startswith(".") or ":" in line and not line.startswith(" ") and not line.startswith("\t"):
+            # Next target or directive
+            break
+        elif lines:
+            # More continuation
+            lines.append(line)
+        else:
+            break
+
+    body = "\n".join(lines)
+    return body if body.strip() else None
+
+
+def validate_flux_sync_override_reset() -> bool:
+    """Validate that default bootstrap resets pre-existing override ConfigMap.
+
+    Executes the actual Makefile kind-dev-misc-local-bootstrap recipe with
+    mock kubectl and helm, recording every invocation to a trace file.
+    Verifies:
+      - Override path: creates ConfigMap, does NOT delete
+      - Default path: deletes stale ConfigMap, does NOT create
+      - Adversarial: mutating the condition (-n→-z) or removing delete/apply fails
+      - Failure propagation: kubectl create/apply/delete failures cause non-zero exit
+    """
+    import re
+    import tempfile
 
     all_ok = True
     makefile_path = REPO_ROOT / "Makefile"
     with open(makefile_path) as f:
         makefile_text = f.read()
 
-    # Structural: both delete and create commands are present
-    has_delete = "delete configmap flux-sync-values-override" in makefile_text
-    has_create = "create configmap flux-sync-values-override" in makefile_text
+    # Extract the actual recipe from the Makefile
+    recipe = _extract_make_recipe(makefile_text, "kind-dev-misc-local-bootstrap")
+    if recipe is None:
+        return check(
+            "flux sync override reset: recipe extraction",
+            False,
+            "could not extract kind-dev-misc-local-bootstrap recipe from Makefile",
+        )
+
     all_ok &= check(
-        "flux sync override reset: Makefile has delete command",
+        "flux sync override reset: recipe extracted from Makefile",
+        len(recipe) > 200,
+        f"extracted {len(recipe)} chars of recipe text",
+    )
+
+    # Structural checks (against the extracted recipe, not the raw text)
+    has_delete = "delete configmap flux-sync-values-override" in recipe
+    has_create = "create configmap flux-sync-values-override" in recipe
+    has_ignore = "--ignore-not-found" in recipe
+    has_apply = "apply -f -" in recipe
+
+    all_ok &= check(
+        "flux sync override reset: recipe has delete command",
         has_delete,
         "delete found" if has_delete else "delete NOT found",
     )
     all_ok &= check(
-        "flux sync override reset: Makefile has create command",
+        "flux sync override reset: recipe has create command",
         has_create,
         "create found" if has_create else "create NOT found",
     )
     all_ok &= check(
-        "flux sync override reset: Makefile has --ignore-not-found for safe idempotent delete",
-        "--ignore-not-found" in makefile_text,
+        "flux sync override reset: recipe has --ignore-not-found",
+        has_ignore,
+        "found" if has_ignore else "MISSING",
+    )
+    all_ok &= check(
+        "flux sync override reset: recipe has apply -f - (for kubectl create dry-run pipe)",
+        has_apply,
+        "found" if has_apply else "MISSING",
     )
 
-    # Verify delete is in the else branch (between else and fi)
-    # The Makefile uses backslash line continuations; match else through fi
-    # regardless of the exact escaping style.
-    else_match = re.search(r'else\b.*?\n(.*?)fi\b', makefile_text, re.DOTALL)
+    # Verify delete is inside the else branch
+    else_match = re.search(r'else\b.*?\n(.*?)fi\b', recipe, re.DOTALL)
     if else_match:
         else_block = else_match.group(1)
         delete_in_else = "delete configmap flux-sync-values-override" in else_block
         all_ok &= check(
             "flux sync override reset: delete is in the else (default) branch",
             delete_in_else,
-            "delete in else branch" if delete_in_else else f"else block ({len(else_block)} chars): {else_block.strip()[:80]}",
+            "delete in else branch" if delete_in_else
+            else f"else block: {else_block.strip()[:80]}",
+        )
+
+    # Verify apply -f - is inside an if (override) branch
+    # The recipe has two if blocks. Find apply -f - and confirm it is
+    # inside any if...fi construct by checking all if/fi pairs.
+    apply_pos = recipe.find("apply -f -")
+    if apply_pos >= 0:
+        # Find all if/fi spans and check if apply_pos falls inside any of them
+        apply_in_if = False
+        for m in re.finditer(r'\bif\b.*?\bfi\b', recipe, re.DOTALL):
+            if m.start() <= apply_pos <= m.end():
+                apply_in_if = True
+                break
+        all_ok &= check(
+            "flux sync override reset: apply -f - is in an if (override) branch",
+            apply_in_if,
+            "apply inside if...fi" if apply_in_if
+            else f"apply at pos {apply_pos} — NOT inside any if...fi",
         )
     else:
         all_ok &= check(
-            "flux sync override reset: else branch found in Makefile",
+            "flux sync override reset: apply -f - is present in recipe",
             False,
-            "could not locate else branch in Makefile",
+            "apply -f - NOT found in recipe",
         )
 
-    # Behavioral: test the shell if/else logic directly with substituted variables.
-    # Build minimal test scripts that replicate the Makefile's conditional logic
-    # with a mock kubectl, proving default path deletes and override path does not.
+    # ===================================================================
+    # BEHAVIORAL: execute the actual recipe with mock kubectl/helm
+    # ===================================================================
 
-    # --- Default path: FLUX_GIT_BRANCH_OVERRIDE empty -> delete ---
-    default_script = """#!/bin/bash
-set -e
-OVERRIDE=""
-CTX="kind-dry-run"
-NS="flux-system"
-kubectl() { echo "kubectl $*"; return 0; }
-export -f kubectl
-printf '{}\\n' >/tmp/test-flux-override-$$.yaml
-trap 'rm -f /tmp/test-flux-override-$$.yaml' EXIT
-if [ -n "$OVERRIDE" ]; then
-    echo "OVERRIDE BRANCH: $OVERRIDE"
-else
-    kubectl --context "$CTX" delete configmap flux-sync-values-override -n "$NS" --ignore-not-found
-    echo "DEFAULT BRANCH"
+    tmp_dir = REPO_ROOT / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    def _run_recipe(override_branch: str, inject_fail: str | None = None) -> tuple[int, str, str]:
+        """Run the recipe with mock tools. Returns (exit_code, trace, stderr)."""
+        mock_dir = tmp_dir / "mock-bin"
+        mock_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sanitize branch name for use in filenames (replace / with -)
+        safe_branch = (override_branch or "default").replace("/", "-")
+
+        # Mock kubectl: records every invocation to a trace file
+        trace_file = tmp_dir / f"kubectl-trace-{safe_branch}"
+        mock_kubectl = mock_dir / "kubectl"
+        mock_kubectl.write_text(f"""#!/bin/bash
+echo "kubectl $*" >> "{trace_file}"
+# Inject failures for specific commands
+if [ -n "{inject_fail or ''}" ]; then
+    if echo "$*" | grep -q "{inject_fail}"; then
+        echo "MOCK INJECTED FAILURE: $*" >> "{trace_file}"
+        exit 1
+    fi
 fi
+exit 0
+""")
+        mock_kubectl.chmod(0o755)
+
+        # Mock helm: records invocation, succeeds
+        mock_helm = mock_dir / "helm"
+        mock_helm.write_text(f"""#!/bin/bash
+echo "helm $*" >> "{trace_file}"
+exit 0
+""")
+        mock_helm.chmod(0o755)
+
+        # Convert Makefile $(VAR) references to shell ${VAR} before execution.
+        # The Makefile's .RECIPEPREFIX := > was already stripped during extraction.
+        shell_recipe = re.sub(r'\$\((\w+)\)', r'${\1}', recipe)
+
+        override_file = tmp_dir / f"test-override-{safe_branch}.yaml"
+        helm_values = tmp_dir / "test-helm-values.yaml"
+        helm_values.write_text("{}")
+        entrypoint = REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
+
+        script = f"""#!/bin/bash
+set -eo pipefail
+export PATH="{mock_dir}:$PATH"
+export KIND_CLUSTER_NAME="kind-dev-misc-local"
+export KIND_CONTEXT="kind-$KIND_CLUSTER_NAME"
+export HELM_CONTEXT_ARGS="--kube-context $KIND_CONTEXT"
+export FLUX_GIT_BRANCH="pivot/flux-sync-ssh-bootstrap"
+export FLUX_GIT_BRANCH_OVERRIDE="{override_branch}"
+export FLUX_SYNC_OVERRIDE_FILE="{override_file}"
+export FLUX_RELEASE_NAME="flux-system"
+export FLUX_SYNC_HELMRELEASE_NAME="flux-system-sync"
+export FLUX_NAMESPACE="flux-system"
+export FLUX_CHART="oci://ghcr.io/fluxcd-community/charts/flux2"
+export FLUX_CHART_VERSION="2.18.4"
+export FLUX_HELM_VALUES="{helm_values}"
+export ENTRYPOINT_ROOT="{entrypoint}"
+
+# The extracted recipe (Makefile variable refs converted to shell syntax)
+{shell_recipe}
 """
-    result_default = subprocess.run(
-        ["bash", "-c", default_script],
-        capture_output=True, text=True, cwd=REPO_ROOT,
-    )
-    has_delete = "delete configmap flux-sync-values-override" in result_default.stdout
-    has_override_msg = "OVERRIDE BRANCH" in result_default.stdout
+        script_path = tmp_dir / f"test-recipe-{safe_branch}.sh"
+        script_path.write_text(script)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        trace = trace_file.read_text() if trace_file.exists() else ""
+        return result.returncode, trace, result.stderr
+
+    # --- Override path: FLUX_GIT_BRANCH_OVERRIDE=candidate/test-branch ---
+    override_exit, override_trace, override_stderr = _run_recipe("candidate/test-branch")
+    override_has_delete = "delete configmap flux-sync-values-override" in override_trace
+    override_has_create = "create configmap flux-sync-values-override" in override_trace
+    override_has_apply = "apply -f -" in override_trace
+
     all_ok &= check(
-        "flux sync override reset: shell default path deletes override ConfigMap",
-        has_delete,
-        f"stdout: {result_default.stdout.strip()[:150]}",
+        "flux sync override reset: override path — recipe exits 0",
+        override_exit == 0,
+        f"exit={override_exit}" + (
+            f" stderr: {override_stderr.strip()[:200]}" if override_stderr.strip() else ""
+        ),
     )
     all_ok &= check(
-        "flux sync override reset: shell default path does NOT print override message",
-        not has_override_msg,
-        "no override in default path" if not has_override_msg else f"unexpected override: {result_default.stdout.strip()[:150]}",
+        "flux sync override reset: override path creates ConfigMap (kubectl create called)",
+        override_has_create,
+        "create found in trace" if override_has_create
+        else f"trace ({len(override_trace)} chars): {override_trace.strip()[:200]}",
+    )
+    all_ok &= check(
+        "flux sync override reset: override path applies ConfigMap (apply -f - called)",
+        override_has_apply,
+        "apply found in trace" if override_has_apply
+        else f"trace: {override_trace.strip()[:200]}",
+    )
+    all_ok &= check(
+        "flux sync override reset: override path does NOT delete ConfigMap",
+        not override_has_delete,
+        "delete correctly absent" if not override_has_delete
+        else f"unexpected delete in trace: {override_trace.strip()[:200]}",
     )
 
-    # --- Override path: FLUX_GIT_BRANCH_OVERRIDE set -> no delete ---
-    override_script = """#!/bin/bash
-set -e
-OVERRIDE="candidate/test-branch"
-CTX="kind-dry-run"
-NS="flux-system"
-kubectl() { echo "kubectl $*"; return 0; }
-export -f kubectl
-printf '{}\\n' >/tmp/test-flux-override-$$.yaml
-trap 'rm -f /tmp/test-flux-override-$$.yaml' EXIT
-if [ -n "$OVERRIDE" ]; then
-    echo "OVERRIDE BRANCH: $OVERRIDE"
-else
-    kubectl --context "$CTX" delete configmap flux-sync-values-override -n "$NS" --ignore-not-found
-    echo "DEFAULT BRANCH"
-fi
-"""
-    result_override = subprocess.run(
-        ["bash", "-c", override_script],
-        capture_output=True, text=True, cwd=REPO_ROOT,
-    )
-    has_delete = "delete configmap flux-sync-values-override" in result_override.stdout
-    has_override_msg = "OVERRIDE BRANCH" in result_override.stdout
+    # --- Default path: FLUX_GIT_BRANCH_OVERRIDE empty ---
+    default_exit, default_trace, default_stderr = _run_recipe("")
+    default_has_delete = "delete configmap flux-sync-values-override" in default_trace
+    default_has_create = "create configmap flux-sync-values-override" in default_trace
+
     all_ok &= check(
-        "flux sync override reset: shell override path does NOT delete override ConfigMap",
-        not has_delete,
-        "no delete in override path" if not has_delete else f"unexpected delete: {result_override.stdout.strip()[:150]}",
+        "flux sync override reset: default path — recipe exits 0",
+        default_exit == 0,
+        f"exit={default_exit}" + (
+            f" stderr: {default_stderr.strip()[:200]}" if default_stderr.strip() else ""
+        ),
     )
     all_ok &= check(
-        "flux sync override reset: shell override path prints override message",
-        has_override_msg,
-        f"stdout: {result_override.stdout.strip()[:150]}",
+        "flux sync override reset: default path deletes stale ConfigMap (kubectl delete called)",
+        default_has_delete,
+        "delete found in trace" if default_has_delete
+        else f"trace ({len(default_trace)} chars): {default_trace.strip()[:200]}",
     )
+    all_ok &= check(
+        "flux sync override reset: default path does NOT create ConfigMap",
+        not default_has_create,
+        "create correctly absent" if not default_has_create
+        else f"unexpected create in trace: {default_trace.strip()[:200]}",
+    )
+
+    # --- Failure propagation: kubectl delete failure ---
+    fail_exit, fail_trace, fail_stderr = _run_recipe("", inject_fail="delete configmap")
+    all_ok &= check(
+        "flux sync override reset: kubectl delete failure propagates non-zero exit",
+        fail_exit != 0,
+        f"exit={fail_exit} (expected non-zero)" + (
+            f" stderr: {fail_stderr.strip()[:200]}" if fail_stderr.strip() else ""
+        ),
+    )
+
+    # --- Failure propagation: kubectl create failure ---
+    fail_create_exit, fail_create_trace, fail_create_stderr = _run_recipe(
+        "candidate/test-branch", inject_fail="create configmap"
+    )
+    all_ok &= check(
+        "flux sync override reset: kubectl create failure propagates non-zero exit",
+        fail_create_exit != 0,
+        f"exit={fail_create_exit} (expected non-zero)" + (
+            f" stderr: {fail_create_stderr.strip()[:200]}" if fail_create_stderr.strip() else ""
+        ),
+    )
+
+    # ===================================================================
+    # ADVERSARIAL: mutation checks against the actual Makefile text
+    # ===================================================================
+
+    # --- If the condition -n is mutated to -z, the recipe is broken ---
+    condition_match = re.search(
+        r'if\s+\[\s+-n\s+"\$\(FLUX_GIT_BRANCH_OVERRIDE\)"\s+\]',
+        makefile_text,
+    )
+    all_ok &= check(
+        "flux sync override reset: adversarial — condition uses -n (non-empty check)",
+        condition_match is not None,
+        "condition uses -n (correct)" if condition_match
+        else "condition -n check NOT found — verify it is not -z",
+    )
+    has_negated_condition = re.search(
+        r'if\s+\[\s+-z\s+"\$\(FLUX_GIT_BRANCH_OVERRIDE\)"\s+\]',
+        makefile_text,
+    )
+    all_ok &= check(
+        "flux sync override reset: adversarial — condition is NOT -z (inverted logic)",
+        has_negated_condition is None,
+        "condition correctly not -z" if has_negated_condition is None
+        else "CRITICAL: condition uses -z — override/delete logic is INVERTED",
+    )
+
+    # --- Verify the delete command is present with exact expected args ---
+    delete_cmd_match = re.search(
+        r'kubectl\s+.*delete\s+configmap\s+flux-sync-values-override\s+.*--ignore-not-found',
+        makefile_text,
+    )
+    all_ok &= check(
+        "flux sync override reset: adversarial — delete command exact signature present",
+        delete_cmd_match is not None,
+        "delete with --ignore-not-found found" if delete_cmd_match
+        else "delete command signature NOT found or altered",
+    )
+
+    # --- Verify the apply -f - pipe is present (create dry-run | apply -f -) ---
+    apply_pipe_match = re.search(
+        r'kubectl\s+.*apply\s+-f\s+-',
+        makefile_text,
+    )
+    all_ok &= check(
+        "flux sync override reset: adversarial — apply -f - pipe present for override path",
+        apply_pipe_match is not None,
+        "apply -f - found" if apply_pipe_match
+        else "apply -f - NOT found — override ConfigMap may not be applied",
+    )
+
+    # Clean up mock traces
+    import shutil
+    mock_dir = tmp_dir / "mock-bin"
+    if mock_dir.exists():
+        shutil.rmtree(mock_dir, ignore_errors=True)
+    for f in tmp_dir.glob("kubectl-trace-*"):
+        f.unlink(missing_ok=True)
 
     return all_ok
 
