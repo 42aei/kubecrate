@@ -80,8 +80,8 @@ data:
           has(object.status.conditions) &&
           object.status.conditions.exists(c,
             c.type == 'Ready' && c.status == 'True')
-        successMessage: ESO smoke SecretStore is ready
-        failureMessage: ESO smoke SecretStore is not ready
+        successMessage: ESO smoke store is ready
+        failureMessage: ESO smoke store is not ready
       - id: eso-externalsecret-ready
         name: ESO smoke ExternalSecret ready
         severity: red
@@ -95,8 +95,8 @@ data:
           has(object.status.conditions) &&
           object.status.conditions.exists(c,
             c.type == 'Ready' && c.status == 'True')
-        successMessage: ESO smoke ExternalSecret is synced and ready
-        failureMessage: ESO smoke ExternalSecret is not ready
+        successMessage: ESO smoke projection is synced and ready
+        failureMessage: ESO smoke projection is not ready
       - id: eso-projected-secret-exists
         name: ESO projected smoke Secret exists
         severity: red
@@ -108,5 +108,5 @@ data:
         expression: >-
           has(object.metadata) &&
           object.metadata.name == 'eso-smoke-projected'
-        successMessage: ESO projected smoke Secret exists
-        failureMessage: ESO projected smoke Secret not found
+        successMessage: ESO projected smoke target exists
+        failureMessage: ESO projected smoke target not found
