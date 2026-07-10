@@ -92,6 +92,33 @@ def validate_status_config() -> bool:
         "no duplicate check IDs",
         len(ids) == len(set(ids)),
     )
+    # Verify Kyverno check IDs are present
+    kyverno_check_ids = {
+        "kyverno-helmrelease-ready",
+        "kyverno-clusterpolicy-ready",
+        "kyverno-smoke-namespace-exists",
+    }
+    present_kv_ids = kyverno_check_ids & set(ids)
+    all_ok &= check(
+        "Kyverno check IDs are present",
+        present_kv_ids == kyverno_check_ids,
+        f"missing: {kyverno_check_ids - set(ids)}",
+    )
+    # Verify Kyverno CEL expressions use dot notation with condition checks
+    condition_checks = [
+        "kyverno-helmrelease-ready",
+        "kyverno-clusterpolicy-ready",
+    ]
+    for kv_check_id in condition_checks:
+        kv_check = next((c for c in checks if c.get("id") == kv_check_id), None)
+        if kv_check is None:
+            continue
+        expr = kv_check.get("expression", "")
+        all_ok &= check(
+            f"Kyverno check {kv_check_id} uses CrateCheck-supported dot notation",
+            "c.type" in expr and "c.status" in expr,
+            "bracket notation must not be used",
+        )
     return all_ok
 
 
@@ -119,6 +146,19 @@ def validate_rbac() -> bool:
     all_ok &= check(
         "ClusterRole includes discovery API access",
         has_discovery,
+    )
+    # Verify Kyverno resource rules are present
+    kv_api_groups = set()
+    for r in rules:
+        for g in r.get("apiGroups", []):
+            kv_api_groups.add(g)
+    all_ok &= check(
+        "ClusterRole grants helmreleases read access",
+        "helm.toolkit.fluxcd.io" in kv_api_groups,
+    )
+    all_ok &= check(
+        "ClusterRole grants kyverno read access",
+        "kyverno.io" in kv_api_groups,
     )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"

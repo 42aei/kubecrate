@@ -5,3 +5,5 @@ resources:
   - ./kubecrate-reconciliation-marker.yaml
   - ../platform-services/flux
   - ../application-services/cratecheck
+  - ./kyverno-kustomization.yaml
+  - ./kyverno-smoke-kustomization.yaml

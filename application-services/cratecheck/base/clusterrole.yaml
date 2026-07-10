@@ -33,6 +33,19 @@ rules:
       - configmaps
     verbs:
       - get
+  # Kyverno platform service checks: HelmRelease, ClusterPolicy, namespaces
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+    resources:
+      - helmreleases
+    verbs:
+      - get
+  - apiGroups:
+      - kyverno.io
+    resources:
+      - clusterpolicies
+    verbs:
+      - get
   # Future platform service checks may require additional read verbs on resources
   # such as secrets, ingresses, certificates, or custom resources.
   # Expand this ClusterRole incrementally as new checks are added to the check config.
