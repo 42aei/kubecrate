@@ -1,0 +1,53 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cratecheck-readonly
+  labels:
+    app.kubernetes.io/name: cratecheck
+    app.kubernetes.io/part-of: kubecrate
+rules:
+  # CrateCheck uses Kubernetes discovery to map each configured resource apiVersion/kind to the concrete API resource path before issuing read-only get calls.
+  - nonResourceURLs:
+      - /api
+      - /api/*
+      - /apis
+      - /apis/*
+    verbs:
+      - get
+  # Resources checked by the initial baseline check config
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+  # Envoy Gateway platform service checks
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+    resources:
+      - helmreleases
+    verbs:
+      - get
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - gatewayclasses
+      - gateways
+      - httproutes
+    verbs:
+      - get
+  # Future platform service checks may require additional read verbs on resources
+  # such as secrets, ingresses, certificates, or custom resources.
+  # Expand this ClusterRole incrementally as new checks are added to the check config.

@@ -25,3 +25,7 @@ spec:
     - kind: ConfigMap
       name: flux-sync-values
       valuesKey: values.yaml
+    - kind: ConfigMap
+      name: flux-sync-values-override
+      valuesKey: values.yaml
+      optional: true

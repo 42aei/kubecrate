@@ -115,6 +115,10 @@ The first installable slice uses Flux and a Helm-driven bootstrap path for the G
 
 Repository-owned kind validation plumbing is expected to be substantial enough to make the local path repeatable. That includes kind config, prerequisite docs or checks, setup commands such as Make targets or equivalents, teardown and recreate expectations, and evidence commands. Those pieces support the kind-first local path, but they still remain outside the bootstrap installation lifecycle.
 
+Automated tests and QA runs that create kind clusters should use a unique cluster name per run and delete that cluster after evidence is captured. The default named cluster remains useful for manual local development, but automated validation must avoid depending on or mutating a shared pre-existing kind cluster.
+
+For interactive disposable-cluster work, `make kind-unique-create` records the generated cluster name in `.tmp/kind-unique-cluster-name`. Use `make -s kind-unique-current` to read the name for context-specific commands, and `make kind-unique-delete` to delete the recorded cluster when `KIND_CLUSTER_NAME` is not explicitly provided. For example: `kubectl --context "kind-$$(make -s kind-unique-current)" get nodes`.
+
 ## Relationship to the broader project direction
 
 The kind-first local path is the first local reference workflow, not the only future workflow.
