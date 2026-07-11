@@ -106,6 +106,13 @@ def validate_status_config() -> bool:
         present_eso_ids == eso_check_ids,
         f"missing: {eso_check_ids - set(ids)}",
     )
+    for check_id in ("eso-secretstore-ready", "eso-externalsecret-ready"):
+        expression = next(c["expression"] for c in checks if c.get("id") == check_id)
+        all_ok &= check(
+            f"{check_id} uses map-safe condition access",
+            "c['type'] == 'Ready'" in expression
+            and "c['status'] == 'True'" in expression,
+        )
     return all_ok
 
 
