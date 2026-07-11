@@ -79,7 +79,7 @@ data:
           has(object.status) &&
           has(object.status.conditions) &&
           object.status.conditions.exists(c,
-            c.type == 'Ready' && c.status == 'True')
+            c['type'] == 'Ready' && c['status'] == 'True')
         successMessage: ESO smoke store is ready
         failureMessage: ESO smoke store is not ready
       - id: eso-externalsecret-ready
@@ -94,7 +94,7 @@ data:
           has(object.status) &&
           has(object.status.conditions) &&
           object.status.conditions.exists(c,
-            c.type == 'Ready' && c.status == 'True')
+            c['type'] == 'Ready' && c['status'] == 'True')
         successMessage: ESO smoke projection is synced and ready
         failureMessage: ESO smoke projection is not ready
       - id: eso-projected-secret-exists
