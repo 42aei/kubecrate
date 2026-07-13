@@ -108,6 +108,31 @@ def test_list_keys_non_list_json() -> None:
     assert keys is None
 
 
+def test_list_keys_non_object_entry() -> None:
+    """List entry that is not a dict → None (schema failure)."""
+    gh = lambda args, **kw: _cp(stdout=json.dumps(["not-an-object"]))
+    keys = pf.list_deploy_keys("org/repo", gh)
+    assert keys is None
+
+
+def test_list_keys_missing_enabled_field() -> None:
+    """Dict entry without 'enabled' field → None (schema failure)."""
+    gh = lambda args, **kw: _cp(
+        stdout=json.dumps([{"id": 123, "title": "no-enabled"}])
+    )
+    keys = pf.list_deploy_keys("org/repo", gh)
+    assert keys is None
+
+
+def test_list_keys_non_boolean_enabled() -> None:
+    """Dict entry with non-boolean 'enabled' → None (schema failure)."""
+    gh = lambda args, **kw: _cp(
+        stdout=json.dumps([{"id": 123, "enabled": "yes"}])
+    )
+    keys = pf.list_deploy_keys("org/repo", gh)
+    assert keys is None
+
+
 # ---------------------------------------------------------------------------
 # disabled keys
 # ---------------------------------------------------------------------------
@@ -347,6 +372,45 @@ def test_main_list_keys_unexpected_shape() -> None:
         if "POST" in args:
             return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
         return _cp(stdout=json.dumps({"message": "unexpected response"}))
+
+    rc = pf.main(gh, argv=[])
+    assert rc != 0
+
+
+def test_main_list_keys_non_object_entry() -> None:
+    """list_deploy_keys list entry is not an object → non-zero exit (fail closed)."""
+    def gh(args, **kw):
+        if args[:2] == ["auth", "status"]:
+            return _cp(returncode=0)
+        if "POST" in args:
+            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
+        return _cp(stdout=json.dumps(["not-an-object"]))
+
+    rc = pf.main(gh, argv=[])
+    assert rc != 0
+
+
+def test_main_list_keys_missing_enabled_field() -> None:
+    """list_deploy_keys entry missing 'enabled' → non-zero exit (fail closed)."""
+    def gh(args, **kw):
+        if args[:2] == ["auth", "status"]:
+            return _cp(returncode=0)
+        if "POST" in args:
+            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
+        return _cp(stdout=json.dumps([{"id": 123, "title": "no-enabled"}]))
+
+    rc = pf.main(gh, argv=[])
+    assert rc != 0
+
+
+def test_main_list_keys_non_boolean_enabled() -> None:
+    """list_deploy_keys entry 'enabled' not boolean → non-zero exit (fail closed)."""
+    def gh(args, **kw):
+        if args[:2] == ["auth", "status"]:
+            return _cp(returncode=0)
+        if "POST" in args:
+            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
+        return _cp(stdout=json.dumps([{"id": 123, "enabled": "yes"}]))
 
     rc = pf.main(gh, argv=[])
     assert rc != 0
