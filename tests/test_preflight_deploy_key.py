@@ -88,17 +88,24 @@ def test_list_keys_with_enabled_keys() -> None:
 
 
 def test_list_keys_malformed_json() -> None:
-    """Malformed JSON → empty list, no crash."""
+    """Malformed JSON → None, no crash."""
     gh = lambda args, **kw: _cp(stdout="not json")
     keys = pf.list_deploy_keys("org/repo", gh)
-    assert keys == []
+    assert keys is None
 
 
 def test_list_keys_api_error() -> None:
-    """gh api exits non-zero → empty list, no crash."""
+    """gh api exits non-zero → None, no crash."""
     gh = lambda args, **kw: _cp(returncode=1, stderr="Bad credentials")
     keys = pf.list_deploy_keys("org/repo", gh)
-    assert keys == []
+    assert keys is None
+
+
+def test_list_keys_non_list_json() -> None:
+    """JSON that isn't a list (e.g. dict) → None, no crash."""
+    gh = lambda args, **kw: _cp(stdout=json.dumps({"error": "not a list"}))
+    keys = pf.list_deploy_keys("org/repo", gh)
+    assert keys is None
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +307,84 @@ def test_main_zero_keys_policy_allows() -> None:
     assert rc == 0
 
 
+# ---------------------------------------------------------------------------
+# main-level fail-closed regression tests (P1)
+# ---------------------------------------------------------------------------
+
+
+def test_main_list_keys_api_error() -> None:
+    """list_deploy_keys API error → non-zero exit (fail closed)."""
+    def gh(args, **kw):
+        if args[:2] == ["auth", "status"]:
+            return _cp(returncode=0)
+        if "POST" in args:
+            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
+        # Simulate API error on deploy-key list
+        return _cp(returncode=1, stderr="Bad credentials")
+
+    rc = pf.main(gh, argv=[])
+    assert rc != 0
+
+
+def test_main_list_keys_malformed_json() -> None:
+    """list_deploy_keys returns malformed JSON → non-zero exit (fail closed)."""
+    def gh(args, **kw):
+        if args[:2] == ["auth", "status"]:
+            return _cp(returncode=0)
+        if "POST" in args:
+            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
+        return _cp(stdout="not valid json {{{")
+
+    rc = pf.main(gh, argv=[])
+    assert rc != 0
+
+
+def test_main_list_keys_unexpected_shape() -> None:
+    """list_deploy_keys returns dict instead of list → non-zero exit (fail closed)."""
+    def gh(args, **kw):
+        if args[:2] == ["auth", "status"]:
+            return _cp(returncode=0)
+        if "POST" in args:
+            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
+        return _cp(stdout=json.dumps({"message": "unexpected response"}))
+
+    rc = pf.main(gh, argv=[])
+    assert rc != 0
+
+
 if __name__ == "__main__":
     import pytest
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Makefile dependency ordering regression test (P1)
+# ---------------------------------------------------------------------------
+
+
+def test_makefile_ordering_preflight_before_create() -> None:
+    """make -n kind-unique-create prints preflight before kind create cluster."""
+    import subprocess as _sp
+
+    result = _sp.run(
+        ["make", "-n", "kind-unique-create"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    output = result.stdout
+
+    preflight_idx = output.find("preflight-flux-deploy-key.py")
+    create_idx = output.find("kind create cluster")
+
+    assert preflight_idx != -1, (
+        "preflight script not found in make -n output"
+    )
+    assert create_idx != -1, (
+        "kind create cluster not found in make -n output"
+    )
+    assert preflight_idx < create_idx, (
+        "preflight must appear before kind create cluster in make -n output, "
+        f"but preflight at {preflight_idx} > create at {create_idx}"
+    )

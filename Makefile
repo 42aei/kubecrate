@@ -44,11 +44,11 @@ kind-unique-preflight:
 > python3 scripts/preflight-flux-deploy-key.py
 
 kind-unique-create: kind-unique-preflight
-kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
-kind-unique-create: kind-dev-misc-local-create
+kind-unique-create:
+> $(MAKE) kind-dev-misc-local-create KIND_CLUSTER_NAME="$(KIND_UNIQUE_CLUSTER_NAME)"
 > mkdir -p "$$(dirname "$(KIND_UNIQUE_STATE_FILE)")"
-> printf '%s\n' "$(KIND_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
-> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_CLUSTER_NAME)" "$(KIND_CLUSTER_NAME)"
+> printf '%s\n' "$(KIND_UNIQUE_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
+> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_UNIQUE_CLUSTER_NAME)" "$(KIND_UNIQUE_CLUSTER_NAME)"
 
 kind-unique-current:
 > test -s "$(KIND_UNIQUE_STATE_FILE)" || { printf 'no kind unique cluster state found at %s\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }

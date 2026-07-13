@@ -57,17 +57,31 @@ def check_auth(gh: GhRunner = _default_gh_runner) -> bool:
 
 def list_deploy_keys(
     repo: str, gh: GhRunner = _default_gh_runner
-) -> list[dict[str, Any]]:
-    """Return deploy keys for the given GitHub repository."""
+) -> list[dict[str, Any]] | None:
+    """Return deploy keys for the given GitHub repository.
+
+    Returns a list of key dicts on success (may be empty).  Returns None
+    when key-list retrieval, JSON parsing, or response schema validation
+    fails, so callers can distinguish a verified empty list from a
+    retrieval/parse/schema failure.
+    """
     result = gh(["api", f"repos/{repo}/keys", "--jq", "."])
     if result.returncode != 0:
         print(f"preflight: ERROR: could not list deploy keys for {repo}")
         print(f"preflight: stderr: {result.stderr.strip()}")
-        return []
+        return None
     try:
-        return json.loads(result.stdout)
+        keys = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return []
+        print(f"preflight: ERROR: deploy-key API returned non-JSON output")
+        return None
+    if not isinstance(keys, list):
+        print(
+            f"preflight: ERROR: deploy-key API returned unexpected type "
+            f"{type(keys).__name__!r} (expected list)"
+        )
+        return None
+    return keys
 
 
 def check_disabled_keys(
@@ -221,10 +235,18 @@ def main(gh: GhRunner = _default_gh_runner, argv: list[str] | None = None) -> in
 
     # 2. List deploy keys
     keys = list_deploy_keys(repo, gh)
-    print(f"preflight: found {len(keys)} existing deploy key(s)")
+    if keys is None:
+        blockers += 1
+        print(
+            "preflight: BLOCKER: deploy-key list retrieval failed — "
+            "cannot verify existing keys"
+        )
+    else:
+        print(f"preflight: found {len(keys)} existing deploy key(s)")
 
-    # 3. Check for disabled keys
-    blockers += check_disabled_keys(keys, repo)
+    # 3. Check for disabled keys (only when key list succeeded)
+    if keys is not None:
+        blockers += check_disabled_keys(keys, repo)
 
     # 4. Probe org deploy-key policy (non-destructive POST with invalid key)
     policy_blocked, policy_detail = check_org_deploy_key_policy(repo, gh)
