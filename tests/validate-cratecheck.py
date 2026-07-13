@@ -903,13 +903,14 @@ def _extract_runbook_section(text: str, marker_start: str, marker_end: str) -> s
 
 
 def _execute_poll_until_probes() -> bool:
-    """Execute the actual runbook poll_until helper in a subprocess with test predicates.
+    """Execute the actual runbook poll_until helper in subprocess tests.
 
     Extracts the real poll_until() function definition from the runbook (not a
     duplicated copy), so adversarial mutations to the runbook helper cause
     validation to fail.
 
-    Proves: success, timeout, wrong-state, and bounded timeout behavior.
+    Proves: success, timeout, wrong-state, bounded timeout with real wall-clock
+    measurement, and adversarial sleep-removal detection.
     """
     all_ok = True
     runbook_path = REPO_ROOT / "docs" / "kind-cert-manager-tls-runbook.md"
@@ -917,13 +918,12 @@ def _execute_poll_until_probes() -> bool:
     with open(runbook_path) as f:
         runbook_text = f.read()
 
-    # Extract the actual poll_until function from the runbook (lines 148-161)
+    # Extract the actual poll_until function from the runbook
     poll_until_fn = _extract_runbook_section(
         runbook_text,
         "# --- Polling helper: wait up to MAX_WAIT seconds for predicate to be true ---",
         "# --- Pre-red baseline: all six checks green ---",
     )
-    # The extracted text includes the comment line and function; strip the header comment
     if poll_until_fn.startswith("# Usage:"):
         poll_until_fn = poll_until_fn.split("\n", 1)[1] if "\n" in poll_until_fn else poll_until_fn
 
@@ -941,8 +941,12 @@ def _execute_poll_until_probes() -> bool:
         f"extracted {len(poll_until_fn)} bytes",
     )
 
-    # Build a test script that uses the REAL poll_until from the runbook
-    test_script = (
+    import tempfile
+
+    # ------------------------------------------------------------------
+    # Sub-test 1: Probes 1-3 (success, timeout, wrong-state)
+    # ------------------------------------------------------------------
+    test_script_123 = (
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         "\n"
@@ -973,93 +977,228 @@ def _execute_poll_until_probes() -> bool:
         '  echo "EXPECTED_TIMEOUT:wrong_state_probe"\n'
         "fi\n"
         "\n"
-        "# Probe 4: bounded timeout — predicate always fails, elapsed must be >= max_wait\n"
-        'if poll_until "bounded probe" 6 "false" 1; then\n'
-        '  echo "UNEXPECTED_SUCCESS:bounded_probe"\n'
-        "  exit 1\n"
-        "else\n"
-        '  echo "EXPECTED_TIMEOUT:bounded_probe"\n'
-        "fi\n"
-        "\n"
-        'echo "ALL_PROBES_PASSED"\n'
+        'echo "PROBES_123_PASSED"\n'
     )
 
-    import tempfile
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".sh", delete=False, prefix="runbook-probe-"
+        mode="w", suffix=".sh", delete=False, prefix="runbook-probes-123-"
     ) as f:
-        f.write(test_script)
-        script_path = f.name
+        f.write(test_script_123)
+        script_123_path = f.name
 
     try:
         import os
-        os.chmod(script_path, 0o755)
-        result = subprocess.run(
-            ["bash", script_path],
+        os.chmod(script_123_path, 0o755)
+        result123 = subprocess.run(
+            ["bash", script_123_path],
             capture_output=True, text=True, timeout=30,
         )
-        output = result.stdout + result.stderr
+        output123 = result123.stdout + result123.stderr
 
-        # Probe 1: success
-        success_matched = "OK:success_probe" in output
+        success_matched = "OK:success_probe" in output123
         all_ok &= check(
             "poll_until probe (runbook): success predicate returns within timeout",
             success_matched,
             "success detected" if success_matched else "success probe failed",
         )
 
-        # Probe 2: timeout
-        timeout_matched = "EXPECTED_TIMEOUT:timeout_probe" in output
+        timeout_matched = "EXPECTED_TIMEOUT:timeout_probe" in output123
         all_ok &= check(
             "poll_until probe (runbook): timeout predicate correctly times out",
             timeout_matched,
             "timeout detected" if timeout_matched else "timeout probe did not fire",
         )
 
-        # Probe 3: wrong-state
-        wrong_state_matched = "EXPECTED_TIMEOUT:wrong_state_probe" in output
+        wrong_state_matched = "EXPECTED_TIMEOUT:wrong_state_probe" in output123
         all_ok &= check(
             "poll_until probe (runbook): wrong-state predicate correctly times out",
             wrong_state_matched,
             "wrong-state timeout detected" if wrong_state_matched else "wrong-state probe failed",
         )
 
-        # Probe 4: bounded timeout (predicate always fails, elapsed must be >= max_wait)
-        import re
-        # The runbook poll_until prints: "  $desc: TIMEOUT after ${max_wait}s" on failure
-        timeout_matched = "EXPECTED_TIMEOUT:bounded_probe" in output
+        if result123.returncode != 0:
+            all_ok &= check(
+                "poll_until probe (runbook): probes 1-3 all passed",
+                False,
+                f"exit code {result123.returncode}",
+            )
+    finally:
+        import os as _os
+        _os.unlink(script_123_path)
+
+    # ------------------------------------------------------------------
+    # Sub-test 2: Bounded timeout with real wall-clock measurement
+    #   max_wait=6, interval=1, predicate always-failing (false)
+    #   Real wall-clock must be >= max_wait (within tolerance) to prove
+    #   that sleep actually delays execution — not just self-reported text.
+    # ------------------------------------------------------------------
+    test_script_bounded = (
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "\n"
+        + poll_until_fn +
+        "\n"
+        "\n"
+        "# Bounded timeout: predicate always fails, must actually wait >= max_wait\n"
+        'if poll_until "bounded probe" 6 "false" 1; then\n'
+        '  echo "UNEXPECTED_SUCCESS:bounded_probe"\n'
+        "  exit 1\n"
+        "else\n"
+        '  echo "EXPECTED_TIMEOUT:bounded_probe"\n'
+        "fi\n"
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".sh", delete=False, prefix="runbook-bounded-probe-"
+    ) as f:
+        f.write(test_script_bounded)
+        script_bounded_path = f.name
+
+    try:
+        import os as _os2
+        _os2.chmod(script_bounded_path, 0o755)
+
+        import time
+        t0_bounded = time.monotonic()
+        result_bounded = subprocess.run(
+            ["bash", script_bounded_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        wall_bounded = time.monotonic() - t0_bounded
+
+        output_bounded = result_bounded.stdout + result_bounded.stderr
+
+        # Check self-reported timeout marker
+        bounded_matched = "EXPECTED_TIMEOUT:bounded_probe" in output_bounded
         all_ok &= check(
             "poll_until probe (runbook): bounded timeout predicate correctly times out",
-            timeout_matched,
-            "timeout detected" if timeout_matched else "bounded probe did not time out",
+            bounded_matched,
+            "timeout detected" if bounded_matched else "bounded probe did not time out",
         )
-        # Also verify elapsed time is in expected range: >= max_wait, < max_wait + interval + slack
-        elapsed_match = re.search(r"bounded probe: TIMEOUT after (\d+)s", output)
+
+        # Check real wall-clock time: must be at least max_wait (6s) minus
+        # a 1s scheduling tolerance, and not suspiciously fast.
+        wall_lower = 5.0   # max_wait=6 minus 1s scheduling tolerance
+        wall_upper = 15.0  # generous upper bound
+        bounded_wall_ok = wall_lower <= wall_bounded <= wall_upper
+        all_ok &= check(
+            "poll_until probe (runbook): bounded timeout real wall-clock >= max_wait (sleep actually delays)",
+            bounded_wall_ok,
+            f"wall-clock={wall_bounded:.1f}s, expected >= {wall_lower}s and <= {wall_upper}s",
+        )
+
+        # Self-reported elapsed (from runbook text) as supplemental evidence
+        import re
+        elapsed_match = re.search(r"bounded probe: TIMEOUT after (\d+)s", output_bounded)
         if elapsed_match:
             elapsed = int(elapsed_match.group(1))
-            bounded_ok = 6 <= elapsed <= 12  # max_wait=6, interval=1, slack
+            bounded_self_ok = 6 <= elapsed <= 12
             all_ok &= check(
-                "poll_until probe (runbook): bounded timeout elapsed >= max_wait (actually timed out)",
-                bounded_ok,
+                "poll_until probe (runbook): bounded timeout self-reported elapsed >= max_wait",
+                bounded_self_ok,
                 f"elapsed={elapsed}s, max_wait=6, expected elapsed >= 6",
             )
-        else:
-            all_ok &= check(
-                "poll_until probe (runbook): bounded timeout output parsed",
-                False,
-                "could not parse TIMEOUT output",
-            )
 
-        if result.returncode != 0:
+        if result_bounded.returncode != 0:
             all_ok &= check(
-                "poll_until probe (runbook): all probes passed",
+                "poll_until probe (runbook): bounded probe exited cleanly",
                 False,
-                f"exit code {result.returncode}",
+                f"exit code {result_bounded.returncode}",
             )
 
     finally:
-        import os as _os
-        _os.unlink(script_path)
+        import os as _os3
+        _os3.unlink(script_bounded_path)
+
+    # ------------------------------------------------------------------
+    # Sub-test 3: Adversarial evidence — poll_until with sleep removed
+    #   Proves that wall-clock measurement catches a sleep-free runbook
+    #   mutation. When sleep is removed, wall-clock is ~0.8s even though
+    #   the self-reported text still says "TIMEOUT after 6s".
+    # ------------------------------------------------------------------
+    # Build a mutated poll_until with the sleep line removed (or commented)
+    import re as _re
+    mutated_fn = _re.sub(
+        r'^(\s*)sleep\s+"\$interval"',
+        r"\1# sleep REMOVED for adversarial probe",
+        poll_until_fn,
+        flags=_re.MULTILINE,
+    )
+    # If the sleep line is already missing (e.g. prior mutation), the test
+    # still runs but the wall-clock assertion will produce a different outcome.
+
+    test_script_adversarial = (
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "\n"
+        + mutated_fn +
+        "\n"
+        "\n"
+        "# Adversarial bounded timeout: sleep removed, should timeout instantly\n"
+        'if poll_until "bounded probe (adversarial)" 6 "false" 1; then\n'
+        '  echo "UNEXPECTED_SUCCESS:adversarial_probe"\n'
+        "  exit 1\n"
+        "else\n"
+        '  echo "EXPECTED_TIMEOUT:adversarial_probe"\n'
+        "fi\n"
+    )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".sh", delete=False, prefix="runbook-adversarial-probe-"
+    ) as f:
+        f.write(test_script_adversarial)
+        script_adv_path = f.name
+
+    try:
+        import os as _os4
+        _os4.chmod(script_adv_path, 0o755)
+
+        import time as _time2
+        t0_adv = _time2.monotonic()
+        result_adv = subprocess.run(
+            ["bash", script_adv_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        wall_adv = _time2.monotonic() - t0_adv
+
+        output_adv = result_adv.stdout + result_adv.stderr
+
+        # Adversarial evidence: without sleep, wall-clock must be suspiciously fast
+        adv_fast_threshold = 3.0  # well under max_wait=6; a real sleep would take >=6s
+        adv_is_fast = wall_adv <= adv_fast_threshold
+        all_ok &= check(
+            "poll_until probe (adversarial): sleep-removed probe completes in < 3s wall-clock (sleep omitted)",
+            adv_is_fast,
+            f"wall-clock={wall_adv:.1f}s, expected <= {adv_fast_threshold}s (no real sleep)"
+            if adv_is_fast
+            else f"wall-clock={wall_adv:.1f}s, expected <= {adv_fast_threshold}s; sleep may still be present",
+        )
+
+        # Also verify that the adversarial probe FAILS the real wall-clock
+        # lower-bound check (same logic as sub-test 2), proving the guard works.
+        adv_would_fail = wall_adv < 5.0
+        all_ok &= check(
+            "poll_until probe (adversarial): sleep-removed wall-clock fails real >= 5s guard (proves guard catches bypass)",
+            adv_would_fail,
+            f"wall-clock={wall_adv:.1f}s, guard requires >= 5.0s — guard would reject this"
+            if adv_would_fail
+            else f"wall-clock={wall_adv:.1f}s, guard requires >= 5.0s — guard would NOT reject (unexpected)",
+        )
+
+        # Check that the self-reported marker still appears (demonstrating the false green)
+        adv_marker_matched = "EXPECTED_TIMEOUT:adversarial_probe" in output_adv
+        # This is expected: the adversarial probe still times out because the
+        # predicate always returns false. The point is that without wall-clock
+        # measurement, this would be a false green.
+        all_ok &= check(
+            "poll_until probe (adversarial): sleep-removed probe still reports timeout (self-reported marker present)",
+            adv_marker_matched,
+            "adversarial timeout marker detected" if adv_marker_matched else "adversarial probe unexpected",
+        )
+
+    finally:
+        import os as _os5
+        _os5.unlink(script_adv_path)
 
     return all_ok
 
