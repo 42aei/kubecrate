@@ -81,6 +81,26 @@ def list_deploy_keys(
             f"{type(keys).__name__!r} (expected list)"
         )
         return None
+    # Validate each entry: must be an object with a boolean "enabled" field.
+    for i, entry in enumerate(keys):
+        if not isinstance(entry, dict):
+            print(
+                f"preflight: ERROR: deploy-key entry {i} is not an object "
+                f"(got {type(entry).__name__!r})"
+            )
+            return None
+        if "enabled" not in entry:
+            print(
+                f"preflight: ERROR: deploy-key entry {i} missing required "
+                f"'enabled' field"
+            )
+            return None
+        if not isinstance(entry["enabled"], bool):
+            print(
+                f"preflight: ERROR: deploy-key entry {i} 'enabled' field "
+                f"is not a boolean (got {type(entry['enabled']).__name__!r})"
+            )
+            return None
     return keys
 
 
