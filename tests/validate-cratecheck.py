@@ -973,8 +973,13 @@ def _execute_poll_until_probes() -> bool:
         '  echo "EXPECTED_TIMEOUT:wrong_state_probe"\n'
         "fi\n"
         "\n"
-        "# Probe 4: bounded timeout — elapsed must be < max_wait + interval\n"
-        'poll_until "bounded probe" 6 "true" 1\n'
+        "# Probe 4: bounded timeout — predicate always fails, elapsed must be >= max_wait\n"
+        'if poll_until "bounded probe" 6 "false" 1; then\n'
+        '  echo "UNEXPECTED_SUCCESS:bounded_probe"\n'
+        "  exit 1\n"
+        "else\n"
+        '  echo "EXPECTED_TIMEOUT:bounded_probe"\n'
+        "fi\n"
         "\n"
         'echo "ALL_PROBES_PASSED"\n'
     )
@@ -1019,23 +1024,30 @@ def _execute_poll_until_probes() -> bool:
             "wrong-state timeout detected" if wrong_state_matched else "wrong-state probe failed",
         )
 
-        # Probe 4: bounded timeout (elapsed must be ≤ max_wait + interval)
+        # Probe 4: bounded timeout (predicate always fails, elapsed must be >= max_wait)
         import re
-        # The runbook poll_until prints: "  $desc: condition met after ${elapsed}s"
-        elapsed_match = re.search(r"bounded probe: condition met after (\d+)s", output)
+        # The runbook poll_until prints: "  $desc: TIMEOUT after ${max_wait}s" on failure
+        timeout_matched = "EXPECTED_TIMEOUT:bounded_probe" in output
+        all_ok &= check(
+            "poll_until probe (runbook): bounded timeout predicate correctly times out",
+            timeout_matched,
+            "timeout detected" if timeout_matched else "bounded probe did not time out",
+        )
+        # Also verify elapsed time is in expected range: >= max_wait, < max_wait + interval + slack
+        elapsed_match = re.search(r"bounded probe: TIMEOUT after (\d+)s", output)
         if elapsed_match:
             elapsed = int(elapsed_match.group(1))
-            bounded_ok = elapsed <= 11  # max_wait=6 + interval=1 + some slack
+            bounded_ok = 6 <= elapsed <= 12  # max_wait=6, interval=1, slack
             all_ok &= check(
-                "poll_until probe (runbook): bounded timeout (elapsed ≤ max_wait + interval)",
+                "poll_until probe (runbook): bounded timeout elapsed >= max_wait (actually timed out)",
                 bounded_ok,
-                f"elapsed={elapsed}s, max_wait=6, interval=1",
+                f"elapsed={elapsed}s, max_wait=6, expected elapsed >= 6",
             )
         else:
             all_ok &= check(
-                "poll_until probe (runbook): bounded timeout executed",
+                "poll_until probe (runbook): bounded timeout output parsed",
                 False,
-                "bounded probe did not run or output format changed",
+                "could not parse TIMEOUT output",
             )
 
         if result.returncode != 0:
@@ -1126,10 +1138,11 @@ def _execute_cleanup_probes() -> bool:
         "exit 0\n"
     )
 
-    for fixture_name, mock_flux_script, expect_zero in [
-        ("normal success (resume+reconcile)", mock_flux_ok, True),
-        ("resume failure", mock_flux_resume_fail, False),
-        ("reconcile failure", mock_flux_reconcile_fail, False),
+    for fixture_name, mock_flux_script, expect_zero, script_body in [
+        ("normal success (resume+reconcile)", mock_flux_ok, True, "true"),
+        ("resume failure", mock_flux_resume_fail, False, "true"),
+        ("reconcile failure", mock_flux_reconcile_fail, False, "true"),
+        ("original failure preserved (cleanup succeeds, exit non-zero)", mock_flux_ok, False, "exit 5"),
     ]:
         mock_flux_path = None
         script_path = None
@@ -1154,9 +1167,9 @@ def _execute_cleanup_probes() -> bool:
                 "\n"
                 + cleanup_fn +
                 "\n"
-                "# Simulate: set up the cleanup trap, then exit normally\n"
+                "# Simulate: set up the cleanup trap, then exit with script's natural status\n"
                 "# The EXIT trap will fire and call cleanup\n"
-                "true\n"
+                f"{script_body}\n"
             )
 
             # Replace 'flux' with our mock
@@ -1186,13 +1199,22 @@ def _execute_cleanup_probes() -> bool:
                 f"exit={result.returncode}, expected_zero={expect_zero}",
             )
 
-            # For failure fixtures: verify CLEANUP FAILED appears in output
-            if not expect_zero:
-                has_fail_msg = "CLEANUP FAILED" in output
+            # For flux-failure fixtures: verify CLEANUP FAILED appears in output.
+            # For original-failure-preservation: cleanup should succeed, no CLEANUP FAILED.
+            expect_cleanup_fail = "resume failure" in fixture_name or "reconcile failure" in fixture_name
+            has_fail_msg = "CLEANUP FAILED" in output
+            if expect_cleanup_fail:
                 all_ok &= check(
                     f"cleanup probe: {fixture_name} reports CLEANUP FAILED",
                     has_fail_msg,
                     "CLEANUP FAILED found" if has_fail_msg else "CLEANUP FAILED message missing",
+                )
+            elif not expect_zero:
+                # Original-failure-preservation: cleanup should succeed, no CLEANUP FAILED
+                all_ok &= check(
+                    f"cleanup probe: {fixture_name} cleanup succeeded (no CLEANUP FAILED)",
+                    not has_fail_msg,
+                    "no CLEANUP FAILED (correct)" if not has_fail_msg else "unexpected CLEANUP FAILED",
                 )
         finally:
             if script_path and _os.path.exists(script_path):
@@ -1314,120 +1336,201 @@ def validate_flux_render_assertions() -> bool:
         helmrelease_found,
     )
 
-    # --- Executable Makefile restoration probes ---
-    all_ok &= _execute_makefile_restoration_probes() and all_ok
+    # --- Executable Makefile bootstrap probes ---
+    all_ok &= _execute_makefile_bootstrap_probes() and all_ok
 
     return all_ok
 
 
-def _execute_makefile_restoration_probes() -> bool:
-    """Execute extraction-based tests of the Makefile bootstrap override mechanism.
+def _execute_makefile_bootstrap_probes() -> bool:
+    """Execute the actual Makefile kind-dev-misc-local-bootstrap recipe under
+    safe mocked helm/kubectl and inspect the rendered ConfigMap at the apply boundary.
 
     Probes:
-    1. Write a candidate override file, kustomize build entrypoint, verify
-       the rendered GitRepository branch matches the override.
-    2. Restore the override to {} and verify render returns to default branch.
-    3. Extract the restore_override logic, test restoration with a fixture
-       file (must succeed: non-zero exit if file path is unwritable).
-    4. Detect literal backslash-newline (\n) regression in the Makefile
-       (double backslash produces literal \n in file instead of real newline).
+    1. Override path: FLUX_GIT_BRANCH_OVERRIDE set → rendered ConfigMap has candidate branch
+    2. Override path: verify tracked override file restored to {} after bootstrap
+    3. Default path: no override → rendered ConfigMap is empty/{} at apply boundary
+    4. Tracked file unchanged by default bootstrap
+    5. Restoration/write failure: unwritable override file → bootstrap exits non-zero
+    6. restore_override function exists in Makefile bootstrap recipe
+    7. Literal backslash-newline regression detection
+
+    Unlike the previous extraction-based approach, this actually executes
+    ``make kind-dev-misc-local-bootstrap`` with mocked helm/kubectl, so
+    adversarial Makefile mutations (e.g. changing -n to -z) are caught.
     """
+
     all_ok = True
 
-    override_path = (
+    override_file = (
         REPO_ROOT
         / "clusters" / "kind-dev-misc-local" / "platform-services" / "flux"
         / "helm-values-sync-override.yaml"
     )
+    makefile_path = REPO_ROOT / "Makefile"
+    mocks_dir = REPO_ROOT / "tests" / "mocks"
 
-    test_branch = "test/candidate-branch-probe"
+    import tempfile, os as _os, re, shutil
 
-    # --- Probe 1: Write override, render, verify branch ---
+    # Save original override file content; restore after tests
     original_content = None
-    if override_path.exists():
-        original_content = override_path.read_text()
+    if override_file.exists():
+        original_content = override_file.read_text()
+
+    # Create temp mock bin directory and log directory
+    mock_dir = tempfile.mkdtemp(prefix="mock-bin-")
+    log_dir = tempfile.mkdtemp(prefix="mock-log-")
+    _os.chmod(mock_dir, 0o755)
+
+    # Copy mock scripts, replacing LOG_DIR placeholder
+    mock_helm_src = mocks_dir / "mock-helm.sh"
+    mock_kubectl_src = mocks_dir / "mock-kubectl.sh"
+
+    mock_helm_path = _os.path.join(mock_dir, "helm")
+    mock_kubectl_path = _os.path.join(mock_dir, "kubectl")
+
+    if mock_helm_src.exists():
+        shutil.copy(mock_helm_src, mock_helm_path)
+        _os.chmod(mock_helm_path, 0o755)
+    else:
+        with open(mock_helm_path, "w") as f:
+            f.write("#!/bin/bash\necho mock-helm: $* >&2\nexit 0\n")
+        _os.chmod(mock_helm_path, 0o755)
+
+    if mock_kubectl_src.exists():
+        with open(mock_kubectl_src) as f:
+            kubectl_script = f.read()
+        # Substitute LOG_DIR
+        kubectl_script = kubectl_script.replace(
+            'LOG_DIR="${LOG_DIR:-/tmp/mock-kubectl-logs}"',
+            f'LOG_DIR="{log_dir}"',
+        )
+        with open(mock_kubectl_path, "w") as f:
+            f.write(kubectl_script)
+        _os.chmod(mock_kubectl_path, 0o755)
+    else:
+        with open(mock_kubectl_path, "w") as f:
+            f.write("#!/bin/bash\nexit 0\n")
+        _os.chmod(mock_kubectl_path, 0o755)
+
+    # Helper: run make bootstrap with mocks in PATH
+    def _run_bootstrap(override_branch=None):
+        """Run make kind-dev-misc-local-bootstrap with mocks, return (exit_code, rendered_yaml, stderr)."""
+        rendered_path = _os.path.join(log_dir, "apply-rendered.yaml")
+        if _os.path.exists(rendered_path):
+            _os.unlink(rendered_path)
+
+        env = _os.environ.copy()
+        env["PATH"] = f"{mock_dir}:{env.get('PATH', '')}"
+        env["LOG_DIR"] = log_dir
+        env["KIND_CLUSTER_NAME"] = "kind-dev-misc-local"
+        if override_branch:
+            env["FLUX_GIT_BRANCH_OVERRIDE"] = override_branch
+        else:
+            env.pop("FLUX_GIT_BRANCH_OVERRIDE", None)
+
+        result = subprocess.run(
+            ["make", "kind-dev-misc-local-bootstrap"],
+            capture_output=True, text=True, timeout=60,
+            cwd=REPO_ROOT, env=env,
+        )
+        rendered = ""
+        if _os.path.exists(rendered_path):
+            with open(rendered_path) as rf:
+                rendered = rf.read()
+        return result.returncode, rendered, result.stderr + "\n" + result.stdout
 
     try:
-        # Write candidate override
-        override_yaml = (
-            f"gitRepository:\n"
-            f"  spec:\n"
-            f"    ref:\n"
-            f"      branch: {test_branch}\n"
-        )
-        override_path.write_text(override_yaml)
+        # --- Probe 1: Override path ---
+        candidate_branch = "test/candidate-branch-probe-exec"
+        exit_code, rendered, stderr = _run_bootstrap(override_branch=candidate_branch)
 
-        # Render entrypoint and parse
-        result = subprocess.run(
-            ["kustomize", "build", str(ENTRYPOINT_DIR)],
-            capture_output=True, text=True, cwd=REPO_ROOT,
+        all_ok &= check(
+            "makefile exec probe: bootstrap with override exits zero",
+            exit_code == 0,
+            f"exit={exit_code}",
         )
-        if result.returncode != 0:
+
+        if rendered:
+            docs = list(yaml.safe_load_all(rendered))
+            docs = [d for d in docs if d is not None]
+            override_cm = None
+            default_cm = None
+            for d in docs:
+                if d.get("kind") != "ConfigMap":
+                    continue
+                name = d.get("metadata", {}).get("name", "")
+                if name == "flux-sync-values-override":
+                    override_cm = d
+                elif name == "flux-sync-values":
+                    default_cm = d
+
+            if override_cm and "data" in override_cm and "values.yaml" in override_cm["data"]:
+                ov_values = yaml.safe_load(override_cm["data"]["values.yaml"])
+                ov_branch = (
+                    ov_values.get("gitRepository", {})
+                    .get("spec", {})
+                    .get("ref", {})
+                    .get("branch", "")
+                )
+                all_ok &= check(
+                    f"makefile exec probe: override renders candidate branch '{candidate_branch}' at apply boundary",
+                    ov_branch == candidate_branch,
+                    f"got '{ov_branch}'",
+                )
+            else:
+                all_ok &= check(
+                    "makefile exec probe: override ConfigMap found in rendered output at apply boundary",
+                    False,
+                    "flux-sync-values-override ConfigMap missing from apply-rendered output",
+                )
+
+            if default_cm and "data" in default_cm and "values.yaml" in default_cm["data"]:
+                def_values = yaml.safe_load(default_cm["data"]["values.yaml"])
+                def_branch = (
+                    def_values.get("gitRepository", {})
+                    .get("spec", {})
+                    .get("ref", {})
+                    .get("branch", "")
+                )
+                all_ok &= check(
+                    "makefile exec probe: default ConfigMap branch unchanged by override",
+                    def_branch == "pivot/flux-sync-ssh-bootstrap",
+                    f"got '{def_branch}'",
+                )
+        else:
             all_ok &= check(
-                "makefile probe: render with override succeeds",
+                "makefile exec probe: rendered output captured at apply boundary",
                 False,
-                result.stderr.strip()[:120],
+                "no rendered YAML captured",
             )
-            return all_ok
 
-        docs = list(yaml.safe_load_all(result.stdout))
-        docs = [d for d in docs if d is not None]
-
-        # Find the override ConfigMap
-        override_cm = None
-        sync_values_cm = None
-        for d in docs:
-            if d.get("kind") != "ConfigMap":
-                continue
-            name = d.get("metadata", {}).get("name", "")
-            if name == "flux-sync-values-override":
-                override_cm = d
-            elif name == "flux-sync-values":
-                sync_values_cm = d
-
-        # Check override renders the test branch
-        if override_cm and "data" in override_cm and "values.yaml" in override_cm["data"]:
-            override_values = yaml.safe_load(override_cm["data"]["values.yaml"])
-            override_branch = (
-                override_values.get("gitRepository", {})
-                .get("spec", {})
-                .get("ref", {})
-                .get("branch", "")
-            )
+        # --- Probe 2: Tracked file restoration after override bootstrap ---
+        if override_file.exists():
+            restored_content = override_file.read_text().strip()
             all_ok &= check(
-                f"makefile probe: override renders test branch '{test_branch}'",
-                override_branch == test_branch,
-                f"got '{override_branch}'",
+                "makefile exec probe: override file restored to {} after override bootstrap",
+                restored_content == "{}",
+                f"got '{restored_content}'",
             )
         else:
             all_ok &= check(
-                "makefile probe: override ConfigMap has data.values.yaml after write",
+                "makefile exec probe: override file exists after override bootstrap",
                 False,
+                "tracked override file missing",
             )
 
-        # Default ConfigMap should still have the default branch
-        if sync_values_cm and "data" in sync_values_cm and "values.yaml" in sync_values_cm["data"]:
-            default_values = yaml.safe_load(sync_values_cm["data"]["values.yaml"])
-            default_branch = (
-                default_values.get("gitRepository", {})
-                .get("spec", {})
-                .get("ref", {})
-                .get("branch", "")
-            )
-            all_ok &= check(
-                "makefile probe: default ConfigMap branch unchanged by override",
-                default_branch == "pivot/flux-sync-ssh-bootstrap",
-                f"got '{default_branch}'",
-            )
-    finally:
-        # --- Probe 2: Restore override to {} and verify render returns default ---
-        override_path.write_text("{}\n")
-        result = subprocess.run(
-            ["kustomize", "build", str(ENTRYPOINT_DIR)],
-            capture_output=True, text=True, cwd=REPO_ROOT,
+        # --- Probe 3: Default path (no override) ---
+        exit_code, rendered, stderr = _run_bootstrap(override_branch=None)
+
+        all_ok &= check(
+            "makefile exec probe: default bootstrap (no override) exits zero",
+            exit_code == 0,
+            f"exit={exit_code}",
         )
-        if result.returncode == 0:
-            docs = list(yaml.safe_load_all(result.stdout))
+
+        if rendered:
+            docs = list(yaml.safe_load_all(rendered))
             docs = [d for d in docs if d is not None]
             override_cm = None
             for d in docs:
@@ -1437,129 +1540,120 @@ def _execute_makefile_restoration_probes() -> bool:
                 ):
                     override_cm = d
                     break
+
             if override_cm and "data" in override_cm and "values.yaml" in override_cm["data"]:
-                restored_values = yaml.safe_load(override_cm["data"]["values.yaml"])
-                restored_is_empty = restored_values == {} or restored_values is None
+                ov_values = yaml.safe_load(override_cm["data"]["values.yaml"])
+                ov_empty = ov_values == {} or ov_values is None
+                ov_branch = (
+                    ov_values.get("gitRepository", {})
+                    .get("spec", {})
+                    .get("ref", {})
+                    .get("branch", "")
+                ) if ov_values else ""
                 all_ok &= check(
-                    "makefile probe: restoration to {} reflects in render",
-                    restored_is_empty,
-                    f"got {restored_values}",
+                    "makefile exec probe: default bootstrap override ConfigMap is empty (no branch written)",
+                    ov_empty or ov_branch == "",
+                    f"branch='{ov_branch}', values={ov_values}",
                 )
-            else:
-                # Override CM may not exist if {} is empty — that's also correct
-                all_ok &= check(
-                    "makefile probe: restoration to {} — override empty or absent",
-                    True,
-                )
-        # If original content existed, restore it
-        if original_content is not None:
-            override_path.write_text(original_content)
+        else:
+            all_ok &= check(
+                "makefile exec probe: rendered output captured at default apply boundary",
+                False,
+                "no rendered YAML captured",
+            )
 
-    # --- Probe 3: Extract restore_override logic and test with fixture ---
-    makefile_path = REPO_ROOT / "Makefile"
-    with open(makefile_path) as f:
-        makefile_text = f.read()
+        # --- Probe 4: Tracked file unchanged by default bootstrap ---
+        if override_file.exists():
+            restored_content = override_file.read_text().strip()
+            all_ok &= check(
+                "makefile exec probe: override file is {} after default bootstrap",
+                restored_content == "{}",
+                f"got '{restored_content}'",
+            )
 
-    import re, tempfile, os as _os
-
-    # Extract the restore_override function definition from the Makefile
-    restore_match = re.search(
-        r'restore_override\(\) \{ (printf .*?(?:\|\| \{[^}]*\})?); \};',
-        makefile_text,
-    )
-    if restore_match:
-        restore_cmd = restore_match.group(1).strip()
-        # The command uses $(FLUX_SYNC_OVERRIDE_FILE) — substitute a temp path
-        # Build a small test: write content, run restore, verify file is {}
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False, prefix="restore-test-"
-        ) as tf:
-            tf.write("some: override\ncontent: here\n")
-            test_file_path = tf.name
+        # --- Probe 5: Restoration/write failure propagates non-zero ---
+        saved_content = None
+        if override_file.exists():
+            saved_content = override_file.read_text()
+            override_file.unlink()
 
         try:
-            restore_scoped = restore_cmd.replace(
-                '"$(FLUX_SYNC_OVERRIDE_FILE)"', f'"{test_file_path}"'
+            override_file.mkdir(parents=True, exist_ok=True)
+
+            exit_code, rendered, stderr = _run_bootstrap(
+                override_branch="test/should-fail-branch"
             )
-            # Also handle unquoted version just in case
-            restore_scoped = restore_scoped.replace(
-                "$(FLUX_SYNC_OVERRIDE_FILE)", test_file_path
+
+            all_ok &= check(
+                "makefile exec probe: bootstrap exits non-zero when restore_override write fails",
+                exit_code != 0,
+                f"exit={exit_code} (expected non-zero)",
             )
-            result = subprocess.run(
-                ["bash", "-c", restore_scoped],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                restored_content = open(test_file_path).read().strip()
-                all_ok &= check(
-                    "makefile probe: restore_override writes {} to file",
-                    restored_content == "{}",
-                    f"got '{restored_content}'",
-                )
-            else:
-                all_ok &= check(
-                    "makefile probe: restore_override command succeeds",
-                    False,
-                    f"exit={result.returncode}, stderr={result.stderr.strip()[:100]}",
-                )
         finally:
-            _os.unlink(test_file_path)
+            if override_file.is_dir():
+                shutil.rmtree(override_file)
+            if saved_content is not None:
+                override_file.write_text(saved_content)
+            elif not override_file.exists():
+                override_file.write_text("{}\n")
 
-        # --- Probe 4: Injected restoration failure yields non-zero ---
-        # Try writing to a non-existent directory
-        bad_path = "/nonexistent/path/override.yaml"
-        restore_bad = restore_cmd.replace(
-            '"$(FLUX_SYNC_OVERRIDE_FILE)"', f'"{bad_path}"'
-        ).replace("$(FLUX_SYNC_OVERRIDE_FILE)", bad_path)
-        result = subprocess.run(
-            ["bash", "-c", restore_bad],
-            capture_output=True, text=True, timeout=10,
-        )
+        # --- Probe 6: restore_override function exists in Makefile ---
+        with open(makefile_path) as f:
+            makefile_text = f.read()
+
+        has_restore_override = "restore_override()" in makefile_text
         all_ok &= check(
-            "makefile probe: restore_override to invalid path returns non-zero",
-            result.returncode != 0,
-            f"exit={result.returncode}",
-        )
-    else:
-        all_ok &= check(
-            "makefile probe: restore_override function found in Makefile",
-            False,
-            "could not extract restore_override from Makefile",
+            "makefile exec probe: restore_override function exists in Makefile bootstrap recipe",
+            has_restore_override,
+            "function found" if has_restore_override else "restore_override() not found",
         )
 
-    # --- Probe 5: Literal backslash newline regression detection ---
-    # After the YAML values, printf must use \n not \\n (double backslash)
-    # which would produce literal \n characters in the output file
-    # Check the bootstrap recipe's printf lines for double-backslash regression
-    bootstrap_section_match = re.search(
-        r"kind-dev-misc-local-bootstrap:(.*?)(?=^\S|\Z)",
-        makefile_text,
-        re.DOTALL | re.MULTILINE,
-    )
-    if bootstrap_section_match:
-        bootstrap_section = bootstrap_section_match.group(1)
-        # Find all printf lines in the bootstrap recipe
-        printf_lines = re.findall(r"printf .*", bootstrap_section)
-        double_bs_lines = []
-        for line in printf_lines:
-            # Look for \\n (literal backslash-n, not real newline)
-            # In the Makefile source, a real newline is \n in the recipe line
-            # A double-backslash \\n would be literal \n in the output
-            if "\\\\n" in line:
-                double_bs_lines.append(line.strip()[:80])
+        # --- Probe 7: Literal backslash-newline regression detection ---
+        bootstrap_section_match = re.search(
+            r"kind-dev-misc-local-bootstrap:(.*?)(?=^\S|\Z)",
+            makefile_text,
+            re.DOTALL | re.MULTILINE,
+        )
+        if bootstrap_section_match:
+            bootstrap_section = bootstrap_section_match.group(1)
+            printf_lines = re.findall(r"printf .*", bootstrap_section)
+            double_bs_lines = []
+            for line in printf_lines:
+                if "\\\\n" in line:
+                    double_bs_lines.append(line.strip()[:80])
 
-        all_ok &= check(
-            "makefile probe: no literal-backslash \\\\n regression in printf lines",
-            len(double_bs_lines) == 0,
-            f"found {len(double_bs_lines)} regression(s): {double_bs_lines[:3]}"
-            if double_bs_lines
-            else "all printf lines use real newlines",
-        )
-    else:
-        all_ok &= check(
-            "makefile probe: bootstrap recipe section found",
-            False,
-        )
+            all_ok &= check(
+                "makefile exec probe: no literal-backslash \\\\n regression in printf lines",
+                len(double_bs_lines) == 0,
+                f"found {len(double_bs_lines)} regression(s): {double_bs_lines[:3]}"
+                if double_bs_lines
+                else "all printf lines use real newlines",
+            )
+        else:
+            all_ok &= check(
+                "makefile exec probe: bootstrap recipe section found",
+                False,
+            )
+
+    finally:
+        if _os.path.exists(mock_dir):
+            shutil.rmtree(mock_dir, ignore_errors=True)
+        if _os.path.exists(log_dir):
+            shutil.rmtree(log_dir, ignore_errors=True)
+
+        if original_content is not None:
+            try:
+                if not override_file.is_dir():
+                    override_file.write_text(original_content)
+            except Exception:
+                pass
+        elif not override_file.exists():
+            try:
+                override_file.write_text("{}\n")
+            except Exception:
+                pass
+
+    return all_ok
 
     return all_ok
 
