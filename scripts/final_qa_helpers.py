@@ -385,15 +385,40 @@ class GitHubRefsAPI:
                 raise APIError(status, "malformed JSON response") from exc
         return status, parsed
 
+    @staticmethod
+    def _parse_body(raw: str, status: int) -> Any:
+        body = raw.strip()
+        if not body:
+            return None
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise APIError(status, "malformed JSON response") from exc
+
     def _request(self, method: str, endpoint: str, fields: dict[str, str] | None = None) -> tuple[int, Any]:
-        command = ["gh", "api", "--include", "-X", method, endpoint]
+        # Successful gh API calls print a body-only JSON document on stdout.
+        # Do not parse gh's mixed-LF/CRLF --include framing on this path: the
+        # process return code already establishes success and each method has
+        # one expected GitHub status. stderr remains diagnostic-only.
+        success_status = {"GET": 200, "POST": 201, "DELETE": 204}.get(method)
+        if success_status is None:
+            raise APIError(0, f"unsupported HTTP method: {method}")
+        command = ["gh", "api", "-X", method, endpoint]
+        if method == "DELETE":
+            command.append("--silent")
         for key, value in (fields or {}).items():
             command.extend(["-f", f"{key}={value}"])
         result = subprocess.run(command, text=True, capture_output=True)
-        raw = result.stdout or result.stderr
-        status, parsed = self._parse_response(raw)
-        if result.returncode and status != 404:
-            message = parsed.get("message", "request failed") if isinstance(parsed, dict) else "request failed"
+        if not result.returncode:
+            return success_status, self._parse_body(result.stdout, success_status)
+
+        matches = re.findall(r"\(HTTP (\d{3})\)", result.stderr)
+        if not matches:
+            raise APIError(0, result.stderr.strip() or "request failed without HTTP status")
+        status = int(matches[-1])
+        parsed = self._parse_body(result.stdout, status)
+        message = parsed.get("message", "request failed") if isinstance(parsed, dict) else "request failed"
+        if status != 404:
             raise APIError(status, message)
         return status, parsed
 
@@ -405,15 +430,21 @@ class GitHubRefsAPI:
     def get(self, ref: str) -> dict[str, Any] | None:
         status, body = self._request("GET", f"repos/{self.repo}/git/ref/{self.endpoint_ref(ref)}")
         if status == 404:
+            if not isinstance(body, dict) or body.get("message") != "Not Found":
+                raise APIError(status, "malformed ref absence response")
             return None
         if status != 200:
             raise APIError(status, "unexpected ref lookup response")
+        if not isinstance(body, dict):
+            raise APIError(status, "ref response must be an object")
         return body
 
     def create(self, ref: str, sha: str) -> dict[str, Any]:
         status, body = self._request("POST", f"repos/{self.repo}/git/refs", {"ref": ref, "sha": sha})
         if status != 201:
             raise APIError(status, "unexpected ref create response")
+        if not isinstance(body, dict):
+            raise APIError(status, "ref response must be an object")
         return body
 
     def delete(self, ref: str) -> None:

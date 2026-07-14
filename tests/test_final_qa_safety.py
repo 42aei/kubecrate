@@ -190,8 +190,9 @@ def fake_gh(tmp_path: Path, responses: list, log: Path) -> Path:
         "import json,os,sys,pathlib\n"
         "q=pathlib.Path(os.environ['FAKE_GH_QUEUE']); data=json.loads(q.read_text()); item=data.pop(0); q.write_text(json.dumps(data))\n"
         "pathlib.Path(os.environ['FAKE_GH_LOG']).open('a').write(' '.join(sys.argv[1:])+'\\n')\n"
-        "status,body=item[0],item[1]; stream=sys.stderr if len(item)>2 and item[2]=='stderr' else sys.stdout\n"
-        "print(body if body.startswith('HTTP/') else f'HTTP/2 {status} status\\ncontent-type: application/json\\n\\n{body}', file=stream)\n"
+        "status,body=item[0],item[1]; include='--include' in sys.argv; stream=sys.stderr if len(item)>2 and item[2]=='stderr' else sys.stdout\n"
+        "print(body if (not include or body.startswith('HTTP/')) else f'HTTP/2 {status} status\\ncontent-type: application/json\\n\\n{body}', file=stream)\n"
+        "print(f'gh: request failed (HTTP {status})', file=sys.stderr) if status >= 400 else None\n"
         "raise SystemExit(0 if status < 400 else 1)\n"
     )
     gh.chmod(0o755)
@@ -302,13 +303,43 @@ def test_marker_write_and_unlink_fsync_file_and_parent(monkeypatch, tmp_path: Pa
 @pytest.mark.parametrize("raw,status,body", [
     ("HTTP/1.1 200 Connection established\nproxy: yes\n\nHTTP/2 404 Not Found\ncontent-type: application/json\n\n{\"message\":\"Not Found\"}", 404, {"message": "Not Found"}),
     ("HTTP/2 204 No Content\nserver: github\n\n", 204, None),
+    # gh 2.45 emits the status line with LF while the remaining headers use
+    # CRLF. This is the framing captured from the live successful POST.
+    ("HTTP/2.0 201 Created\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json; charset=utf-8\r\nX-GitHub-Request-Id: probe\r\n\r\n{\"ref\":\"refs/heads/kubecrate-qa/parser-probe\",\"object\":{\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"type\":\"commit\"}}", 201, {"ref": "refs/heads/kubecrate-qa/parser-probe", "object": {"sha": "a" * 40, "type": "commit"}}),
 ])
 def test_github_parser_uses_final_http_block(tmp_path: Path, raw: str, status: int, body) -> None:
-    bindir = fake_gh(tmp_path, [[status, raw]], tmp_path / "gh.log")
-    old = os.environ.copy(); os.environ.update({"PATH": f"{bindir}:{old['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(tmp_path / "gh.log")})
-    try: actual = helpers.GitHubRefsAPI("o/r")._request("GET", "endpoint")
-    finally: os.environ.clear(); os.environ.update(old)
-    assert actual == (status, body)
+    assert helpers.GitHubRefsAPI._parse_response(raw) == (status, body)
+
+
+def test_github_refs_api_rejects_non_object_success_and_malformed_404(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"
+    result = run_helper(
+        tmp_path,
+        [(404, '{"message":"Not Found"}'), (201, "[]")],
+        "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
+        "--evidence-root", str(root), "--marker", str(marker),
+    )
+    assert result.returncode != 0 and not marker.exists()
+    assert marker.with_suffix(".json.uncertain").exists()
+
+    bindir = fake_gh(tmp_path, [[404, "[]"]], tmp_path / "lookup.log")
+    old = os.environ.copy(); os.environ.update({"PATH": f"{bindir}:{old['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(tmp_path / "lookup.log")})
+    try:
+        with pytest.raises(helpers.APIError):
+            helpers.GitHubRefsAPI("o/r").get("refs/heads/qa")
+    finally:
+        os.environ.clear(); os.environ.update(old)
+
+
+def test_github_request_never_treats_stderr_as_the_http_response(monkeypatch) -> None:
+    result = SimpleNamespace(
+        returncode=0,
+        stdout="",
+        stderr='HTTP/2 201 Created\n\n{"ref":"wrong-stream"}',
+    )
+    monkeypatch.setattr(helpers.subprocess, "run", lambda *args, **kwargs: result)
+    with pytest.raises(helpers.APIError, match="ref response must be an object"):
+        helpers.GitHubRefsAPI("o/r").create("refs/heads/qa", "a" * 40)
 
 
 def test_github_parser_accepts_stderr_response_and_rejects_stale_or_malformed(tmp_path: Path) -> None:
@@ -621,6 +652,29 @@ def init_repo(path: Path, content: str) -> str:
 def run_identity_gate(repo: Path, candidate: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "KUBECRATE_QA_CANDIDATE": candidate, "KUBECRATE_QA_IDENTITY_GATE_ONLY": "1"}
     return subprocess.run([SCRIPT], cwd=repo, env=env, text=True, capture_output=True)
+
+
+def test_invalid_kind_override_fails_before_any_external_mutation(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    sha = init_repo(repo, "invalid-cluster")
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    mutation_log = tmp_path / "mutations.log"
+    for name in ("gh", "kind", "kubectl", "kustomize", "helm", "flux", "ssh-keygen", "curl", "base64"):
+        command = bindir / name
+        command.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name} $*' >>'{mutation_log}'\nexit 99\n")
+        command.chmod(0o755)
+    evidence = tmp_path / "evidence"
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "KUBECRATE_QA_CANDIDATE": sha,
+        "KUBECRATE_QA_CLUSTER": "kubecrate-qa-20260714T213200Z",
+        "KUBECRATE_QA_EVIDENCE": str(evidence),
+    }
+    result = subprocess.run([SCRIPT], cwd=repo, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "invalid kind cluster name" in result.stderr
+    assert not mutation_log.exists()
 
 
 def test_clean_checkout_a_candidate_b_rejects_before_any_external_command(tmp_path: Path) -> None:

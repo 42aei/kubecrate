@@ -52,6 +52,18 @@ def test_guardrails_reject_shared_names_and_protected_branches() -> None:
     assert text.count("assert_context") >= 7
 
 
+def test_kind_name_constraint_is_checked_before_remote_or_cluster_mutation() -> None:
+    text = source()
+    validation = '[[ "${CLUSTER}" =~ ^[a-z0-9.-]+$ ]]'
+    ordered(
+        text,
+        validation,
+        'final_qa_helpers.py create-ref',
+        'kind create cluster --name "${CLUSTER}"',
+    )
+    assert text.index(validation) < text.index("scripts/preflight-flux-deploy-key.py")
+
+
 def test_preexisting_identity_checks_are_fail_closed_and_precede_mutation() -> None:
     text = source()
     ordered(

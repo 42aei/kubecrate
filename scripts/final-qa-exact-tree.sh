@@ -43,6 +43,8 @@ CANDIDATE_TREE="$(git rev-parse "${CANDIDATE_SHA}^{tree}")"
 test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}" || fail "local HEAD must equal candidate ${CANDIDATE_SHA}"
 test "$(git write-tree)" = "${CANDIDATE_TREE}" || fail "local index tree must equal candidate tree"
 test -z "$(git status --porcelain=v1 --untracked-files=all)" || fail "tracked worktree/index must be clean and untracked files are forbidden"
+[[ "${CLUSTER}" =~ ^[a-z0-9.-]+$ ]] || fail "invalid kind cluster name ${CLUSTER}: expected only lowercase letters, digits, dots, and hyphens"
+test "${#CLUSTER}" -le 63 || fail "invalid kind cluster name ${CLUSTER}: maximum length is 63"
 INITIAL_TREE="${CANDIDATE_TREE}"
 if test "${KUBECRATE_QA_IDENTITY_GATE_ONLY:-0}" = 1; then
   printf 'final-qa: identity gate passed candidate=%s tree=%s\n' "${CANDIDATE_SHA}" "${CANDIDATE_TREE}"
