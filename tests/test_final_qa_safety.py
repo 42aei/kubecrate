@@ -112,10 +112,15 @@ class FakeRefs:
         return self.delete_result
 
 
-def test_ref_race_422_never_establishes_ownership() -> None:
+def test_ref_race_422_never_establishes_ownership(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"
     api = FakeRefs([None], create=helpers.APIError(422, "exists"))
     with pytest.raises(helpers.APIError):
-        helpers.create_owned_ref(api, "refs/heads/qa", "a" * 40)
+        helpers.create_owned_ref(
+            api, "refs/heads/qa", "a" * 40, repo="o/r", marker=marker, evidence_root=root
+        )
+    assert not marker.exists()
+    assert not marker.with_suffix(".json.uncertain").exists()
     assert not any(c[0] == "delete" for c in api.calls)
 
 
@@ -250,6 +255,61 @@ def test_helper_cli_marker_survives_interruption_and_delete_proves_absence(tmp_p
     assert deleted.returncode == 0 and not marker.exists()
 
 
+def test_helper_cli_empty_create_body_uses_exact_readback_then_marker_gated_delete(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    ref = "refs/heads/qa"; sha = "a" * 40; obj = ref_obj(ref, sha)
+    created = run_helper(
+        tmp_path,
+        [(404, '{"message":"Not Found"}'), (201, ""), (200, obj)],
+        "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha,
+        "--evidence-root", str(root), "--marker", str(marker),
+    )
+    assert created.returncode == 0 and marker.exists() and not uncertain.exists()
+    deleted = run_helper(
+        tmp_path,
+        [(200, obj), (204, ""), (404, '{"message":"Not Found"}')],
+        "cleanup-ref-markers", "--repo", "o/r", "--ref", ref, "--sha", sha,
+        "--evidence-root", str(root), "--owned-marker", str(marker),
+        "--uncertain-marker", str(uncertain), "--branch-created", "true",
+    )
+    assert deleted.returncode == 0 and not marker.exists() and not uncertain.exists()
+    assert "-X DELETE" in (tmp_path / "gh.log").read_text()
+
+
+@pytest.mark.parametrize("readback", [
+    (404, '{"message":"Not Found"}'),
+    (200, "[]"),
+    (200, ref_obj("refs/heads/other", "a" * 40)),
+    (200, ref_obj("refs/heads/qa", "b" * 40)),
+    (500, '{"message":"unknown"}'),
+])
+def test_helper_cli_empty_create_body_unproved_readback_retains_uncertainty_without_delete(
+    tmp_path: Path, readback: tuple[int, str]
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    result = run_helper(
+        tmp_path,
+        [(404, '{"message":"Not Found"}'), (201, ""), readback],
+        "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
+        "--evidence-root", str(root), "--marker", str(marker),
+    )
+    assert result.returncode != 0 and not marker.exists() and uncertain.exists()
+    assert "-X DELETE" not in (tmp_path / "gh.log").read_text()
+
+
+def test_helper_cli_mismatched_create_object_retains_uncertainty_without_readback_or_delete(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    result = run_helper(
+        tmp_path,
+        [(404, '{"message":"Not Found"}'), (201, ref_obj("refs/heads/other", "a" * 40))],
+        "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
+        "--evidence-root", str(root), "--marker", str(marker),
+    )
+    assert result.returncode != 0 and not marker.exists() and uncertain.exists()
+    log = (tmp_path / "gh.log").read_text()
+    assert log.count("-X GET") == 1 and "-X DELETE" not in log
+
+
 def test_helper_cli_changed_ref_refuses_delete_and_retains_marker(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; root.mkdir(mode=0o700); marker = root / "owned.json"; marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); marker.chmod(0o600)
     changed = ref_obj("refs/heads/qa", "b" * 40)
@@ -331,15 +391,14 @@ def test_github_refs_api_rejects_non_object_success_and_malformed_404(tmp_path: 
         os.environ.clear(); os.environ.update(old)
 
 
-def test_github_request_never_treats_stderr_as_the_http_response(monkeypatch) -> None:
+def test_github_empty_success_body_returns_no_create_claim_and_ignores_stderr(monkeypatch) -> None:
     result = SimpleNamespace(
         returncode=0,
         stdout="",
         stderr='HTTP/2 201 Created\n\n{"ref":"wrong-stream"}',
     )
     monkeypatch.setattr(helpers.subprocess, "run", lambda *args, **kwargs: result)
-    with pytest.raises(helpers.APIError, match="ref response must be an object"):
-        helpers.GitHubRefsAPI("o/r").create("refs/heads/qa", "a" * 40)
+    assert helpers.GitHubRefsAPI("o/r").create("refs/heads/qa", "a" * 40) is None
 
 
 def test_github_parser_accepts_stderr_response_and_rejects_stale_or_malformed(tmp_path: Path) -> None:

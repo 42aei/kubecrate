@@ -52,7 +52,7 @@ class APIError(RuntimeError):
 
 class RefsAPI(Protocol):
     def get(self, ref: str) -> dict[str, Any] | None: ...
-    def create(self, ref: str, sha: str) -> dict[str, Any]: ...
+    def create(self, ref: str, sha: str) -> dict[str, Any] | None: ...
     def delete(self, ref: str) -> None: ...
 
 
@@ -215,7 +215,8 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
     if uncertain:
         assert evidence_root is not None
         _write_marker(uncertain, repo, ref, sha, "created-unverified", evidence_root=evidence_root)
-    _assert_ref(created, ref, sha)
+    if created is not None:
+        _assert_ref(created, ref, sha)
     _assert_ref(api.get(ref), ref, sha)
     if marker:
         assert evidence_root is not None
@@ -439,10 +440,12 @@ class GitHubRefsAPI:
             raise APIError(status, "ref response must be an object")
         return body
 
-    def create(self, ref: str, sha: str) -> dict[str, Any]:
+    def create(self, ref: str, sha: str) -> dict[str, Any] | None:
         status, body = self._request("POST", f"repos/{self.repo}/git/refs", {"ref": ref, "sha": sha})
         if status != 201:
             raise APIError(status, "unexpected ref create response")
+        if body is None:
+            return None
         if not isinstance(body, dict):
             raise APIError(status, "ref response must be an object")
         return body
