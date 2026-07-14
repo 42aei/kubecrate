@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Behavioral tests for exact-tree final-QA safety helpers."""
 
+import ctypes
+import errno
 import importlib.util
 import json
 import os
@@ -316,10 +318,6 @@ def test_create_cli_refuses_existing_evidence_without_api_or_overwrite(
     assert not (tmp_path / "gh.log").exists()
 
 
-def _assert_no_named_marker_temp(root: Path, marker: Path) -> None:
-    assert list(root.glob(f".{marker.name}.tmp-*")) == []
-
-
 def test_exclusive_marker_publish_loses_race_without_overwrite(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"; raced = b"racing evidence\n"
     real_link_fd = helpers._link_fd
@@ -335,7 +333,6 @@ def test_exclusive_marker_publish_loses_race_without_overwrite(monkeypatch, tmp_
         helpers._create_marker_exclusive(
             marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified", evidence_root=root)
     assert marker.read_bytes() == raced
-    _assert_no_named_marker_temp(root, marker)
 
 
 def test_exclusive_marker_eexist_race_prevents_api_post_and_preserves_destination(
@@ -362,7 +359,6 @@ def test_exclusive_marker_eexist_race_prevents_api_post_and_preserves_destinatio
     assert not any(call[0] == "create" for call in api.calls)
     assert uncertain.read_bytes() == raced
     assert uncertain.stat().st_ino == raced_identity[0]
-    _assert_no_named_marker_temp(root, uncertain)
 
 
 def test_exclusive_marker_forces_mode_0600_under_hostile_umask(tmp_path: Path) -> None:
@@ -383,7 +379,6 @@ def test_exclusive_marker_forces_mode_0600_under_hostile_umask(tmp_path: Path) -
         "repo": "o/r", "ref": "refs/heads/qa", "sha": "a" * 40,
         "state": "created-unverified",
     }
-    _assert_no_named_marker_temp(root, marker)
 
 
 def test_anonymous_marker_link_failure_closes_fd_and_leaves_no_entry(monkeypatch, tmp_path: Path) -> None:
@@ -401,7 +396,6 @@ def test_anonymous_marker_link_failure_closes_fd_and_leaves_no_entry(monkeypatch
     assert not marker.exists()
     with pytest.raises(OSError):
         os.fstat(captured[0])
-    _assert_no_named_marker_temp(root, marker)
 
 
 def test_anonymous_marker_open_failure_is_clear_and_fail_closed(monkeypatch, tmp_path: Path) -> None:
@@ -420,7 +414,137 @@ def test_anonymous_marker_open_failure_is_clear_and_fail_closed(monkeypatch, tmp
             marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
             evidence_root=root)
     assert not marker.exists()
-    _assert_no_named_marker_temp(root, marker)
+
+
+def _anonymous_fd(root: Path) -> tuple[int, int]:
+    root.mkdir(mode=0o700, exist_ok=True)
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    fd = os.open(".", os.O_TMPFILE | os.O_RDWR | os.O_CLOEXEC, 0o600,
+                 dir_fd=directory_fd)
+    os.fchmod(fd, 0o600)
+    return fd, directory_fd
+
+
+def _force_proc_fallback(monkeypatch):
+    real_linkat = helpers._LINKAT
+    calls = []
+
+    def linkat(source_fd, source, destination_fd, destination, flags):
+        calls.append((source_fd, source, destination_fd, destination, flags))
+        if flags == helpers._AT_EMPTY_PATH:
+            ctypes.set_errno(errno.ENOENT)
+            return -1
+        return real_linkat(source_fd, source, destination_fd, destination, flags)
+
+    monkeypatch.setattr(helpers, "_LINKAT", linkat)
+    return calls
+
+
+def test_proc_fallback_rejects_non_procfs_magic_before_link(monkeypatch, tmp_path: Path) -> None:
+    fd, directory_fd = _anonymous_fd(tmp_path / "evidence")
+    calls = _force_proc_fallback(monkeypatch)
+    monkeypatch.setattr(helpers, "_fstatfs_magic", lambda _fd: 0xEF53)
+    try:
+        with pytest.raises(RuntimeError, match="procfs filesystem magic"):
+            helpers._link_fd(fd, directory_fd, "marker")
+        assert len(calls) == 1
+        assert not (tmp_path / "evidence" / "marker").exists()
+    finally:
+        os.close(fd); os.close(directory_fd)
+
+
+def test_proc_fallback_rejects_numeric_entry_that_is_not_magic_symlink(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fd, directory_fd = _anonymous_fd(tmp_path / "evidence")
+    calls = _force_proc_fallback(monkeypatch)
+    real_source = helpers._proc_source_info
+
+    def regular_source(proc_fd, source):
+        entry, target, followed = real_source(proc_fd, source)
+        values = list(entry); values[0] = stat.S_IFREG | 0o600
+        return os.stat_result(values), target, followed
+
+    monkeypatch.setattr(helpers, "_proc_source_info", regular_source)
+    try:
+        with pytest.raises(RuntimeError, match="magic symlink"):
+            helpers._link_fd(fd, directory_fd, "marker")
+        assert len(calls) == 1
+        assert not (tmp_path / "evidence" / "marker").exists()
+    finally:
+        os.close(fd); os.close(directory_fd)
+
+
+def test_proc_fallback_rechecks_source_identity_immediately_before_link(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fd, directory_fd = _anonymous_fd(tmp_path / "evidence")
+    calls = _force_proc_fallback(monkeypatch)
+    real_source = helpers._proc_source_info; observations = 0
+
+    def substitute_before_link(proc_fd, source):
+        nonlocal observations
+        observations += 1
+        entry, target, followed = real_source(proc_fd, source)
+        if observations == 2:
+            values = list(followed); values[1] += 1
+            followed = os.stat_result(values)
+        return entry, target, followed
+
+    monkeypatch.setattr(helpers, "_proc_source_info", substitute_before_link)
+    try:
+        with pytest.raises(AssertionError, match="inode identity"):
+            helpers._link_fd(fd, directory_fd, "marker")
+        assert len(calls) == 1
+        assert not (tmp_path / "evidence" / "marker").exists()
+    finally:
+        os.close(fd); os.close(directory_fd)
+
+
+@pytest.mark.parametrize("repoint_observation", [3, 4])
+def test_proc_fallback_source_repoint_after_publication_fails_closed_and_retains_final(
+    monkeypatch, tmp_path: Path, repoint_observation: int
+) -> None:
+    fd, directory_fd = _anonymous_fd(tmp_path / "evidence")
+    calls = _force_proc_fallback(monkeypatch)
+    real_source = helpers._proc_source_info; observations = 0
+
+    def repoint_source(proc_fd, source):
+        nonlocal observations
+        observations += 1
+        entry, target, followed = real_source(proc_fd, source)
+        if observations == repoint_observation:
+            values = list(followed); values[1] += 1
+            followed = os.stat_result(values)
+        return entry, target, followed
+
+    monkeypatch.setattr(helpers, "_proc_source_info", repoint_source)
+    try:
+        with pytest.raises(AssertionError, match="inode identity"):
+            helpers._link_fd(fd, directory_fd, "marker")
+        assert len(calls) == 2
+        final = os.lstat(tmp_path / "evidence" / "marker")
+        assert (final.st_dev, final.st_ino) == (os.fstat(fd).st_dev, os.fstat(fd).st_ino)
+    finally:
+        os.close(fd); os.close(directory_fd)
+
+
+def test_direct_empty_path_success_bypasses_proc_fallback(monkeypatch, tmp_path: Path) -> None:
+    fd, directory_fd = _anonymous_fd(tmp_path / "evidence")
+    calls = []
+
+    def direct_link(source_fd, source, destination_fd, destination, flags):
+        calls.append(flags)
+        return 0
+
+    monkeypatch.setattr(helpers, "_LINKAT", direct_link)
+    monkeypatch.setattr(helpers, "_fstatfs_magic",
+                        lambda _fd: pytest.fail("procfs fallback was entered"))
+    try:
+        helpers._link_fd(fd, directory_fd, "marker")
+        assert calls == [helpers._AT_EMPTY_PATH]
+    finally:
+        os.close(fd); os.close(directory_fd)
 
 
 def test_extra_hard_link_during_publish_fails_without_post_and_retains_evidence(
@@ -446,7 +570,6 @@ def test_extra_hard_link_during_publish_fails_without_post_and_retains_evidence(
     assert uncertain.exists() and extra.exists()
     assert os.lstat(uncertain).st_ino == os.lstat(extra).st_ino
     assert os.lstat(uncertain).st_nlink == 2
-    _assert_no_named_marker_temp(root, uncertain)
 
 
 def test_final_substitution_after_link_fails_without_post_or_touching_attacker_entry(
@@ -472,7 +595,6 @@ def test_final_substitution_after_link_fails_without_post_or_touching_attacker_e
             evidence_root=root)
     assert not any(call[0] == "create" for call in api.calls)
     assert uncertain.read_bytes() == attacker
-    _assert_no_named_marker_temp(root, uncertain)
 
 
 def test_final_substitution_between_verifications_is_retained_and_never_unlinked(
@@ -506,7 +628,6 @@ def test_final_substitution_between_verifications_is_retained_and_never_unlinked
             evidence_root=root)
     assert marker.read_bytes() == attacker
     assert unlinks_after_substitution == []
-    _assert_no_named_marker_temp(root, marker)
 
 
 def test_exclusive_publication_never_calls_pathname_unlink(monkeypatch, tmp_path: Path) -> None:
@@ -516,7 +637,6 @@ def test_exclusive_publication_never_calls_pathname_unlink(monkeypatch, tmp_path
         marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
         evidence_root=root)
     assert marker.exists()
-    _assert_no_named_marker_temp(root, marker)
 
 
 @pytest.mark.parametrize("responses", [
@@ -674,18 +794,14 @@ def test_marker_refuses_unsafe_paths_and_malformed_content(tmp_path: Path, kind:
     assert result.returncode != 0
 
 
-def test_marker_write_and_unlink_fsync_file_and_parent(monkeypatch, tmp_path: Path) -> None:
+def test_marker_publish_and_unlink_fsync_file_and_parent(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; events = []
-    real_fsync, real_replace, real_link, real_unlink = helpers.os.fsync, helpers.os.replace, helpers.os.link, helpers.os.unlink
+    real_fsync, real_unlink = helpers.os.fsync, helpers.os.unlink
     monkeypatch.setattr(helpers.os, "fsync", lambda fd: (events.append(("fsync", stat.S_ISDIR(os.fstat(fd).st_mode))), real_fsync(fd))[1])
-    monkeypatch.setattr(helpers.os, "replace", lambda *a, **kw: (events.append(("replace", False)), real_replace(*a, **kw))[1])
-    monkeypatch.setattr(helpers.os, "link", lambda *a, **kw: (events.append(("link", False)), real_link(*a, **kw))[1])
     monkeypatch.setattr(helpers.os, "unlink", lambda *a, **kw: (events.append(("unlink", False)), real_unlink(*a, **kw))[1])
-    helpers._write_marker(marker, "o/r", "refs/heads/qa", "a"*40, "owned", evidence_root=root)
-    assert events[:3] == [("fsync", False), ("replace", False), ("fsync", True)]
-    marker.unlink(); events.clear()
     helpers._create_marker_exclusive(marker, "o/r", "refs/heads/qa", "a"*40, "owned", evidence_root=root)
-    assert events == [("fsync", False), ("fsync", True)]
+    assert events[0] == ("fsync", False)
+    assert events[1:] and all(event == ("fsync", True) for event in events[1:])
     api = FakeRefs([{"ref":"refs/heads/qa","object":{"type":"commit","sha":"a"*40}}, None])
     helpers.cleanup_ref_markers(marker, marker.with_suffix(".json.uncertain"), evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, branch_created=True, api=api)
     assert events[-2:] == [("unlink", False), ("fsync", True)]

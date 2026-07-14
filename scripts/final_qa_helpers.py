@@ -8,6 +8,7 @@ import ctypes
 import html.parser
 import json
 import os
+import platform
 import re
 import stat
 import subprocess
@@ -174,31 +175,6 @@ def _durable_unlink(name: str, directory_fd: int, *, missing_ok: bool = False) -
         os.fsync(directory_fd)
 
 
-def _write_marker(path: Path, repo: str, ref: str, sha: str, state: str, *, evidence_root: Path) -> None:
-    path, directory_fd = _validated_marker(path, evidence_root, must_exist=False)
-    payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
-    temporary = f".{path.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}"
-    fd = -1
-    try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            fd = -1
-            json.dump(payload, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-        os.fsync(directory_fd)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        try:
-            os.unlink(temporary, dir_fd=directory_fd)
-        except FileNotFoundError:
-            pass
-        os.close(directory_fd)
-
-
 def _assert_marker_inode(info: os.stat_result, *, links: int, label: str,
                          authoritative: os.stat_result | None = None) -> None:
     """Require a caller-owned private regular inode with an exact link count."""
@@ -223,6 +199,72 @@ _LINKAT.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p
                     ctypes.c_int)
 _LINKAT.restype = ctypes.c_int
 
+_PROC_SUPER_MAGIC = 0x9FA0
+
+
+class _LinuxX8664StatFS(ctypes.Structure):
+    """glibc struct statfs layout for Linux x86_64 only."""
+    _fields_ = (
+        ("f_type", ctypes.c_long),
+        ("f_bsize", ctypes.c_long),
+        ("f_blocks", ctypes.c_ulong),
+        ("f_bfree", ctypes.c_ulong),
+        ("f_bavail", ctypes.c_ulong),
+        ("f_files", ctypes.c_ulong),
+        ("f_ffree", ctypes.c_ulong),
+        ("f_fsid", ctypes.c_int * 2),
+        ("f_namelen", ctypes.c_long),
+        ("f_frsize", ctypes.c_long),
+        ("f_flags", ctypes.c_long),
+        ("f_spare", ctypes.c_long * 4),
+    )
+
+
+_FSTATFS = _LIBC.fstatfs
+_FSTATFS.argtypes = (ctypes.c_int, ctypes.POINTER(_LinuxX8664StatFS))
+_FSTATFS.restype = ctypes.c_int
+
+
+def _fstatfs_magic(fd: int) -> int:
+    """Return filesystem magic, refusing unverified ctypes layouts."""
+    if sys.platform != "linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
+        raise RuntimeError("procfs fallback requires Linux x86_64")
+    if ctypes.sizeof(_LinuxX8664StatFS) != 120:
+        raise RuntimeError("unexpected Linux x86_64 statfs layout")
+    info = _LinuxX8664StatFS()
+    if _FSTATFS(fd, ctypes.byref(info)) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return info.f_type
+
+
+def _proc_source_info(proc_fd: int, source: str) -> tuple[os.stat_result, str, os.stat_result]:
+    """Observe one procfs fd magic link without and with following it."""
+    entry = os.stat(source, dir_fd=proc_fd, follow_symlinks=False)
+    target = os.readlink(source, dir_fd=proc_fd)
+    followed = os.stat(source, dir_fd=proc_fd, follow_symlinks=True)
+    return entry, target, followed
+
+
+def _assert_proc_source(proc_fd: int, source: str, authoritative: os.stat_result,
+                        *, links: int) -> None:
+    entry, target, followed = _proc_source_info(proc_fd, source)
+    if not stat.S_ISLNK(entry.st_mode) or not target:
+        raise RuntimeError("procfs numeric fd entry must be a nonempty magic symlink")
+    _assert_marker_inode(
+        followed, links=links, label="procfs marker source", authoritative=authoritative)
+
+
+def _assert_published_marker(fd: int, proc_fd: int, source: str, directory_fd: int,
+                             name: str, authoritative: os.stat_result) -> None:
+    _assert_proc_source(proc_fd, source, authoritative, links=1)
+    _assert_marker_inode(
+        os.fstat(fd), links=1, label="opened marker through procfs fallback",
+        authoritative=authoritative)
+    _assert_marker_inode(
+        _entry_info(name, directory_fd), links=1,
+        label="published marker through procfs fallback", authoritative=authoritative)
+
 
 def _link_fd(fd: int, directory_fd: int, name: str) -> None:
     """Atomically give an anonymous inode a name without replacing an entry."""
@@ -233,22 +275,44 @@ def _link_fd(fd: int, directory_fd: int, name: str) -> None:
     if error != 2:
         raise OSError(error, os.strerror(error), name)
 
-    # Unprivileged Linux denies AT_EMPTY_PATH even for an inode opened by this
-    # process. Pin procfs' fd directory, prove its magic link still resolves to
-    # our open inode, then use Linux's documented O_TMPFILE publication path.
-    # The source is descriptor-scoped; no attacker-controlled pathname is used.
+    # Unprivileged Linux can deny AT_EMPTY_PATH even for an inode opened by this
+    # process. Pin the literal /proc/self/fd directory and fail closed unless it
+    # is procfs. Procfs may expose the directory as root-owned or caller-owned,
+    # so require a directory owned by either, with owner search permission and
+    # no group/other writes; do not incorrectly require the current uid.
     proc_fd = -1
     try:
         proc_fd = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY |
                           os.O_NOFOLLOW | os.O_CLOEXEC)
-        source = os.fsencode(str(fd))
-        proc_info = os.stat(str(fd), dir_fd=proc_fd)
+        if _fstatfs_magic(proc_fd) != _PROC_SUPER_MAGIC:
+            raise RuntimeError("pinned fd directory has unexpected procfs filesystem magic")
+        proc_info = os.fstat(proc_fd)
+        proc_path_info = os.stat("/proc/self/fd", follow_symlinks=True)
+        proc_mode = stat.S_IMODE(proc_info.st_mode)
+        if ((proc_info.st_dev, proc_info.st_ino) !=
+                (proc_path_info.st_dev, proc_path_info.st_ino)):
+            raise RuntimeError("pinned fd directory is not this process /proc/self/fd")
+        if (not stat.S_ISDIR(proc_info.st_mode) or proc_info.st_uid not in {0, os.geteuid()} or
+                not proc_mode & stat.S_IXUSR or proc_mode & 0o022):
+            raise RuntimeError("unsafe pinned /proc/self/fd directory metadata")
+
+        source_text = str(fd)
+        source = os.fsencode(source_text)
         opened = os.fstat(fd)
-        if (proc_info.st_dev, proc_info.st_ino) != (opened.st_dev, opened.st_ino):
-            raise RuntimeError("procfs fd identity mismatch during marker publication")
+        _assert_marker_inode(opened, links=0, label="opened fallback marker")
+        _assert_proc_source(proc_fd, source_text, opened, links=0)
+        # Repeat immediately before linkat so a substituted source observation
+        # cannot be accepted based only on the initial check.
+        _assert_proc_source(proc_fd, source_text, opened, links=0)
         if _LINKAT(proc_fd, source, directory_fd, encoded, _AT_SYMLINK_FOLLOW) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error), name)
+        # Once published, never unlink on mismatch: the final name is durable
+        # diagnostic evidence. Verify source, open fd, and destination both
+        # before and after the directory durability barrier.
+        _assert_published_marker(fd, proc_fd, source_text, directory_fd, name, opened)
+        os.fsync(directory_fd)
+        _assert_published_marker(fd, proc_fd, source_text, directory_fd, name, opened)
     finally:
         if proc_fd >= 0:
             os.close(proc_fd)
