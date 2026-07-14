@@ -52,7 +52,7 @@ def test_guardrails_reject_shared_names_and_protected_branches() -> None:
 
 
 def test_preexisting_identity_checks_are_fail_closed_and_precede_mutation() -> None:
-    text = source()
+    text = source().split('for cmd in gh kind kubectl', 1)[1]
     ordered(
         text,
         'if test "$(cluster_state)" != absent',
@@ -65,7 +65,7 @@ def test_preexisting_identity_checks_are_fail_closed_and_precede_mutation() -> N
 
 
 def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
-    text = source()
+    text = source().split('for cmd in gh kind kubectl', 1)[1]
     mutation_fragments = (
         'helm upgrade --install flux-system',
         'kubectl --context "${CONTEXT}" apply -f -',
@@ -85,7 +85,7 @@ def test_created_deploy_key_is_validated_before_readback_and_cleanup_is_fail_clo
     text = source()
     ordered(text, 'KEY_JSON="$(gh api -X POST', 'created key id must be an integer', 'KEY_READ="$(gh api')
     assert 'test "$(key_state)" = absent || cleanup_failed=true' in text
-    assert 'final_qa_helpers.py delete-ref' in text
+    assert 'final_qa_helpers.py delete-ref-marker' in text
     assert 'test "$(cluster_state)" = absent || cleanup_failed=true' in text
 
 
@@ -110,10 +110,10 @@ def test_green_red_green_captures_json_and_real_browser_ui() -> None:
 
 def test_cleanup_trap_verifies_exact_key_branch_and_cluster_absence() -> None:
     text = source()
-    assert "trap cleanup EXIT INT TERM" in text
+    assert "trap cleanup EXIT" in text
     for token in (
         'repos/${REPO}/keys/${KEY_ID}',
-        'final_qa_helpers.py delete-ref',
+        'final_qa_helpers.py delete-ref-marker',
         'kind delete cluster --name "${CLUSTER}"',
         "cleanup verification failed",
     ):

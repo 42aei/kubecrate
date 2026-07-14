@@ -19,6 +19,8 @@ BRANCH_CREATED=false
 CLUSTER_CREATED=false
 INITIAL_TREE=""
 RED_STATE=none
+OWNED_REF_MARKER="${EVIDENCE}/owned-ref.json"
+UNCERTAIN_REF_MARKER="${OWNED_REF_MARKER}.uncertain"
 
 fail() { printf 'final-qa: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
@@ -68,9 +70,12 @@ cleanup() {
     fi
     test "$(key_state)" = absent || cleanup_failed=true
   fi
-  if ${BRANCH_CREATED}; then
-    python3 scripts/final_qa_helpers.py delete-ref --repo "${REPO}" \
-      --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}" >/dev/null 2>&1 || cleanup_failed=true
+  if test -f "${OWNED_REF_MARKER}"; then
+    python3 scripts/final_qa_helpers.py delete-ref-marker --marker "${OWNED_REF_MARKER}" >/dev/null 2>&1 || cleanup_failed=true
+  fi
+  if test -f "${UNCERTAIN_REF_MARKER}"; then
+    printf 'final-qa: unverified ref creation requires manual investigation: %s\n' "${UNCERTAIN_REF_MARKER}" >&2
+    cleanup_failed=true
   fi
   if ${CLUSTER_CREATED}; then
     cluster_before="$(cluster_state)"
@@ -90,7 +95,9 @@ cleanup() {
   fi
   exit "${rc}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for cmd in git python3; do require "${cmd}"; done
 CANDIDATE_SHA="$(git rev-parse "${CANDIDATE}^{commit}")"
@@ -104,6 +111,42 @@ if test "${KUBECRATE_QA_IDENTITY_GATE_ONLY:-0}" = 1; then
   trap - EXIT INT TERM
   exit 0
 fi
+mkdir -p "${EVIDENCE}"
+if test "${KUBECRATE_QA_TEST_MODE:-0}" = 1; then
+  # Subprocess-only lifecycle seam. It is unreachable unless explicitly enabled and
+  # performs only the same fake-PATH commands used by tests.
+  test_cleanup() {
+    rc=$?; trap - EXIT INT TERM; failed=false
+    if test "${RED_STATE}" != none; then
+      python3 scripts/final_qa_helpers.py restore --context "${CONTEXT}" || failed=true
+    fi
+    if test -f "${OWNED_REF_MARKER}"; then
+      python3 scripts/final_qa_helpers.py delete-ref-marker --marker "${OWNED_REF_MARKER}" || failed=true
+    fi
+    if ${CLUSTER_CREATED}; then kind delete cluster --name "${CLUSTER}" || failed=true; fi
+    ${failed} && exit 1
+    exit "${rc}"
+  }
+  trap test_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  case "${KUBECRATE_QA_TEST_SCENARIO:-}" in
+    after-suspend|after-delete)
+      CLUSTER_CREATED=true
+      RED_STATE=restore_required
+      flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smoke -n flux-system
+      if test "${KUBECRATE_QA_TEST_SCENARIO}" = after-suspend; then kill -TERM "$$"; fi
+      kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
+      kill -TERM "$$"
+      ;;
+    after-ref-helper)
+      python3 scripts/final_qa_helpers.py create-ref --repo "${REPO}" --ref "refs/heads/${QA_BRANCH}" \
+        --sha "${CANDIDATE_SHA}" --marker "${OWNED_REF_MARKER}"
+      kill -TERM "$$"
+      ;;
+    *) fail "unknown lifecycle test scenario";;
+  esac
+fi
 for cmd in gh kind kubectl kustomize helm flux ssh-keygen curl base64; do require "${cmd}"; done
 protected_branch "${QA_BRANCH}" && fail "refusing protected QA branch ${QA_BRANCH}"
 case "${CLUSTER}" in kind-dev-misc-local|kubecrate-fix-eso) fail "refusing shared cluster ${CLUSTER}";; esac
@@ -114,10 +157,10 @@ fi
 # The GitHub create-ref API is atomic: an existing/racing ref returns 422 and
 # cannot be mistaken for ownership by this run.
 python3 scripts/final_qa_helpers.py create-ref --repo "${REPO}" \
-  --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}"
+  --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}" --marker "${OWNED_REF_MARKER}"
+if test "${KUBECRATE_QA_FAILPOINT:-}" = after-ref-helper; then kill -TERM "$$"; fi
 BRANCH_CREATED=true
 
-mkdir -p "${EVIDENCE}"
 cat >"${QA_VALUES}" <<EOF
 secret:
   create: true
@@ -196,9 +239,28 @@ assert_context
 flux --context "${CONTEXT}" reconcile kustomization flux-system -n flux-system --timeout=300s
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Available deployment/cratecheck -n cratecheck --timeout=300s
-assert_context
-kubectl --context "${CONTEXT}" port-forward -n cratecheck service/cratecheck 18080:8080 >"${EVIDENCE}/port-forward.log" 2>&1 &
-PORT_FORWARD_PID=$!
+
+port_forward_ready() {
+  test -n "${PORT_FORWARD_PID}" && kill -0 "${PORT_FORWARD_PID}" 2>/dev/null || return 1
+  curl --fail --silent http://127.0.0.1:18080/status.json >/dev/null 2>&1
+}
+wait_port_forward() {
+  scripts/wait-port-forward.sh "${PORT_FORWARD_PID}" "${EVIDENCE}/port-forward.log" \
+    http://127.0.0.1:18080/status.json "${KUBECRATE_QA_PORT_FORWARD_TIMEOUT:-20}" \
+    "${KUBECRATE_QA_PORT_FORWARD_POLL_INTERVAL:-0.25}" || fail "CrateCheck transport not ready; see ${EVIDENCE}/port-forward.log"
+}
+start_port_forward() {
+  assert_context
+  kubectl --context "${CONTEXT}" port-forward -n cratecheck service/cratecheck 18080:8080 >"${EVIDENCE}/port-forward.log" 2>&1 &
+  PORT_FORWARD_PID=$!
+  wait_port_forward
+}
+ensure_port_forward() {
+  port_forward_ready && return 0
+  test -z "${PORT_FORWARD_PID}" || kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
+  start_port_forward
+}
+start_port_forward
 
 browser_dump() {
   out="$1"
@@ -220,11 +282,12 @@ capture_green() {
 }
 controlled_red() {
   assert_context
+  RED_STATE=restore_required
   flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smoke -n flux-system
-  RED_STATE=suspended
+  if test "${KUBECRATE_QA_FAILPOINT:-}" = after-suspend; then kill -TERM "$$"; fi
   assert_context
   kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
-  RED_STATE=source_deleted
+  if test "${KUBECRATE_QA_FAILPOINT:-}" = after-delete; then kill -TERM "$$"; fi
   assert_context
   kubectl --context "${CONTEXT}" wait --for=condition=Ready=false externalsecret/eso-smoke-projection -n kubecrate-system --timeout=180s || true
 }
@@ -243,6 +306,7 @@ restore_if_needed() {
   test "$(kubectl config current-context 2>/dev/null)" = "${CONTEXT}" || return 1
   restore_source_secret || return 1
   sleep "${KUBECRATE_QA_OBSERVE_SECONDS:-35}"
+  ensure_port_forward || return 1
   capture_green restored || return 1
   RED_STATE=none
 }

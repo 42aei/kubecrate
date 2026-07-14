@@ -8,6 +8,7 @@ import html.parser
 import json
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,7 +33,7 @@ EXPECTED_NAMES = {
 }
 RED_IDS = {"eso-externalsecret-ready", "eso-projected-secret-exists"}
 STATUSES = {"green", "red", "yellow", "unknown"}
-MUTATED_STATES = {"suspended", "source_deleted"}
+MUTATED_STATES = {"suspended", "source_deleted", "restore_required"}
 
 
 def restoration_required(state: str) -> bool:
@@ -79,12 +80,36 @@ def _assert_ref(obj: Any, ref: str, sha: str) -> None:
     assert target.get("sha") == sha, "ref SHA mismatch"
 
 
-def create_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
+def _write_marker(path: Path, repo: str, ref: str, sha: str, state: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
+        json.dump(payload, stream, sort_keys=True)
+        stream.write("\n")
+        temporary = Path(stream.name)
+    temporary.replace(path)
+
+
+def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker: Path | None = None) -> None:
     assert ref.startswith("refs/heads/"), "only an exact heads ref is allowed"
     assert api.get(ref) is None, "QA ref already exists"
-    created = api.create(ref, sha)
+    try:
+        created = api.create(ref, sha)
+    except APIError as exc:
+        # A schema-invalid 201 means GitHub may have created the ref even though
+        # ownership cannot be proved. Persist a blocker, never a deletion claim.
+        if marker and exc.status == 201:
+            _write_marker(marker.with_suffix(marker.suffix + ".uncertain"), repo, ref, sha, "created-unverified")
+        raise
+    uncertain = marker.with_suffix(marker.suffix + ".uncertain") if marker else None
+    if uncertain:
+        _write_marker(uncertain, repo, ref, sha, "created-unverified")
     _assert_ref(created, ref, sha)
     _assert_ref(api.get(ref), ref, sha)
+    if marker:
+        _write_marker(marker, repo, ref, sha, "owned")
+        assert uncertain is not None
+        uncertain.unlink(missing_ok=True)
 
 
 def delete_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
@@ -93,6 +118,15 @@ def delete_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
     _assert_ref(current, ref, sha)
     api.delete(ref)
     assert api.get(ref) is None, "QA ref deletion absence not proved"
+
+
+def delete_ref_marker(marker: Path) -> None:
+    obj = json.loads(marker.read_text())
+    assert obj.get("state") == "owned", "marker does not prove ownership"
+    repo, ref, sha = (obj.get(key) for key in ("repo", "ref", "sha"))
+    assert all(isinstance(value, str) and value for value in (repo, ref, sha)), "invalid ownership marker"
+    delete_owned_ref(GitHubRefsAPI(repo), ref, sha)
+    marker.unlink()
 
 
 class GitHubRefsAPI:
@@ -235,6 +269,10 @@ def main() -> int:
         p.add_argument("--repo", required=True)
         p.add_argument("--ref", required=True)
         p.add_argument("--sha", required=True)
+        if command == "create-ref":
+            p.add_argument("--marker", required=True, type=Path)
+    p = sub.add_parser("delete-ref-marker")
+    p.add_argument("--marker", required=True, type=Path)
     for command in ("validate-json", "validate-html"):
         p = sub.add_parser(command)
         p.add_argument("--phase", choices=("green", "red"), required=True)
@@ -243,9 +281,11 @@ def main() -> int:
     p.add_argument("--context", required=True)
     args = parser.parse_args()
     if args.command == "create-ref":
-        create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha)
+        create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker)
     elif args.command == "delete-ref":
         delete_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha)
+    elif args.command == "delete-ref-marker":
+        delete_ref_marker(args.marker)
     elif args.command == "validate-json":
         validate_status(json.loads(args.path.read_text()), args.phase)
     elif args.command == "validate-html":
@@ -258,6 +298,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (AssertionError, APIError, json.JSONDecodeError) as exc:
+    except (AssertionError, APIError, json.JSONDecodeError, OSError) as exc:
         print(f"final-qa-helper: ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1)

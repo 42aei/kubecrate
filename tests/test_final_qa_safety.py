@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import shutil
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 HELPER_PATH = ROOT / "scripts" / "final_qa_helpers.py"
 SCRIPT = ROOT / "scripts" / "final-qa-exact-tree.sh"
+WAIT_PORT_FORWARD = ROOT / "scripts" / "wait-port-forward.sh"
 
 spec = importlib.util.spec_from_file_location("final_qa_helpers", HELPER_PATH)
 helpers = importlib.util.module_from_spec(spec)
@@ -177,10 +179,158 @@ def test_mutation_state_is_set_immediately_after_suspend_and_delete() -> None:
     text = SCRIPT.read_text()
     suspend = text.index('flux --context "${CONTEXT}" suspend')
     delete = text.index('kubectl --context "${CONTEXT}" delete secret')
-    assert suspend < text.index("RED_STATE=suspended", suspend) < delete
-    assert delete < text.index("RED_STATE=source_deleted", delete)
+    intent = text.index("RED_STATE=restore_required")
+    assert intent < suspend < delete
     cleanup = text[text.index("cleanup()") : text.index("trap cleanup EXIT")]
     assert cleanup.index("restore_if_needed") < cleanup.index("kind delete cluster")
+
+
+def fake_gh(tmp_path: Path, responses: list[tuple[int, str]], log: Path) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    queue = tmp_path / "responses.json"
+    queue.write_text(json.dumps(responses))
+    gh = bindir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json,os,sys,pathlib\n"
+        "q=pathlib.Path(os.environ['FAKE_GH_QUEUE']); data=json.loads(q.read_text()); status,body=data.pop(0); q.write_text(json.dumps(data))\n"
+        "pathlib.Path(os.environ['FAKE_GH_LOG']).open('a').write(' '.join(sys.argv[1:])+'\\n')\n"
+        "print(f'HTTP/2 {status} status\\ncontent-type: application/json\\n\\n{body}')\n"
+        "raise SystemExit(0 if status < 400 else 1)\n"
+    )
+    gh.chmod(0o755)
+    return bindir
+
+
+def ref_obj(ref: str, sha: str) -> str:
+    return json.dumps({"ref": ref, "object": {"type": "commit", "sha": sha}})
+
+
+def run_helper(tmp_path: Path, responses: list[tuple[int, str]], *args: str) -> subprocess.CompletedProcess:
+    log = tmp_path / "gh.log"
+    bindir = fake_gh(tmp_path, responses, log)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(log)}
+    return subprocess.run(["python3", HELPER_PATH, *args], env=env, text=True, capture_output=True)
+
+
+@pytest.mark.parametrize("responses", [
+    [(404, '{"message":"Not Found"}'), (422, '{"message":"exists"}')],
+    [(500, '{"message":"unknown"}')],
+    [(404, '{"message":"Not Found"}'), (201, 'not-json')],
+])
+def test_helper_cli_does_not_claim_ownership_for_422_unknown_or_malformed(tmp_path: Path, responses) -> None:
+    marker = tmp_path / "owned.json"
+    result = run_helper(tmp_path, responses, "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40, "--marker", str(marker))
+    assert result.returncode != 0
+    assert not marker.exists()
+    if responses[-1][0] == 201:
+        assert marker.with_suffix(".json.uncertain").exists()
+    else:
+        assert not marker.with_suffix(".json.uncertain").exists()
+
+
+def test_helper_cli_marker_survives_interruption_and_delete_proves_absence(tmp_path: Path) -> None:
+    marker = tmp_path / "owned.json"; ref = "refs/heads/qa"; sha = "a" * 40; obj = ref_obj(ref, sha)
+    created = run_helper(tmp_path, [(404, '{"message":"Not Found"}'), (201, obj), (200, obj)], "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha, "--marker", str(marker))
+    assert created.returncode == 0 and marker.exists()
+    deleted = run_helper(tmp_path, [(200, obj), (204, ''), (404, '{"message":"Not Found"}')], "delete-ref-marker", "--marker", str(marker))
+    assert deleted.returncode == 0 and not marker.exists()
+
+
+def test_helper_cli_changed_ref_refuses_delete_and_retains_marker(tmp_path: Path) -> None:
+    marker = tmp_path / "owned.json"; marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40}))
+    changed = ref_obj("refs/heads/qa", "b" * 40)
+    result = run_helper(tmp_path, [(200, changed)], "delete-ref-marker", "--marker", str(marker))
+    assert result.returncode != 0 and marker.exists()
+    assert "DELETE" not in (tmp_path / "gh.log").read_text()
+
+
+def run_transport_wait(tmp_path: Path, curl_script: str, process_script: str = "sleep 5") -> subprocess.CompletedProcess:
+    bindir = tmp_path / "transport-bin"; bindir.mkdir()
+    curl = bindir / "curl"; curl.write_text(f"#!/usr/bin/env bash\n{curl_script}\n"); curl.chmod(0o755)
+    process = subprocess.Popen(["bash", "-c", process_script])
+    try:
+        env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"}
+        return subprocess.run([WAIT_PORT_FORWARD, str(process.pid), str(tmp_path / "pf.log"), "http://localhost/status.json", "0.12", "0.02"], env=env, text=True, capture_output=True)
+    finally:
+        process.terminate(); process.wait()
+
+
+def test_port_forward_delayed_readiness_succeeds(tmp_path: Path) -> None:
+    count = tmp_path / "count"
+    result = run_transport_wait(tmp_path, f'n=$(cat "{count}" 2>/dev/null || echo 0); n=$((n+1)); echo $n >"{count}"; test $n -ge 3')
+    assert result.returncode == 0 and int(count.read_text()) == 3
+
+
+def test_port_forward_early_death_fails_with_log_pointer(tmp_path: Path) -> None:
+    dead = subprocess.Popen(["bash", "-c", "exit 0"])
+    dead.wait()
+    result = subprocess.run([WAIT_PORT_FORWARD, str(dead.pid), str(tmp_path / "pf.log"), "http://localhost/status.json", "0.12", "0.02"], text=True, capture_output=True)
+    assert result.returncode != 0 and "exited early" in result.stderr and "pf.log" in result.stderr
+
+
+def test_port_forward_timeout_is_bounded_and_reports_log(tmp_path: Path) -> None:
+    result = run_transport_wait(tmp_path, "exit 1")
+    assert result.returncode != 0 and "timed out" in result.stderr and "pf.log" in result.stderr
+
+
+def test_restoration_rechecks_transport_before_restored_capture() -> None:
+    text = SCRIPT.read_text(); restore = text[text.index("restore_if_needed()") :]
+    assert restore.index("restore_source_secret") < restore.index("ensure_port_forward") < restore.index("capture_green restored")
+
+
+def lifecycle_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
+    repo = tmp_path / "lifecycle"; (repo / "scripts").mkdir(parents=True)
+    shutil.copy2(SCRIPT, repo / "scripts/final-qa-exact-tree.sh")
+    shutil.copy2(HELPER_PATH, repo / "scripts/final_qa_helpers.py")
+    sha = init_repo(repo, "lifecycle")
+    subprocess.run(["git", "-C", repo, "add", "scripts"], check=True)
+    subprocess.run(["git", "-C", repo, "commit", "--amend", "-qm", "lifecycle"], check=True)
+    sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
+    bindir = tmp_path / "lifecycle-bin"; bindir.mkdir(); log = tmp_path / "calls.log"
+    for name in ("flux", "kubectl", "kind"):
+        command = bindir / name
+        command.write_text("#!/usr/bin/env bash\necho \"$(basename $0) $*\" >>\"$CALL_LOG\"\n"
+                           "if [[ $(basename $0) == kubectl && $* == *'config current-context'* ]]; then echo \"$EXPECTED_CONTEXT\"; fi\n"
+                           "test \"${FAIL_RESTORE:-0}\" != 1 || [[ $* != *resume* ]]\n")
+        command.chmod(0o755)
+    return repo, bindir, log
+
+
+@pytest.mark.parametrize("scenario", ["after-suspend", "after-delete"])
+def test_actual_shell_signal_restores_before_cluster_delete(tmp_path: Path, scenario: str) -> None:
+    repo, bindir, log = lifecycle_repo(tmp_path); evidence = tmp_path / "evidence"; run_id = "signal"
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "CALL_LOG": str(log),
+           "EXPECTED_CONTEXT": "kind-kubecrate-qa-signal", "KUBECRATE_QA_RUN_ID": run_id,
+           "KUBECRATE_QA_EVIDENCE": str(evidence), "KUBECRATE_QA_TEST_MODE": "1", "KUBECRATE_QA_TEST_SCENARIO": scenario}
+    result = subprocess.run([repo / "scripts/final-qa-exact-tree.sh"], cwd=repo, env=env, text=True, capture_output=True)
+    calls = log.read_text(); assert result.returncode != 0
+    assert calls.index("flux --context kind-kubecrate-qa-signal resume") < calls.index("kind delete cluster")
+    assert "kubectl --context kind-kubecrate-qa-signal get secret eso-smoke-source" in calls
+
+
+def test_actual_shell_restoration_failure_is_nonzero_before_teardown(tmp_path: Path) -> None:
+    repo, bindir, log = lifecycle_repo(tmp_path)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "CALL_LOG": str(log), "FAIL_RESTORE": "1",
+           "EXPECTED_CONTEXT": "kind-kubecrate-qa-fail", "KUBECRATE_QA_RUN_ID": "fail", "KUBECRATE_QA_EVIDENCE": str(tmp_path / "e"),
+           "KUBECRATE_QA_TEST_MODE": "1", "KUBECRATE_QA_TEST_SCENARIO": "after-suspend"}
+    result = subprocess.run([repo / "scripts/final-qa-exact-tree.sh"], cwd=repo, env=env, text=True, capture_output=True)
+    assert result.returncode != 0
+    calls = log.read_text(); assert calls.index("resume") < calls.index("kind delete cluster")
+
+
+def test_actual_shell_ref_marker_survives_helper_signal_and_is_consumed(tmp_path: Path) -> None:
+    repo, bindir, log = lifecycle_repo(tmp_path); evidence = tmp_path / "ref-evidence"
+    sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(); ref = "refs/heads/kubecrate-qa/ref"
+    ghbin = fake_gh(tmp_path, [(404, '{"message":"Not Found"}'), (201, ref_obj(ref, sha)), (200, ref_obj(ref, sha)),
+                               (200, ref_obj(ref, sha)), (204, ''), (404, '{"message":"Not Found"}')], tmp_path / "gh.log")
+    env = {**os.environ, "PATH": f"{ghbin}:{bindir}:{os.environ['PATH']}", "CALL_LOG": str(log), "FAKE_GH_QUEUE": str(tmp_path / "responses.json"),
+           "FAKE_GH_LOG": str(tmp_path / "gh.log"), "EXPECTED_CONTEXT": "kind-kubecrate-qa-ref", "KUBECRATE_QA_RUN_ID": "ref",
+           "KUBECRATE_QA_EVIDENCE": str(evidence), "KUBECRATE_QA_TEST_MODE": "1", "KUBECRATE_QA_TEST_SCENARIO": "after-ref-helper"}
+    result = subprocess.run([repo / "scripts/final-qa-exact-tree.sh"], cwd=repo, env=env, text=True, capture_output=True)
+    assert result.returncode != 0 and not (evidence / "owned-ref.json").exists()
+    assert "-X DELETE" in (tmp_path / "gh.log").read_text()
 
 
 def init_repo(path: Path, content: str) -> str:
