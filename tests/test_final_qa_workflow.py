@@ -6,11 +6,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "final-qa-exact-tree.sh"
+LIFECYCLE = ROOT / "scripts" / "final-qa-lifecycle.sh"
 MAKEFILE = ROOT / "Makefile"
 
 
 def source() -> str:
-    return SCRIPT.read_text(encoding="utf-8")
+    return SCRIPT.read_text(encoding="utf-8") + "\n" + LIFECYCLE.read_text(encoding="utf-8")
 
 
 def ordered(text: str, *tokens: str) -> None:
@@ -52,7 +53,7 @@ def test_guardrails_reject_shared_names_and_protected_branches() -> None:
 
 
 def test_preexisting_identity_checks_are_fail_closed_and_precede_mutation() -> None:
-    text = source().split('for cmd in gh kind kubectl', 1)[1]
+    text = source()
     ordered(
         text,
         'if test "$(cluster_state)" != absent',
@@ -65,7 +66,7 @@ def test_preexisting_identity_checks_are_fail_closed_and_precede_mutation() -> N
 
 
 def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
-    text = source().split('for cmd in gh kind kubectl', 1)[1]
+    text = source()
     mutation_fragments = (
         'helm upgrade --install flux-system',
         'kubectl --context "${CONTEXT}" apply -f -',

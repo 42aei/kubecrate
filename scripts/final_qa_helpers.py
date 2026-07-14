@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import html.parser
 import json
+import os
+import re
+import stat
 import subprocess
 import sys
-import tempfile
+
 from collections import Counter
 from pathlib import Path
 from typing import Any, Protocol
@@ -80,17 +83,83 @@ def _assert_ref(obj: Any, ref: str, sha: str) -> None:
     assert target.get("sha") == sha, "ref SHA mismatch"
 
 
-def _write_marker(path: Path, repo: str, ref: str, sha: str, state: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _private_evidence_dir(root: Path) -> tuple[Path, int]:
+    """Return a no-follow directory fd for a private, caller-owned evidence root."""
+    root = Path(os.path.abspath(root))
+    current = Path(root.anchor)
+    for component in root.parts[1:]:
+        current /= component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            current.mkdir(mode=0o700)
+            info = current.lstat()
+        assert not stat.S_ISLNK(info.st_mode), f"symlink evidence path component refused: {current}"
+        assert stat.S_ISDIR(info.st_mode), f"evidence path component is not a directory: {current}"
+    info = root.lstat()
+    assert info.st_uid == os.getuid(), "evidence directory must be owned by current user"
+    os.chmod(root, 0o700, follow_symlinks=False)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    return root, fd
+
+
+def _validated_marker(path: Path, evidence_root: Path, *, must_exist: bool) -> tuple[Path, int]:
+    root, directory_fd = _private_evidence_dir(evidence_root)
+    marker = Path(os.path.abspath(path))
+    try:
+        assert marker.parent == root, "marker must be directly under the expected evidence root"
+        assert marker.name not in {"", ".", ".."}, "invalid marker name"
+        try:
+            info = os.lstat(marker.name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            assert not must_exist, "marker does not exist"
+        else:
+            assert stat.S_ISREG(info.st_mode), "marker destination must be a regular file"
+            assert info.st_uid == os.getuid(), "marker must be owned by current user"
+            assert stat.S_IMODE(info.st_mode) == 0o600, "marker must have mode 0600"
+        return marker, directory_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
+
+
+def _durable_unlink(name: str, directory_fd: int, *, missing_ok: bool = False) -> None:
+    try:
+        os.unlink(name, dir_fd=directory_fd)
+    except FileNotFoundError:
+        if not missing_ok:
+            raise
+    else:
+        os.fsync(directory_fd)
+
+
+def _write_marker(path: Path, repo: str, ref: str, sha: str, state: str, *, evidence_root: Path) -> None:
+    path, directory_fd = _validated_marker(path, evidence_root, must_exist=False)
     payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
-        json.dump(payload, stream, sort_keys=True)
-        stream.write("\n")
-        temporary = Path(stream.name)
-    temporary.replace(path)
+    temporary = f".{path.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}"
+    fd = -1
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
 
 
-def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker: Path | None = None) -> None:
+def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker: Path | None = None,
+                     evidence_root: Path | None = None) -> None:
     assert ref.startswith("refs/heads/"), "only an exact heads ref is allowed"
     assert api.get(ref) is None, "QA ref already exists"
     try:
@@ -99,17 +168,24 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
         # A schema-invalid 201 means GitHub may have created the ref even though
         # ownership cannot be proved. Persist a blocker, never a deletion claim.
         if marker and exc.status == 201:
-            _write_marker(marker.with_suffix(marker.suffix + ".uncertain"), repo, ref, sha, "created-unverified")
+            assert evidence_root is not None
+            _write_marker(marker.with_suffix(marker.suffix + ".uncertain"), repo, ref, sha, "created-unverified", evidence_root=evidence_root)
         raise
     uncertain = marker.with_suffix(marker.suffix + ".uncertain") if marker else None
     if uncertain:
-        _write_marker(uncertain, repo, ref, sha, "created-unverified")
+        assert evidence_root is not None
+        _write_marker(uncertain, repo, ref, sha, "created-unverified", evidence_root=evidence_root)
     _assert_ref(created, ref, sha)
     _assert_ref(api.get(ref), ref, sha)
     if marker:
-        _write_marker(marker, repo, ref, sha, "owned")
+        assert evidence_root is not None
+        _write_marker(marker, repo, ref, sha, "owned", evidence_root=evidence_root)
         assert uncertain is not None
-        uncertain.unlink(missing_ok=True)
+        _, directory_fd = _validated_marker(uncertain, evidence_root, must_exist=True)
+        try:
+            _durable_unlink(uncertain.name, directory_fd)
+        finally:
+            os.close(directory_fd)
 
 
 def delete_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
@@ -120,18 +196,50 @@ def delete_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
     assert api.get(ref) is None, "QA ref deletion absence not proved"
 
 
-def delete_ref_marker(marker: Path) -> None:
-    obj = json.loads(marker.read_text())
-    assert obj.get("state") == "owned", "marker does not prove ownership"
-    repo, ref, sha = (obj.get(key) for key in ("repo", "ref", "sha"))
-    assert all(isinstance(value, str) and value for value in (repo, ref, sha)), "invalid ownership marker"
-    delete_owned_ref(GitHubRefsAPI(repo), ref, sha)
-    marker.unlink()
+def delete_ref_marker(marker: Path, *, evidence_root: Path, expected_repo: str, expected_ref: str,
+                      expected_sha: str, api: RefsAPI | None = None) -> None:
+    marker, directory_fd = _validated_marker(marker, evidence_root, must_exist=True)
+    try:
+        fd = os.open(marker.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        with os.fdopen(fd, encoding="utf-8") as stream:
+            obj = json.load(stream)
+        assert isinstance(obj, dict) and obj.get("state") == "owned", "marker does not prove ownership"
+        assert obj.get("repo") == expected_repo, "marker repository mismatch"
+        assert obj.get("ref") == expected_ref, "marker ref mismatch"
+        assert obj.get("sha") == expected_sha, "marker SHA mismatch"
+        delete_owned_ref(api or GitHubRefsAPI(expected_repo), expected_ref, expected_sha)
+        _durable_unlink(marker.name, directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 class GitHubRefsAPI:
     def __init__(self, repo: str):
         self.repo = repo
+
+    @staticmethod
+    def _parse_response(raw: str) -> tuple[int, Any]:
+        normalized = raw.replace("\r\n", "\n")
+        matches = list(re.finditer(r"(?m)^HTTP/[^\s]+\s+([^\s]+)[^\n]*\n", normalized))
+        if not matches:
+            raise APIError(0, "missing or malformed HTTP status")
+        final = matches[-1]
+        try:
+            status = int(final.group(1))
+        except ValueError as exc:
+            raise APIError(0, "missing or malformed HTTP status") from exc
+        response = normalized[final.end():]
+        separator = response.find("\n\n")
+        if separator < 0:
+            raise APIError(status, "missing HTTP header terminator")
+        body = response[separator + 2:].strip()
+        parsed: Any = None
+        if body:
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError as exc:
+                raise APIError(status, "malformed JSON response") from exc
+        return status, parsed
 
     def _request(self, method: str, endpoint: str, fields: dict[str, str] | None = None) -> tuple[int, Any]:
         command = ["gh", "api", "--include", "-X", method, endpoint]
@@ -139,19 +247,7 @@ class GitHubRefsAPI:
             command.extend(["-f", f"{key}={value}"])
         result = subprocess.run(command, text=True, capture_output=True)
         raw = result.stdout or result.stderr
-        blocks = raw.replace("\r\n", "\n").split("\n\n")
-        header = next((b for b in blocks if b.startswith("HTTP/")), "")
-        try:
-            status = int(header.splitlines()[0].split()[1])
-        except (IndexError, ValueError):
-            raise APIError(0, "missing or malformed HTTP status")
-        body = blocks[-1].strip() if blocks else ""
-        parsed: Any = None
-        if body:
-            try:
-                parsed = json.loads(body)
-            except json.JSONDecodeError as exc:
-                raise APIError(status, "malformed JSON response") from exc
+        status, parsed = self._parse_response(raw)
         if result.returncode and status != 404:
             message = parsed.get("message", "request failed") if isinstance(parsed, dict) else "request failed"
             raise APIError(status, message)
@@ -271,8 +367,13 @@ def main() -> int:
         p.add_argument("--sha", required=True)
         if command == "create-ref":
             p.add_argument("--marker", required=True, type=Path)
+            p.add_argument("--evidence-root", required=True, type=Path)
     p = sub.add_parser("delete-ref-marker")
     p.add_argument("--marker", required=True, type=Path)
+    p.add_argument("--evidence-root", required=True, type=Path)
+    p.add_argument("--repo", required=True)
+    p.add_argument("--ref", required=True)
+    p.add_argument("--sha", required=True)
     for command in ("validate-json", "validate-html"):
         p = sub.add_parser(command)
         p.add_argument("--phase", choices=("green", "red"), required=True)
@@ -281,11 +382,13 @@ def main() -> int:
     p.add_argument("--context", required=True)
     args = parser.parse_args()
     if args.command == "create-ref":
-        create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker)
+        create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker,
+                         evidence_root=args.evidence_root)
     elif args.command == "delete-ref":
         delete_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha)
     elif args.command == "delete-ref-marker":
-        delete_ref_marker(args.marker)
+        delete_ref_marker(args.marker, evidence_root=args.evidence_root, expected_repo=args.repo,
+                          expected_ref=args.ref, expected_sha=args.sha)
     elif args.command == "validate-json":
         validate_status(json.loads(args.path.read_text()), args.phase)
     elif args.command == "validate-html":
