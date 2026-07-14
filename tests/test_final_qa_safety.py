@@ -126,21 +126,11 @@ def test_unknown_lookup_fails_closed_before_create() -> None:
     assert not any(c[0] == "create" for c in api.calls)
 
 
-def test_owned_create_delete_and_absence() -> None:
+def test_owned_create_establishes_exact_ref() -> None:
     sha = "a" * 40
     obj = {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": sha}}
-    api = FakeRefs([None, obj, obj, None], create=obj, delete=None)
+    api = FakeRefs([None, obj], create=obj)
     helpers.create_owned_ref(api, "refs/heads/qa", sha)
-    helpers.delete_owned_ref(api, "refs/heads/qa", sha)
-    assert ("delete", "refs/heads/qa") in api.calls
-
-
-def test_changed_ref_cleanup_refuses_delete() -> None:
-    sha = "a" * 40
-    changed = {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": "b" * 40}}
-    api = FakeRefs([changed])
-    with pytest.raises(AssertionError):
-        helpers.delete_owned_ref(api, "refs/heads/qa", sha)
     assert not any(c[0] == "delete" for c in api.calls)
 
 
@@ -235,20 +225,34 @@ def test_helper_cli_does_not_claim_ownership_for_422_unknown_or_malformed(tmp_pa
         assert not marker.with_suffix(".json.uncertain").exists()
 
 
+def test_legacy_delete_ref_marker_cli_is_retired_without_api_or_evidence_loss(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; root.mkdir(mode=0o700)
+    marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); marker.chmod(0o600)
+    uncertain.write_text(json.dumps({"state":"created-unverified","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); uncertain.chmod(0o600)
+    result = run_helper(
+        tmp_path, [(200, ref_obj("refs/heads/qa", "a"*40)), (204, ""), (404, '{"message":"Not Found"}')],
+        "delete-ref-marker", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40,
+        "--evidence-root", str(root), "--marker", str(marker))
+    assert result.returncode != 0
+    assert marker.exists() and uncertain.exists()
+    assert not (tmp_path / "gh.log").exists()
+
+
 def test_helper_cli_marker_survives_interruption_and_delete_proves_absence(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; ref = "refs/heads/qa"; sha = "a" * 40; obj = ref_obj(ref, sha)
     created = run_helper(tmp_path, [(404, '{"message":"Not Found"}'), (201, obj), (200, obj)], "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha, "--evidence-root", str(root), "--marker", str(marker))
     assert created.returncode == 0 and marker.exists()
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     assert stat.S_IMODE(marker.stat().st_mode) == 0o600
-    deleted = run_helper(tmp_path, [(200, obj), (204, ''), (404, '{"message":"Not Found"}')], "delete-ref-marker", "--repo", "o/r", "--ref", ref, "--sha", sha, "--evidence-root", str(root), "--marker", str(marker))
+    deleted = run_helper(tmp_path, [(200, obj), (204, ''), (404, '{"message":"Not Found"}')], "cleanup-ref-markers", "--repo", "o/r", "--ref", ref, "--sha", sha, "--evidence-root", str(root), "--owned-marker", str(marker), "--uncertain-marker", str(marker.with_suffix(".json.uncertain")), "--branch-created", "true")
     assert deleted.returncode == 0 and not marker.exists()
 
 
 def test_helper_cli_changed_ref_refuses_delete_and_retains_marker(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; root.mkdir(mode=0o700); marker = root / "owned.json"; marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); marker.chmod(0o600)
     changed = ref_obj("refs/heads/qa", "b" * 40)
-    result = run_helper(tmp_path, [(200, changed)], "delete-ref-marker", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--marker", str(marker))
+    result = run_helper(tmp_path, [(200, changed)], "cleanup-ref-markers", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--owned-marker", str(marker), "--uncertain-marker", str(marker.with_suffix(".json.uncertain")), "--branch-created", "true")
     assert result.returncode != 0 and marker.exists()
     assert "DELETE" not in (tmp_path / "gh.log").read_text()
 
@@ -258,7 +262,7 @@ def test_marker_expected_identity_mismatch_retains_marker_without_api(tmp_path: 
     root = tmp_path / "evidence"; root.mkdir(mode=0o700); marker = root / "owned.json"
     data = {"state": "owned", "repo": "o/r", "ref": "refs/heads/qa", "sha": "a" * 40}; data[field] = value
     marker.write_text(json.dumps(data)); marker.chmod(0o600)
-    result = run_helper(tmp_path, [], "delete-ref-marker", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--marker", str(marker))
+    result = run_helper(tmp_path, [], "cleanup-ref-markers", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--owned-marker", str(marker), "--uncertain-marker", str(marker.with_suffix(".json.uncertain")), "--branch-created", "true")
     assert result.returncode != 0 and marker.exists()
     assert not (tmp_path / "gh.log").exists()
 
@@ -277,7 +281,7 @@ def test_marker_refuses_unsafe_paths_and_malformed_content(tmp_path: Path, kind:
     args = ("create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--marker", str(marker))
     responses = [(404, '{"message":"Not Found"}'), (201, ref_obj("refs/heads/qa", "a"*40)), (200, ref_obj("refs/heads/qa", "a"*40))]
     if kind == "malformed":
-        args = ("delete-ref-marker", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--marker", str(marker)); responses = []
+        args = ("cleanup-ref-markers", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40, "--evidence-root", str(root), "--owned-marker", str(marker), "--uncertain-marker", str(marker.with_suffix(".json.uncertain")), "--branch-created", "true"); responses = []
     result = run_helper(tmp_path, responses, *args)
     assert result.returncode != 0
 
@@ -291,7 +295,7 @@ def test_marker_write_and_unlink_fsync_file_and_parent(monkeypatch, tmp_path: Pa
     helpers._write_marker(marker, "o/r", "refs/heads/qa", "a"*40, "owned", evidence_root=root)
     assert events[:3] == [("fsync", False), ("replace", False), ("fsync", True)]
     api = FakeRefs([{"ref":"refs/heads/qa","object":{"type":"commit","sha":"a"*40}}, None])
-    helpers.delete_ref_marker(marker, evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, api=api)
+    helpers.cleanup_ref_markers(marker, marker.with_suffix(".json.uncertain"), evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, branch_created=True, api=api)
     assert events[-2:] == [("unlink", False), ("fsync", True)]
 
 
@@ -346,7 +350,7 @@ def test_marker_wrong_mode_fails_before_api_and_is_retained(tmp_path: Path) -> N
     marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); marker.chmod(0o644)
     api = FakeRefs([])
     with pytest.raises(AssertionError):
-        helpers.delete_ref_marker(marker, evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, api=api)
+        helpers.cleanup_ref_markers(marker, marker.with_suffix(".json.uncertain"), evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, branch_created=True, api=api)
     assert marker.exists() and api.calls == []
 
 
@@ -363,7 +367,7 @@ def test_marker_replacement_before_api_is_detected_and_retained(monkeypatch, tmp
     monkeypatch.setattr(helpers, "_assert_entry_identity", swap)
     api = FakeRefs([])
     with pytest.raises(AssertionError):
-        helpers.delete_ref_marker(marker, evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, api=api)
+        helpers.cleanup_ref_markers(marker, marker.with_suffix(".json.uncertain"), evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, branch_created=True, api=api)
     assert marker.exists() and api.calls == []
 
 

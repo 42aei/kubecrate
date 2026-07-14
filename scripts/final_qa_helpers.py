@@ -230,38 +230,6 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
             os.close(directory_fd)
 
 
-def delete_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
-    current = api.get(ref)
-    assert current is not None, "owned QA ref unexpectedly absent before deletion"
-    _assert_ref(current, ref, sha)
-    api.delete(ref)
-    assert api.get(ref) is None, "QA ref deletion absence not proved"
-
-
-def delete_ref_marker(marker: Path, *, evidence_root: Path, expected_repo: str, expected_ref: str,
-                      expected_sha: str, api: RefsAPI | None = None) -> None:
-    marker, directory_fd, fd, info = _open_marker(marker, evidence_root)
-    try:
-        with os.fdopen(fd, encoding="utf-8") as stream:
-            obj = json.load(stream)
-        assert isinstance(obj, dict) and obj.get("state") == "owned", "marker does not prove ownership"
-        assert obj.get("repo") == expected_repo, "marker repository mismatch"
-        assert obj.get("ref") == expected_ref, "marker ref mismatch"
-        assert obj.get("sha") == expected_sha, "marker SHA mismatch"
-        _assert_entry_identity(marker.name, directory_fd, info)
-        refs = api or GitHubRefsAPI(expected_repo)
-        current = refs.get(expected_ref)
-        assert current is not None, "owned QA ref unexpectedly absent before deletion"
-        _assert_ref(current, expected_ref, expected_sha)
-        _assert_entry_identity(marker.name, directory_fd, info)
-        refs.delete(expected_ref)
-        assert refs.get(expected_ref) is None, "QA ref deletion absence not proved"
-        _assert_entry_identity(marker.name, directory_fd, info)
-        _durable_unlink(marker.name, directory_fd)
-    finally:
-        os.close(directory_fd)
-
-
 def cleanup_private(evidence_root: Path) -> None:
     """Delete only ordinary files in the confined private evidence child."""
     _, directory_fd = _private_evidence_dir(evidence_root)
@@ -542,12 +510,6 @@ def main() -> int:
     p.add_argument("--sha", required=True)
     p.add_argument("--marker", required=True, type=Path)
     p.add_argument("--evidence-root", required=True, type=Path)
-    p = sub.add_parser("delete-ref-marker")
-    p.add_argument("--marker", required=True, type=Path)
-    p.add_argument("--evidence-root", required=True, type=Path)
-    p.add_argument("--repo", required=True)
-    p.add_argument("--ref", required=True)
-    p.add_argument("--sha", required=True)
     p = sub.add_parser("cleanup-ref-markers")
     p.add_argument("--owned-marker", required=True, type=Path)
     p.add_argument("--uncertain-marker", required=True, type=Path)
@@ -570,9 +532,6 @@ def main() -> int:
     if args.command == "create-ref":
         create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker,
                          evidence_root=args.evidence_root)
-    elif args.command == "delete-ref-marker":
-        delete_ref_marker(args.marker, evidence_root=args.evidence_root, expected_repo=args.repo,
-                          expected_ref=args.ref, expected_sha=args.sha)
     elif args.command == "cleanup-ref-markers":
         owned_state, uncertain_state = cleanup_ref_markers(
             args.owned_marker, args.uncertain_marker, evidence_root=args.evidence_root,
