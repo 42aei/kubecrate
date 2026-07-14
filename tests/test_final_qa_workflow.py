@@ -86,7 +86,7 @@ def test_created_deploy_key_is_validated_before_readback_and_cleanup_is_fail_clo
     text = source()
     ordered(text, 'KEY_JSON="$(gh api -X POST', 'created key id must be an integer', 'KEY_READ="$(gh api')
     assert 'test "$(key_state)" = absent || cleanup_failed=true' in text
-    assert 'final_qa_helpers.py delete-ref-marker' in text
+    assert 'final_qa_helpers.py cleanup-ref-markers' in text
     assert 'test "$(cluster_state)" = absent || cleanup_failed=true' in text
 
 
@@ -114,7 +114,7 @@ def test_cleanup_trap_verifies_exact_key_branch_and_cluster_absence() -> None:
     assert "trap cleanup EXIT" in text
     for token in (
         'repos/${REPO}/keys/${KEY_ID}',
-        'final_qa_helpers.py delete-ref-marker',
+        'final_qa_helpers.py cleanup-ref-markers',
         'kind delete cluster --name "${CLUSTER}"',
         "cleanup verification failed",
     ):

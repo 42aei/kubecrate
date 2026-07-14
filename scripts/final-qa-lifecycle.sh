@@ -42,13 +42,14 @@ cleanup() {
     fi
     test "$(key_state)" = absent || cleanup_failed=true
   fi
-  if ${EVIDENCE_READY:-false} && test -f "${OWNED_REF_MARKER}"; then
-    python3 scripts/final_qa_helpers.py delete-ref-marker \
+  if ${EVIDENCE_READY:-false}; then
+    python3 scripts/final_qa_helpers.py cleanup-ref-markers \
       --repo "${REPO}" --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}" \
-      --evidence-root "${EVIDENCE}" --marker "${OWNED_REF_MARKER}" >/dev/null 2>&1 || cleanup_failed=true
-  fi
-  if ${EVIDENCE_READY:-false} && test -f "${UNCERTAIN_REF_MARKER}"; then
-    printf 'final-qa: unverified ref creation requires manual investigation: %s\n' "${UNCERTAIN_REF_MARKER}" >&2
+      --evidence-root "${EVIDENCE}" --owned-marker "${OWNED_REF_MARKER}" \
+      --uncertain-marker "${UNCERTAIN_REF_MARKER}" --branch-created "${BRANCH_CREATED}" \
+      >/dev/null || cleanup_failed=true
+  elif ${BRANCH_CREATED}; then
+    printf 'final-qa: created branch lacks validated evidence root\n' >&2
     cleanup_failed=true
   fi
   if ${CLUSTER_CREATED}; then

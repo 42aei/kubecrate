@@ -288,6 +288,107 @@ def cleanup_private(evidence_root: Path) -> None:
         os.close(directory_fd)
 
 
+def _marker_state_at(directory_fd: int, name: str, *, expected_repo: str, expected_ref: str,
+                     expected_sha: str, expected_state: str) -> tuple[str, int | None, os.stat_result | None]:
+    """Inspect one marker through the evidence descriptor without following links."""
+    try:
+        entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return "absent", None, None
+    assert stat.S_ISREG(entry.st_mode), f"{name}: unsafe marker entry"
+    assert entry.st_uid == os.getuid(), f"{name}: unsafe marker owner"
+    assert stat.S_IMODE(entry.st_mode) == 0o600, f"{name}: unsafe marker mode"
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+    try:
+        opened = os.fstat(fd)
+        assert stat.S_ISREG(opened.st_mode), f"{name}: unsafe opened marker"
+        assert (entry.st_dev, entry.st_ino) == (opened.st_dev, opened.st_ino), f"{name}: marker was replaced"
+        with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+            obj = json.load(stream)
+        assert isinstance(obj, dict), f"{name}: malformed marker"
+        assert obj.get("state") == expected_state, f"{name}: marker state mismatch"
+        assert obj.get("repo") == expected_repo, f"{name}: marker repository mismatch"
+        assert obj.get("ref") == expected_ref, f"{name}: marker ref mismatch"
+        assert obj.get("sha") == expected_sha, f"{name}: marker SHA mismatch"
+        _assert_entry_identity(name, directory_fd, opened)
+        return ("owned-valid" if expected_state == "owned" else "uncertain-valid"), fd, opened
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _assert_marker_absent(directory_fd: int, name: str, *, expected_repo: str, expected_ref: str,
+                          expected_sha: str, expected_state: str) -> None:
+    state, fd, _ = _marker_state_at(
+        directory_fd, name, expected_repo=expected_repo, expected_ref=expected_ref,
+        expected_sha=expected_sha, expected_state=expected_state)
+    if fd is not None:
+        os.close(fd)
+    assert state == "absent", f"{name}: expected absent marker, got {state}"
+
+
+def cleanup_ref_markers(owned_marker: Path, uncertain_marker: Path, *, evidence_root: Path,
+                        expected_repo: str, expected_ref: str, expected_sha: str,
+                        branch_created: bool, api: RefsAPI | None = None) -> tuple[str, str]:
+    """Fail-closed marker inspection and marker-gated owned-ref cleanup."""
+    root, directory_fd = _private_evidence_dir(evidence_root)
+    owned = Path(os.path.abspath(owned_marker))
+    uncertain = Path(os.path.abspath(uncertain_marker))
+    assert owned.parent == root and uncertain.parent == root, "markers must be directly under the evidence root"
+    assert owned.name not in {"", ".", ".."} and uncertain.name not in {"", ".", ".."}, "invalid marker name"
+    owned_fd: int | None = None
+    try:
+        uncertain_state, uncertain_fd, _ = _marker_state_at(
+            directory_fd, uncertain.name, expected_repo=expected_repo, expected_ref=expected_ref,
+            expected_sha=expected_sha, expected_state="created-unverified")
+        if uncertain_fd is not None:
+            os.close(uncertain_fd)
+        owned_state, owned_fd, owned_info = _marker_state_at(
+            directory_fd, owned.name, expected_repo=expected_repo, expected_ref=expected_ref,
+            expected_sha=expected_sha, expected_state="owned")
+        if not branch_created and owned_state == "absent":
+            assert uncertain_state == "absent", (
+                f"ownership diagnostics retained: owned={owned_state} uncertain={uncertain_state}")
+            _assert_marker_absent(directory_fd, uncertain.name, expected_repo=expected_repo,
+                                  expected_ref=expected_ref, expected_sha=expected_sha,
+                                  expected_state="created-unverified")
+            _assert_marker_absent(directory_fd, owned.name, expected_repo=expected_repo,
+                                  expected_ref=expected_ref, expected_sha=expected_sha,
+                                  expected_state="owned")
+            return owned_state, uncertain_state
+
+        # An owned-valid marker is itself the durable record that create-ref
+        # completed. It closes the tiny window before the shell can set
+        # BRANCH_CREATED=true after the helper returns.
+        assert owned_state == "owned-valid", f"created branch requires owned-valid marker, got {owned_state}"
+        assert uncertain_state == "absent", f"created branch has unresolved uncertainty: {uncertain_state}"
+        assert owned_fd is not None and owned_info is not None
+        _assert_entry_identity(owned.name, directory_fd, owned_info)
+        _assert_marker_absent(directory_fd, uncertain.name, expected_repo=expected_repo,
+                              expected_ref=expected_ref, expected_sha=expected_sha,
+                              expected_state="created-unverified")
+        refs = api or GitHubRefsAPI(expected_repo)
+        current = refs.get(expected_ref)
+        assert current is not None, "owned QA ref unexpectedly absent before deletion"
+        _assert_ref(current, expected_ref, expected_sha)
+        _assert_entry_identity(owned.name, directory_fd, owned_info)
+        _assert_marker_absent(directory_fd, uncertain.name, expected_repo=expected_repo,
+                              expected_ref=expected_ref, expected_sha=expected_sha,
+                              expected_state="created-unverified")
+        refs.delete(expected_ref)
+        assert refs.get(expected_ref) is None, "QA ref deletion absence not proved"
+        _assert_entry_identity(owned.name, directory_fd, owned_info)
+        _assert_marker_absent(directory_fd, uncertain.name, expected_repo=expected_repo,
+                              expected_ref=expected_ref, expected_sha=expected_sha,
+                              expected_state="created-unverified")
+        _durable_unlink(owned.name, directory_fd)
+        return owned_state, uncertain_state
+    finally:
+        if owned_fd is not None:
+            os.close(owned_fd)
+        os.close(directory_fd)
+
+
 class GitHubRefsAPI:
     def __init__(self, repo: str):
         self.repo = repo
@@ -447,6 +548,14 @@ def main() -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--ref", required=True)
     p.add_argument("--sha", required=True)
+    p = sub.add_parser("cleanup-ref-markers")
+    p.add_argument("--owned-marker", required=True, type=Path)
+    p.add_argument("--uncertain-marker", required=True, type=Path)
+    p.add_argument("--evidence-root", required=True, type=Path)
+    p.add_argument("--repo", required=True)
+    p.add_argument("--ref", required=True)
+    p.add_argument("--sha", required=True)
+    p.add_argument("--branch-created", choices=("true", "false"), required=True)
     for command in ("validate-json", "validate-html"):
         p = sub.add_parser(command)
         p.add_argument("--phase", choices=("green", "red"), required=True)
@@ -464,6 +573,12 @@ def main() -> int:
     elif args.command == "delete-ref-marker":
         delete_ref_marker(args.marker, evidence_root=args.evidence_root, expected_repo=args.repo,
                           expected_ref=args.ref, expected_sha=args.sha)
+    elif args.command == "cleanup-ref-markers":
+        owned_state, uncertain_state = cleanup_ref_markers(
+            args.owned_marker, args.uncertain_marker, evidence_root=args.evidence_root,
+            expected_repo=args.repo, expected_ref=args.ref, expected_sha=args.sha,
+            branch_created=args.branch_created == "true")
+        print(f"owned={owned_state} uncertain={uncertain_state}")
     elif args.command == "validate-json":
         validate_status(json.loads(args.path.read_text()), args.phase)
     elif args.command == "validate-html":

@@ -503,6 +503,79 @@ def test_actual_shell_ref_marker_survives_helper_signal_and_is_consumed(tmp_path
     assert "-X DELETE" in (tmp_path / "gh.log").read_text()
 
 
+def run_shipped_ref_cleanup(tmp_path: Path, *, branch_created: bool, owned: str = "absent",
+                            uncertain: str = "absent", responses: list | None = None):
+    repo = tmp_path / "cleanup"; (repo / "scripts").mkdir(parents=True)
+    shutil.copy2(LIFECYCLE, repo / "scripts/final-qa-lifecycle.sh")
+    shutil.copy2(HELPER_PATH, repo / "scripts/final_qa_helpers.py")
+    sha = init_repo(repo, "cleanup"); evidence = tmp_path / "cleanup-evidence"
+    evidence.mkdir(mode=0o700); marker = evidence / "owned-ref.json"; uncertain_marker = evidence / "owned-ref.json.uncertain"
+    good_owned = {"state": "owned", "repo": "o/r", "ref": "refs/heads/kubecrate-qa/test", "sha": sha}
+    good_uncertain = {**good_owned, "state": "created-unverified"}
+    for path, state, payload_value in ((marker, owned, good_owned), (uncertain_marker, uncertain, good_uncertain)):
+        if state == "valid":
+            path.write_text(json.dumps(payload_value)); path.chmod(0o600)
+        elif state == "malformed":
+            path.write_text("{"); path.chmod(0o600)
+        elif state == "mismatch":
+            path.write_text(json.dumps({**payload_value, "sha": "b" * 40})); path.chmod(0o600)
+        elif state == "symlink":
+            path.symlink_to(tmp_path / "missing-target")
+    harness = repo / "cleanup.sh"
+    harness.write_text('''#!/usr/bin/env bash
+set -Eeuo pipefail
+REPO=o/r; QA_BRANCH=kubecrate-qa/test; CANDIDATE_SHA="$CANDIDATE_SHA"; EVIDENCE="$EVIDENCE"
+OWNED_REF_MARKER="$EVIDENCE/owned-ref.json"; UNCERTAIN_REF_MARKER="$OWNED_REF_MARKER.uncertain"
+KEY_ID=; PORT_FORWARD_PID=; BRANCH_CREATED="$BRANCH_CREATED"; CLUSTER_CREATED=false
+INITIAL_TREE="$(git write-tree)"; RED_STATE=none; EVIDENCE_READY=true; CLUSTER=unused
+source scripts/final-qa-lifecycle.sh
+cleanup
+'''); harness.chmod(0o755)
+    log = tmp_path / "cleanup-gh.log"
+    resolved_responses = [
+        (status, ref_obj("refs/heads/kubecrate-qa/test", sha) if body == "__REF_OBJECT__" else body, *rest)
+        for status, body, *rest in (responses or [])
+    ]
+    bindir = fake_gh(tmp_path, resolved_responses, log)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"),
+           "FAKE_GH_LOG": str(log), "CANDIDATE_SHA": sha, "EVIDENCE": str(evidence),
+           "BRANCH_CREATED": "true" if branch_created else "false"}
+    result = subprocess.run([harness], cwd=repo, env=env, text=True, capture_output=True)
+    return result, marker, uncertain_marker, (log.read_text() if log.exists() else "")
+
+
+@pytest.mark.parametrize("owned", ["absent", "symlink"])
+def test_shipped_cleanup_created_branch_requires_safe_owned_marker(tmp_path: Path, owned: str) -> None:
+    result, marker, _, calls = run_shipped_ref_cleanup(tmp_path, branch_created=True, owned=owned)
+    assert result.returncode != 0
+    assert "DELETE" not in calls
+    if owned == "symlink":
+        assert marker.is_symlink()
+
+
+@pytest.mark.parametrize("uncertain", ["valid", "symlink", "malformed", "mismatch"])
+def test_shipped_cleanup_uncertain_or_unsafe_marker_fails_closed_and_retains_diagnostic(tmp_path: Path, uncertain: str) -> None:
+    result, _, marker, calls = run_shipped_ref_cleanup(tmp_path, branch_created=False, uncertain=uncertain)
+    assert result.returncode != 0
+    assert "DELETE" not in calls
+    assert marker.is_symlink() if uncertain == "symlink" else marker.exists()
+
+
+def test_shipped_cleanup_valid_owned_marker_deletes_exact_ref_and_consumes_marker(tmp_path: Path) -> None:
+    result, marker, _, calls = run_shipped_ref_cleanup(
+        tmp_path, branch_created=True, owned="valid", responses=[
+            (200, "__REF_OBJECT__"), (204, ""), (404, '{"message":"Not Found"}')])
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert "-X DELETE repos/o/r/git/refs/heads/kubecrate-qa/test" in calls
+
+
+def test_shipped_cleanup_absent_markers_are_ok_without_create_state(tmp_path: Path) -> None:
+    result, _, _, calls = run_shipped_ref_cleanup(tmp_path, branch_created=False)
+    assert result.returncode == 0, result.stderr
+    assert "DELETE" not in calls
+
+
 def test_shipped_entrypoint_ignores_test_failpoint_env_and_refuses_shared_cluster(tmp_path: Path) -> None:
     repo = tmp_path / "repo"; repo.mkdir(); shutil.copytree(ROOT / "scripts", repo / "scripts"); sha = init_repo(repo, "guard")
     bindir = tmp_path / "guard-bin"; bindir.mkdir(); log = tmp_path / "guard.log"
