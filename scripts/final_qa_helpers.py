@@ -198,40 +198,123 @@ def _write_marker(path: Path, repo: str, ref: str, sha: str, state: str, *, evid
         os.close(directory_fd)
 
 
+def _assert_marker_inode(info: os.stat_result, *, links: int, label: str,
+                         authoritative: os.stat_result | None = None) -> None:
+    """Require a caller-owned private regular inode with an exact link count."""
+    assert stat.S_ISREG(info.st_mode), f"{label}: must be a regular file"
+    assert info.st_uid == os.getuid(), f"{label}: must be owned by current user"
+    assert stat.S_IMODE(info.st_mode) == 0o600, f"{label}: must have mode 0600"
+    assert info.st_nlink == links, f"{label}: unexpected link count"
+    if authoritative is not None:
+        assert (info.st_dev, info.st_ino) == (authoritative.st_dev, authoritative.st_ino), \
+            f"{label}: inode identity mismatch"
+
+
+def _entry_info(name: str, directory_fd: int) -> os.stat_result:
+    return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+
+
+def _unlink_if_identity(name: str, directory_fd: int, expected: os.stat_result) -> bool:
+    """Unlink only when the directory entry still names the expected inode."""
+    try:
+        current = _entry_info(name, directory_fd)
+    except FileNotFoundError:
+        return False
+    if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+        return False
+    os.unlink(name, dir_fd=directory_fd)
+    return True
+
+
 def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
                              *, evidence_root: Path) -> None:
-    """Durably publish a marker without ever replacing an existing entry."""
+    """Durably publish a marker without replacing or trusting pathname races."""
     path, directory_fd = _validated_marker(path, evidence_root, must_exist=False)
     payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
     temporary = f".{path.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}"
     fd = -1
-    temporary_exists = False
+    authoritative: os.stat_result | None = None
+    publication_started = False
     try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o600, dir_fd=directory_fd)
-        temporary_exists = True
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            fd = -1
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
+                     os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+        # Creation mode is filtered by umask. Correct it on the opened inode,
+        # before any evidence is written, and retain this descriptor as the
+        # authority until publication and all pathname checks have completed.
+        os.fchmod(fd, 0o600)
+        authoritative = os.fstat(fd)
+        _assert_marker_inode(authoritative, links=1, label="opened temporary marker")
+        with os.fdopen(os.dup(fd), "w", encoding="utf-8") as stream:
             json.dump(payload, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
+
+        before_link = _entry_info(temporary, directory_fd)
+        _assert_marker_inode(
+            before_link, links=1, label="temporary marker before publication",
+            authoritative=authoritative)
+
         os.link(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
                 follow_symlinks=False)
+        publication_started = True
+
+        # A same-uid actor could replace the named source between the check and
+        # link(2). A successful link means this invocation created the absent
+        # destination. If both names prove that the wrong source was linked,
+        # remove only that newly-created destination and retain the substituted
+        # temp entry as a diagnostic rather than claiming success.
+        temp_after = _entry_info(temporary, directory_fd)
+        final_after = _entry_info(path.name, directory_fd)
+        opened_after = os.fstat(fd)
+        try:
+            _assert_marker_inode(
+                opened_after, links=2, label="opened marker after publication",
+                authoritative=authoritative)
+            _assert_marker_inode(
+                temp_after, links=2, label="temporary marker after publication",
+                authoritative=authoritative)
+            _assert_marker_inode(
+                final_after, links=2, label="published marker",
+                authoritative=authoritative)
+        except BaseException:
+            same_wrong_source = (
+                (temp_after.st_dev, temp_after.st_ino) == (final_after.st_dev, final_after.st_ino)
+                and (final_after.st_dev, final_after.st_ino) !=
+                    (authoritative.st_dev, authoritative.st_ino)
+            )
+            if same_wrong_source and _unlink_if_identity(path.name, directory_fd, final_after):
+                os.fsync(directory_fd)
+            raise
+
         os.fsync(directory_fd)
-        os.unlink(temporary, dir_fd=directory_fd)
-        temporary_exists = False
+
+        # Identity-check before cleanup so a substituted temp name is never
+        # unlinked. On mismatch both the authoritative final and diagnostic temp
+        # entry are retained and publication fails closed.
+        temp_before_unlink = _entry_info(temporary, directory_fd)
+        _assert_marker_inode(
+            temp_before_unlink, links=2, label="temporary marker before cleanup",
+            authoritative=authoritative)
+        if not _unlink_if_identity(temporary, directory_fd, authoritative):
+            raise AssertionError("temporary marker was replaced before cleanup")
         os.fsync(directory_fd)
+
+        final = _entry_info(path.name, directory_fd)
+        opened_final = os.fstat(fd)
+        _assert_marker_inode(
+            opened_final, links=1, label="opened final marker", authoritative=authoritative)
+        _assert_marker_inode(
+            final, links=1, label="final marker", authoritative=authoritative)
     finally:
         if fd >= 0:
             os.close(fd)
-        if temporary_exists:
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-            else:
-                os.fsync(directory_fd)
+        # Before publication, clean up only the authoritative temp inode. After
+        # publication starts, retain evidence on every failure; the successful
+        # path has already removed the temp link.
+        if (not publication_started and authoritative is not None
+                and _unlink_if_identity(temporary, directory_fd, authoritative)):
+            os.fsync(directory_fd)
         os.close(directory_fd)
 
 
