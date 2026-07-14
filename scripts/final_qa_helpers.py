@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import html.parser
 import json
 import os
@@ -214,94 +215,87 @@ def _entry_info(name: str, directory_fd: int) -> os.stat_result:
     return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
 
 
-def _unlink_if_identity(name: str, directory_fd: int, expected: os.stat_result) -> bool:
-    """Unlink only when the directory entry still names the expected inode."""
+_AT_EMPTY_PATH = 0x1000
+_AT_SYMLINK_FOLLOW = 0x400
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_LINKAT = _LIBC.linkat
+_LINKAT.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                    ctypes.c_int)
+_LINKAT.restype = ctypes.c_int
+
+
+def _link_fd(fd: int, directory_fd: int, name: str) -> None:
+    """Atomically give an anonymous inode a name without replacing an entry."""
+    encoded = os.fsencode(name)
+    if _LINKAT(fd, b"", directory_fd, encoded, _AT_EMPTY_PATH) == 0:
+        return
+    error = ctypes.get_errno()
+    if error != 2:
+        raise OSError(error, os.strerror(error), name)
+
+    # Unprivileged Linux denies AT_EMPTY_PATH even for an inode opened by this
+    # process. Pin procfs' fd directory, prove its magic link still resolves to
+    # our open inode, then use Linux's documented O_TMPFILE publication path.
+    # The source is descriptor-scoped; no attacker-controlled pathname is used.
+    proc_fd = -1
     try:
-        current = _entry_info(name, directory_fd)
-    except FileNotFoundError:
-        return False
-    if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
-        return False
-    os.unlink(name, dir_fd=directory_fd)
-    return True
+        proc_fd = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY |
+                          os.O_NOFOLLOW | os.O_CLOEXEC)
+        source = os.fsencode(str(fd))
+        proc_info = os.stat(str(fd), dir_fd=proc_fd)
+        opened = os.fstat(fd)
+        if (proc_info.st_dev, proc_info.st_ino) != (opened.st_dev, opened.st_ino):
+            raise RuntimeError("procfs fd identity mismatch during marker publication")
+        if _LINKAT(proc_fd, source, directory_fd, encoded, _AT_SYMLINK_FOLLOW) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), name)
+    finally:
+        if proc_fd >= 0:
+            os.close(proc_fd)
 
 
 def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
                              *, evidence_root: Path) -> None:
-    """Durably publish a marker without replacing or trusting pathname races."""
+    """Durably publish an anonymous marker inode without pathname cleanup."""
     path, directory_fd = _validated_marker(path, evidence_root, must_exist=False)
     payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
-    temporary = f".{path.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}"
     fd = -1
-    authoritative: os.stat_result | None = None
-    publication_started = False
     try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
-                     os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
-        # Creation mode is filtered by umask. Correct it on the opened inode,
-        # before any evidence is written, and retain this descriptor as the
-        # authority until publication and all pathname checks have completed.
+        if not hasattr(os, "O_TMPFILE"):
+            raise RuntimeError("anonymous O_TMPFILE marker creation unavailable")
+        try:
+            fd = os.open(".", os.O_TMPFILE | os.O_RDWR | os.O_CLOEXEC, 0o600,
+                         dir_fd=directory_fd)
+        except OSError as error:
+            raise RuntimeError(
+                f"anonymous O_TMPFILE marker creation unavailable: {error}") from error
+
         os.fchmod(fd, 0o600)
         authoritative = os.fstat(fd)
-        _assert_marker_inode(authoritative, links=1, label="opened temporary marker")
+        _assert_marker_inode(authoritative, links=0, label="opened anonymous marker")
         with os.fdopen(os.dup(fd), "w", encoding="utf-8") as stream:
             json.dump(payload, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
 
-        before_link = _entry_info(temporary, directory_fd)
+        prepared = os.fstat(fd)
         _assert_marker_inode(
-            before_link, links=1, label="temporary marker before publication",
-            authoritative=authoritative)
+            prepared, links=0, label="prepared anonymous marker", authoritative=authoritative)
+        _link_fd(fd, directory_fd, path.name)
 
-        os.link(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
-                follow_symlinks=False)
-        publication_started = True
-
-        # A same-uid actor could replace the named source between the check and
-        # link(2). A successful link means this invocation created the absent
-        # destination. If both names prove that the wrong source was linked,
-        # remove only that newly-created destination and retain the substituted
-        # temp entry as a diagnostic rather than claiming success.
-        temp_after = _entry_info(temporary, directory_fd)
-        final_after = _entry_info(path.name, directory_fd)
         opened_after = os.fstat(fd)
-        try:
-            _assert_marker_inode(
-                opened_after, links=2, label="opened marker after publication",
-                authoritative=authoritative)
-            _assert_marker_inode(
-                temp_after, links=2, label="temporary marker after publication",
-                authoritative=authoritative)
-            _assert_marker_inode(
-                final_after, links=2, label="published marker",
-                authoritative=authoritative)
-        except BaseException:
-            same_wrong_source = (
-                (temp_after.st_dev, temp_after.st_ino) == (final_after.st_dev, final_after.st_ino)
-                and (final_after.st_dev, final_after.st_ino) !=
-                    (authoritative.st_dev, authoritative.st_ino)
-            )
-            if same_wrong_source and _unlink_if_identity(path.name, directory_fd, final_after):
-                os.fsync(directory_fd)
-            raise
-
-        os.fsync(directory_fd)
-
-        # Identity-check before cleanup so a substituted temp name is never
-        # unlinked. On mismatch both the authoritative final and diagnostic temp
-        # entry are retained and publication fails closed.
-        temp_before_unlink = _entry_info(temporary, directory_fd)
+        final_after = _entry_info(path.name, directory_fd)
         _assert_marker_inode(
-            temp_before_unlink, links=2, label="temporary marker before cleanup",
+            opened_after, links=1, label="opened marker after publication",
             authoritative=authoritative)
-        if not _unlink_if_identity(temporary, directory_fd, authoritative):
-            raise AssertionError("temporary marker was replaced before cleanup")
+        _assert_marker_inode(
+            final_after, links=1, label="published marker", authoritative=authoritative)
+
         os.fsync(directory_fd)
 
-        final = _entry_info(path.name, directory_fd)
         opened_final = os.fstat(fd)
+        final = _entry_info(path.name, directory_fd)
         _assert_marker_inode(
             opened_final, links=1, label="opened final marker", authoritative=authoritative)
         _assert_marker_inode(
@@ -309,12 +303,6 @@ def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: s
     finally:
         if fd >= 0:
             os.close(fd)
-        # Before publication, clean up only the authoritative temp inode. After
-        # publication starts, retain evidence on every failure; the successful
-        # path has already removed the temp link.
-        if (not publication_started and authoritative is not None
-                and _unlink_if_identity(temporary, directory_fd, authoritative)):
-            os.fsync(directory_fd)
         os.close(directory_fd)
 
 

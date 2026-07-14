@@ -316,20 +316,26 @@ def test_create_cli_refuses_existing_evidence_without_api_or_overwrite(
     assert not (tmp_path / "gh.log").exists()
 
 
+def _assert_no_named_marker_temp(root: Path, marker: Path) -> None:
+    assert list(root.glob(f".{marker.name}.tmp-*")) == []
+
+
 def test_exclusive_marker_publish_loses_race_without_overwrite(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"; raced = b"racing evidence\n"
-    real_link = helpers.os.link; published = False
-    def race_link(src, dst, **kwargs):
-        nonlocal published
-        if not published:
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=kwargs["dst_dir_fd"])
-            os.write(fd, raced); os.fsync(fd); os.close(fd); published = True
-        return real_link(src, dst, **kwargs)
-    monkeypatch.setattr(helpers.os, "link", race_link)
+    real_link_fd = helpers._link_fd
+
+    def race_link(fd, directory_fd, name):
+        raced_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                           dir_fd=directory_fd)
+        os.write(raced_fd, raced); os.fsync(raced_fd); os.close(raced_fd)
+        return real_link_fd(fd, directory_fd, name)
+
+    monkeypatch.setattr(helpers, "_link_fd", race_link)
     with pytest.raises(FileExistsError):
         helpers._create_marker_exclusive(
             marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified", evidence_root=root)
     assert marker.read_bytes() == raced
+    _assert_no_named_marker_temp(root, marker)
 
 
 def test_exclusive_marker_eexist_race_prevents_api_post_and_preserves_destination(
@@ -337,15 +343,17 @@ def test_exclusive_marker_eexist_race_prevents_api_post_and_preserves_destinatio
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"
     uncertain = marker.with_suffix(".json.uncertain"); raced = b"racing evidence\n"
-    real_link = helpers.os.link
+    real_link_fd = helpers._link_fd; raced_identity = []
 
-    def race_link(src, dst, **kwargs):
-        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-                     dir_fd=kwargs["dst_dir_fd"])
-        os.write(fd, raced); os.fsync(fd); os.close(fd)
-        return real_link(src, dst, **kwargs)
+    def race_link(fd, directory_fd, name):
+        raced_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                           dir_fd=directory_fd)
+        os.write(raced_fd, raced); os.fsync(raced_fd)
+        raced_identity.append(os.fstat(raced_fd).st_ino)
+        os.close(raced_fd)
+        return real_link_fd(fd, directory_fd, name)
 
-    monkeypatch.setattr(helpers.os, "link", race_link)
+    monkeypatch.setattr(helpers, "_link_fd", race_link)
     api = FakeRefs([None], create=AssertionError("POST must not run"))
     with pytest.raises(FileExistsError):
         helpers.create_owned_ref(
@@ -353,6 +361,8 @@ def test_exclusive_marker_eexist_race_prevents_api_post_and_preserves_destinatio
             evidence_root=root)
     assert not any(call[0] == "create" for call in api.calls)
     assert uncertain.read_bytes() == raced
+    assert uncertain.stat().st_ino == raced_identity[0]
+    _assert_no_named_marker_temp(root, uncertain)
 
 
 def test_exclusive_marker_forces_mode_0600_under_hostile_umask(tmp_path: Path) -> None:
@@ -373,42 +383,44 @@ def test_exclusive_marker_forces_mode_0600_under_hostile_umask(tmp_path: Path) -
         "repo": "o/r", "ref": "refs/heads/qa", "sha": "a" * 40,
         "state": "created-unverified",
     }
+    _assert_no_named_marker_temp(root, marker)
 
 
-@pytest.mark.parametrize("replacement", ["symlink", "regular"])
-def test_temp_substitution_before_link_fails_without_post_or_wrong_marker(
-    monkeypatch, tmp_path: Path, replacement: str
-) -> None:
-    root = tmp_path / "evidence"; marker = root / "owned.json"
-    uncertain = marker.with_suffix(".json.uncertain"); victim = tmp_path / "victim"
-    victim.write_bytes(b"victim\n"); victim.chmod(0o600)
-    real_link = helpers.os.link
+def test_anonymous_marker_link_failure_closes_fd_and_leaves_no_entry(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"; captured = []
 
-    def substitute_link(src, dst, **kwargs):
-        os.unlink(src, dir_fd=kwargs["src_dir_fd"])
-        if replacement == "symlink":
-            os.symlink(victim, src, dir_fd=kwargs["src_dir_fd"])
-        else:
-            fd = os.open(src, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-                         dir_fd=kwargs["src_dir_fd"])
-            os.write(fd, b"substituted\n"); os.close(fd)
-        return real_link(src, dst, **kwargs)
+    def fail_link(fd, _directory_fd, _name):
+        captured.append(fd)
+        raise OSError(95, "linkat unavailable")
 
-    monkeypatch.setattr(helpers.os, "link", substitute_link)
-    api = FakeRefs([None], create=AssertionError("POST must not run"))
-    with pytest.raises(AssertionError):
-        helpers.create_owned_ref(
-            api, "refs/heads/qa", "a" * 40, repo="o/r", marker=marker,
+    monkeypatch.setattr(helpers, "_link_fd", fail_link)
+    with pytest.raises(OSError, match="linkat unavailable"):
+        helpers._create_marker_exclusive(
+            marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
             evidence_root=root)
-    assert not any(call[0] == "create" for call in api.calls)
-    assert not uncertain.exists()
-    assert victim.read_bytes() == b"victim\n"
-    diagnostics = list(root.glob(f".{uncertain.name}.tmp-*"))
-    assert len(diagnostics) == 1
-    if replacement == "symlink":
-        assert diagnostics[0].is_symlink()
-    else:
-        assert diagnostics[0].read_bytes() == b"substituted\n"
+    assert not marker.exists()
+    with pytest.raises(OSError):
+        os.fstat(captured[0])
+    _assert_no_named_marker_temp(root, marker)
+
+
+def test_anonymous_marker_open_failure_is_clear_and_fail_closed(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"
+    real_open = helpers.os.open
+
+    def reject_tmpfile(path, flags, *args, **kwargs):
+        tmpfile = getattr(os, "O_TMPFILE", 0)
+        if path == "." and tmpfile and flags & tmpfile == tmpfile and "dir_fd" in kwargs:
+            raise OSError(95, "operation not supported")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(helpers.os, "open", reject_tmpfile)
+    with pytest.raises(RuntimeError, match="anonymous O_TMPFILE marker creation unavailable"):
+        helpers._create_marker_exclusive(
+            marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
+            evidence_root=root)
+    assert not marker.exists()
+    _assert_no_named_marker_temp(root, marker)
 
 
 def test_extra_hard_link_during_publish_fails_without_post_and_retains_evidence(
@@ -416,15 +428,15 @@ def test_extra_hard_link_during_publish_fails_without_post_and_retains_evidence(
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"
     uncertain = marker.with_suffix(".json.uncertain"); extra = root / "attacker-link"
-    real_link = helpers.os.link
+    real_link_fd = helpers._link_fd
 
-    def add_link(src, dst, **kwargs):
-        result = real_link(src, dst, **kwargs)
-        real_link(src, extra.name, src_dir_fd=kwargs["src_dir_fd"],
-                  dst_dir_fd=kwargs["dst_dir_fd"], follow_symlinks=False)
+    def add_link(fd, directory_fd, name):
+        result = real_link_fd(fd, directory_fd, name)
+        os.link(name, extra.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+                follow_symlinks=False)
         return result
 
-    monkeypatch.setattr(helpers.os, "link", add_link)
+    monkeypatch.setattr(helpers, "_link_fd", add_link)
     api = FakeRefs([None], create=AssertionError("POST must not run"))
     with pytest.raises(AssertionError, match="link count"):
         helpers.create_owned_ref(
@@ -433,7 +445,8 @@ def test_extra_hard_link_during_publish_fails_without_post_and_retains_evidence(
     assert not any(call[0] == "create" for call in api.calls)
     assert uncertain.exists() and extra.exists()
     assert os.lstat(uncertain).st_ino == os.lstat(extra).st_ino
-    assert os.lstat(uncertain).st_nlink == 3
+    assert os.lstat(uncertain).st_nlink == 2
+    _assert_no_named_marker_temp(root, uncertain)
 
 
 def test_final_substitution_after_link_fails_without_post_or_touching_attacker_entry(
@@ -441,17 +454,17 @@ def test_final_substitution_after_link_fails_without_post_or_touching_attacker_e
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"
     uncertain = marker.with_suffix(".json.uncertain"); attacker = b"attacker destination\n"
-    real_link = helpers.os.link
+    real_link_fd = helpers._link_fd
 
-    def substitute_final(src, dst, **kwargs):
-        result = real_link(src, dst, **kwargs)
-        os.unlink(dst, dir_fd=kwargs["dst_dir_fd"])
-        fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-                     dir_fd=kwargs["dst_dir_fd"])
-        os.write(fd, attacker); os.close(fd)
+    def substitute_final(fd, directory_fd, name):
+        result = real_link_fd(fd, directory_fd, name)
+        os.unlink(name, dir_fd=directory_fd)
+        attacker_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                              dir_fd=directory_fd)
+        os.write(attacker_fd, attacker); os.close(attacker_fd)
         return result
 
-    monkeypatch.setattr(helpers.os, "link", substitute_final)
+    monkeypatch.setattr(helpers, "_link_fd", substitute_final)
     api = FakeRefs([None], create=AssertionError("POST must not run"))
     with pytest.raises(AssertionError):
         helpers.create_owned_ref(
@@ -459,61 +472,51 @@ def test_final_substitution_after_link_fails_without_post_or_touching_attacker_e
             evidence_root=root)
     assert not any(call[0] == "create" for call in api.calls)
     assert uncertain.read_bytes() == attacker
-    diagnostics = list(root.glob(f".{uncertain.name}.tmp-*"))
-    assert len(diagnostics) == 1
-    assert json.loads(diagnostics[0].read_text())["state"] == "created-unverified"
+    _assert_no_named_marker_temp(root, uncertain)
 
 
-def test_temp_substitution_before_cleanup_is_not_unlinked_and_fails_closed(
-    monkeypatch, tmp_path: Path
-) -> None:
-    root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"
-    real_unlink_if_identity = helpers._unlink_if_identity
-    substituted = b"temp diagnostic\n"; raced = False
-
-    def substitute_before_unlink(name, directory_fd, expected):
-        nonlocal raced
-        if not raced and name.startswith(f".{marker.name}.tmp-") and expected.st_nlink == 1:
-            os.unlink(name, dir_fd=directory_fd)
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-                         dir_fd=directory_fd)
-            os.write(fd, substituted); os.close(fd); raced = True
-        return real_unlink_if_identity(name, directory_fd, expected)
-
-    monkeypatch.setattr(helpers, "_unlink_if_identity", substitute_before_unlink)
-    with pytest.raises(AssertionError, match="replaced before cleanup"):
-        helpers._create_marker_exclusive(
-            marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
-            evidence_root=root)
-    assert json.loads(marker.read_text())["state"] == "created-unverified"
-    diagnostics = list(root.glob(f".{marker.name}.tmp-*"))
-    assert len(diagnostics) == 1 and diagnostics[0].read_bytes() == substituted
-
-
-def test_final_substitution_during_last_verification_is_retained_and_rejected(
+def test_final_substitution_between_verifications_is_retained_and_never_unlinked(
     monkeypatch, tmp_path: Path
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"
     attacker = b"late attacker destination\n"; real_entry_info = helpers._entry_info
-    final_reads = 0
+    final_reads = 0; unlinks_after_substitution = []
+    real_unlink = helpers.os.unlink
 
-    def substitute_on_final_verification(name, directory_fd):
+    def substitute_on_second_observation(name, directory_fd):
         nonlocal final_reads
         if name == marker.name:
             final_reads += 1
             if final_reads == 2:
-                os.unlink(name, dir_fd=directory_fd)
+                real_unlink(name, dir_fd=directory_fd)
                 fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
                              dir_fd=directory_fd)
                 os.write(fd, attacker); os.close(fd)
         return real_entry_info(name, directory_fd)
 
-    monkeypatch.setattr(helpers, "_entry_info", substitute_on_final_verification)
+    def record_unlink(*args, **kwargs):
+        unlinks_after_substitution.append((args, kwargs))
+        return real_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(helpers, "_entry_info", substitute_on_second_observation)
+    monkeypatch.setattr(helpers.os, "unlink", record_unlink)
     with pytest.raises(AssertionError, match="link count|inode identity"):
         helpers._create_marker_exclusive(
             marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
             evidence_root=root)
     assert marker.read_bytes() == attacker
+    assert unlinks_after_substitution == []
+    _assert_no_named_marker_temp(root, marker)
+
+
+def test_exclusive_publication_never_calls_pathname_unlink(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"
+    monkeypatch.setattr(helpers.os, "unlink", lambda *a, **kw: pytest.fail("pathname unlink used"))
+    helpers._create_marker_exclusive(
+        marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified",
+        evidence_root=root)
+    assert marker.exists()
+    _assert_no_named_marker_temp(root, marker)
 
 
 @pytest.mark.parametrize("responses", [
@@ -682,8 +685,7 @@ def test_marker_write_and_unlink_fsync_file_and_parent(monkeypatch, tmp_path: Pa
     assert events[:3] == [("fsync", False), ("replace", False), ("fsync", True)]
     marker.unlink(); events.clear()
     helpers._create_marker_exclusive(marker, "o/r", "refs/heads/qa", "a"*40, "owned", evidence_root=root)
-    assert events == [("fsync", False), ("link", False), ("fsync", True),
-                      ("unlink", False), ("fsync", True)]
+    assert events == [("fsync", False), ("fsync", True)]
     api = FakeRefs([{"ref":"refs/heads/qa","object":{"type":"commit","sha":"a"*40}}, None])
     helpers.cleanup_ref_markers(marker, marker.with_suffix(".json.uncertain"), evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, branch_created=True, api=api)
     assert events[-2:] == [("unlink", False), ("fsync", True)]
