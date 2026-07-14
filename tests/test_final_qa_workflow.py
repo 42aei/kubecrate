@@ -28,10 +28,9 @@ def test_exact_candidate_is_published_then_remote_sha_and_tree_are_verified() ->
     ordered(
         text,
         'CANDIDATE_SHA="$(git rev-parse "${CANDIDATE}^{commit}")"',
-        'git push "${REMOTE}" "${CANDIDATE_SHA}:refs/heads/${QA_BRANCH}"',
-        'REMOTE_SHA="$(git ls-remote',
-        'REMOTE_TREE="$(git rev-parse "${REMOTE_SHA}^{tree}")"',
-        'test "${REMOTE_TREE}" = "${CANDIDATE_TREE}"',
+        'test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"',
+        'test "$(git write-tree)" = "${CANDIDATE_TREE}"',
+        'final_qa_helpers.py create-ref',
         'kind create cluster --name "${CLUSTER}"',
     )
 
@@ -56,14 +55,13 @@ def test_preexisting_identity_checks_are_fail_closed_and_precede_mutation() -> N
     text = source()
     ordered(
         text,
-        'if test "$(remote_branch_state)" != absent',
         'if test "$(cluster_state)" != absent',
-        'git push "${REMOTE}" "${CANDIDATE_SHA}:refs/heads/${QA_BRANCH}"',
+        'final_qa_helpers.py create-ref',
         'kind create cluster --name "${CLUSTER}"',
     )
-    assert "QA branch exists or absence could not be proved" in text
+
     assert "QA cluster exists or absence could not be proved" in text
-    assert "case \"${state_rc}\" in 0) printf 'present" in text
+    assert "GitHub create-ref API is atomic" in text
 
 
 def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
@@ -75,8 +73,7 @@ def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
         'flux --context "${CONTEXT}" reconcile kustomization flux-system',
         'flux --context "${CONTEXT}" suspend kustomization',
         'kubectl --context "${CONTEXT}" delete secret',
-        'flux --context "${CONTEXT}" resume kustomization',
-        'flux --context "${CONTEXT}" reconcile kustomization external-secrets-operator-smoke',
+        'final_qa_helpers.py restore --context "${CONTEXT}"',
     )
     for fragment in mutation_fragments:
         position = text.index(fragment)
@@ -88,7 +85,7 @@ def test_created_deploy_key_is_validated_before_readback_and_cleanup_is_fail_clo
     text = source()
     ordered(text, 'KEY_JSON="$(gh api -X POST', 'created key id must be an integer', 'KEY_READ="$(gh api')
     assert 'test "$(key_state)" = absent || cleanup_failed=true' in text
-    assert 'test "$(remote_branch_state)" = absent || cleanup_failed=true' in text
+    assert 'final_qa_helpers.py delete-ref' in text
     assert 'test "$(cluster_state)" = absent || cleanup_failed=true' in text
 
 
@@ -100,15 +97,14 @@ def test_green_red_green_captures_json_and_real_browser_ui() -> None:
         'capture_green "baseline"',
         'controlled_red',
         'capture_red',
-        'restore_source_secret',
-        'capture_green "restored"',
+        'restore_if_needed',
     )
     assert "status.json" in text
     assert "--headless" in text
     assert "EXPECTED_CHECKS=7" in text
     assert "restore_if_needed" in text
     assert text.index("capture_red", text.index('capture_green "baseline"')) < text.index(
-        "restore_source_secret", text.index('capture_green "baseline"')
+        "restore_if_needed", text.index('capture_green "baseline"')
     )
 
 
@@ -117,7 +113,7 @@ def test_cleanup_trap_verifies_exact_key_branch_and_cluster_absence() -> None:
     assert "trap cleanup EXIT INT TERM" in text
     for token in (
         'repos/${REPO}/keys/${KEY_ID}',
-        'git push "${REMOTE}" --delete "${QA_BRANCH}"',
+        'final_qa_helpers.py delete-ref',
         'kind delete cluster --name "${CLUSTER}"',
         "cleanup verification failed",
     ):

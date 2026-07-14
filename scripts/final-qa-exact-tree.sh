@@ -17,7 +17,8 @@ KEY_ID=""
 PORT_FORWARD_PID=""
 BRANCH_CREATED=false
 CLUSTER_CREATED=false
-INITIAL_TREE="$(git write-tree)"
+INITIAL_TREE=""
+RED_STATE=none
 
 fail() { printf 'final-qa: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
@@ -27,13 +28,6 @@ assert_context() {
 }
 protected_branch() {
   case "$1" in main|master|default|refs/heads/main|refs/heads/master|refs/heads/default) return 0;; *) return 1;; esac
-}
-remote_branch_state() {
-  set +e
-  git ls-remote --exit-code --heads "${REMOTE}" "refs/heads/${QA_BRANCH}" >/dev/null 2>&1
-  state_rc=$?
-  set -e
-  case "${state_rc}" in 0) printf 'present\n';; 2) printf 'absent\n';; *) printf 'unknown\n';; esac
 }
 cluster_state() {
   set +e
@@ -61,8 +55,10 @@ cleanup() {
   rc=$?
   trap - EXIT INT TERM
   cleanup_failed=false
+  if test "${RED_STATE}" != none && ${CLUSTER_CREATED}; then
+    restore_if_needed || cleanup_failed=true
+  fi
   test -z "${PORT_FORWARD_PID}" || kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
-  if declare -F restore_if_needed >/dev/null 2>&1; then restore_if_needed; fi
   if test -n "${KEY_ID}"; then
     key_before="$(key_state)"
     if test "${key_before}" = present; then
@@ -73,13 +69,8 @@ cleanup() {
     test "$(key_state)" = absent || cleanup_failed=true
   fi
   if ${BRANCH_CREATED}; then
-    branch_before="$(remote_branch_state)"
-    if test "${branch_before}" = present; then
-      git push "${REMOTE}" --delete "${QA_BRANCH}" >/dev/null 2>&1 || cleanup_failed=true
-    elif test "${branch_before}" = unknown; then
-      cleanup_failed=true
-    fi
-    test "$(remote_branch_state)" = absent || cleanup_failed=true
+    python3 scripts/final_qa_helpers.py delete-ref --repo "${REPO}" \
+      --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}" >/dev/null 2>&1 || cleanup_failed=true
   fi
   if ${CLUSTER_CREATED}; then
     cluster_before="$(cluster_state)"
@@ -101,28 +92,30 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for cmd in git gh kind kubectl kustomize helm flux python3 ssh-keygen curl base64; do require "${cmd}"; done
+for cmd in git python3; do require "${cmd}"; done
+CANDIDATE_SHA="$(git rev-parse "${CANDIDATE}^{commit}")"
+CANDIDATE_TREE="$(git rev-parse "${CANDIDATE_SHA}^{tree}")"
+test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}" || fail "local HEAD must equal candidate ${CANDIDATE_SHA}"
+test "$(git write-tree)" = "${CANDIDATE_TREE}" || fail "local index tree must equal candidate tree"
+test -z "$(git status --porcelain=v1 --untracked-files=all)" || fail "tracked worktree/index must be clean and untracked files are forbidden"
+INITIAL_TREE="${CANDIDATE_TREE}"
+if test "${KUBECRATE_QA_IDENTITY_GATE_ONLY:-0}" = 1; then
+  printf 'final-qa: identity gate passed candidate=%s tree=%s\n' "${CANDIDATE_SHA}" "${CANDIDATE_TREE}"
+  trap - EXIT INT TERM
+  exit 0
+fi
+for cmd in gh kind kubectl kustomize helm flux ssh-keygen curl base64; do require "${cmd}"; done
 protected_branch "${QA_BRANCH}" && fail "refusing protected QA branch ${QA_BRANCH}"
 case "${CLUSTER}" in kind-dev-misc-local|kubecrate-fix-eso) fail "refusing shared cluster ${CLUSTER}";; esac
 case "${QA_BRANCH}" in kubecrate/cratecheck-restack-eso) fail "refusing reviewed/source branch mutation";; esac
-git diff --quiet && git diff --cached --quiet || fail "worktree/index must be clean"
-
-CANDIDATE_SHA="$(git rev-parse "${CANDIDATE}^{commit}")"
-CANDIDATE_TREE="$(git rev-parse "${CANDIDATE_SHA}^{tree}")"
-if test "$(remote_branch_state)" != absent; then
-  fail "QA branch exists or absence could not be proved: ${QA_BRANCH}"
-fi
 if test "$(cluster_state)" != absent; then
   fail "QA cluster exists or absence could not be proved: ${CLUSTER}"
 fi
-# A direct commit-to-ref push means the QA branch contains the exact candidate
-# commit/tree. The runtime values below select that branch without altering it.
-git push "${REMOTE}" "${CANDIDATE_SHA}:refs/heads/${QA_BRANCH}"
+# The GitHub create-ref API is atomic: an existing/racing ref returns 422 and
+# cannot be mistaken for ownership by this run.
+python3 scripts/final_qa_helpers.py create-ref --repo "${REPO}" \
+  --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}"
 BRANCH_CREATED=true
-REMOTE_SHA="$(git ls-remote --heads "${REMOTE}" "refs/heads/${QA_BRANCH}" | cut -f1)"
-test "${REMOTE_SHA}" = "${CANDIDATE_SHA}" || fail "remote QA SHA mismatch"
-REMOTE_TREE="$(git rev-parse "${REMOTE_SHA}^{tree}")"
-test "${REMOTE_TREE}" = "${CANDIDATE_TREE}" || fail "remote QA tree mismatch"
 
 mkdir -p "${EVIDENCE}"
 cat >"${QA_VALUES}" <<EOF
@@ -216,37 +209,22 @@ browser_dump() {
 }
 validate_status() {
   expected="$1"; file="$2"
-  python3 - "${expected}" "${EXPECTED_CHECKS}" "${file}" <<'PY'
-import json, sys
-expected, count, path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-data=json.load(open(path)); checks=data.get("checks"); summary=data.get("summary")
-assert isinstance(checks, list) and len(checks)==count, f"expected {count} checks"
-assert isinstance(summary, dict) and type(summary.get("total")) is int and summary["total"] == count
-assert all(isinstance(c, dict) and isinstance(c.get("id"), str) and isinstance(c.get("status"), str) for c in checks)
-def green(c):
-    return c["status"] == "green"
-greens=sum(green(c) for c in checks)
-if expected == "green":
-    assert data.get("status") == "green"
-    assert summary.get("green") == count and greens == count, f"only {greens}/{count} green"
-else:
-    assert data.get("status") in {"red", "yellow", "unknown"}
-    relevant=[c for c in checks if str(c.get("id", "")).startswith("eso-")]
-    assert relevant and any(not green(c) for c in relevant), "ESO checks did not become non-green"
-PY
+  python3 scripts/final_qa_helpers.py validate-json --phase "${expected}" "${file}"
 }
 capture_green() {
   phase="$1"; assert_context
   curl --fail --silent --show-error http://127.0.0.1:18080/status.json >"${EVIDENCE}/${phase}-status.json"
   validate_status green "${EVIDENCE}/${phase}-status.json"
   browser_dump "${EVIDENCE}/${phase}-status.html"
-  grep -Eq '7[[:space:]]*/[[:space:]]*7|7 of 7' "${EVIDENCE}/${phase}-status.html" || fail "${phase} UI does not show 7/7"
+  python3 scripts/final_qa_helpers.py validate-html --phase green "${EVIDENCE}/${phase}-status.html"
 }
 controlled_red() {
   assert_context
   flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smoke -n flux-system
+  RED_STATE=suspended
   assert_context
   kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
+  RED_STATE=source_deleted
   assert_context
   kubectl --context "${CONTEXT}" wait --for=condition=Ready=false externalsecret/eso-smoke-projection -n kubecrate-system --timeout=180s || true
 }
@@ -255,33 +233,24 @@ capture_red() {
   curl --fail --silent --show-error http://127.0.0.1:18080/status.json >"${EVIDENCE}/red-status.json"
   validate_status red "${EVIDENCE}/red-status.json"
   browser_dump "${EVIDENCE}/red-status.html"
+  python3 scripts/final_qa_helpers.py validate-html --phase red "${EVIDENCE}/red-status.html"
 }
 restore_source_secret() {
   assert_context
-  flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke -n flux-system
-  assert_context
-  flux --context "${CONTEXT}" reconcile kustomization external-secrets-operator-smoke -n flux-system --timeout=180s
-  assert_context
-  kubectl --context "${CONTEXT}" wait --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True externalsecret/eso-smoke-projection -n kubecrate-system --timeout=180s
+  python3 scripts/final_qa_helpers.py restore --context "${CONTEXT}"
 }
-RED_ACTIVE=false
 restore_if_needed() {
-  if ${RED_ACTIVE} && ${CLUSTER_CREATED}; then
-    if test "$(kubectl config current-context 2>/dev/null || true)" = "${CONTEXT}"; then
-      flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke -n flux-system >/dev/null 2>&1 || true
-      flux --context "${CONTEXT}" reconcile kustomization external-secrets-operator-smoke -n flux-system --timeout=180s >/dev/null 2>&1 || true
-    fi
-  fi
+  test "$(kubectl config current-context 2>/dev/null)" = "${CONTEXT}" || return 1
+  restore_source_secret || return 1
+  sleep "${KUBECRATE_QA_OBSERVE_SECONDS:-35}"
+  capture_green restored || return 1
+  RED_STATE=none
 }
 
 capture_green "baseline"
-RED_ACTIVE=true
 controlled_red
 # Let CrateCheck's configured interval observe the reversible failure.
-sleep 35
+sleep "${KUBECRATE_QA_OBSERVE_SECONDS:-35}"
 capture_red
-restore_source_secret
-RED_ACTIVE=false
-sleep 35
-capture_green "restored"
+restore_if_needed
 printf 'final-qa: PASS candidate=%s tree=%s branch=%s evidence=%s\n' "${CANDIDATE_SHA}" "${CANDIDATE_TREE}" "${QA_BRANCH}" "${EVIDENCE}"
