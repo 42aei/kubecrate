@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -154,10 +155,11 @@ def _validated_marker(path: Path, evidence_root: Path, *, must_exist: bool) -> t
         raise
 
 
-def _open_marker(path: Path, evidence_root: Path) -> tuple[Path, int, int, os.stat_result]:
+def _open_marker(path: Path, evidence_root: Path, *, writable: bool = False) -> tuple[Path, int, int, os.stat_result]:
     marker, directory_fd = _validated_marker(path, evidence_root, must_exist=True)
     try:
-        fd = os.open(marker.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+        access = os.O_RDWR if writable else os.O_RDONLY
+        fd = os.open(marker.name, access | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
         info = os.fstat(fd)
         assert stat.S_ISREG(info.st_mode), "marker must be a regular file"
         assert info.st_uid == os.getuid(), "marker must be owned by current user"
@@ -374,6 +376,34 @@ def _create_json_marker_exclusive(path: Path, payload: dict[str, Any], *, eviden
     finally:
         if fd >= 0:
             os.close(fd)
+        os.close(directory_fd)
+
+
+def _transition_json_marker_state(path: Path, *, evidence_root: Path,
+                                  expected: dict[str, Any], new_state: str) -> None:
+    """Durably update the pinned marker inode; partial writes remain fail-closed."""
+    marker, directory_fd, fd, opened = _open_marker(path, evidence_root, writable=True)
+    blocked = {signal.SIGINT, signal.SIGTERM}
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+    try:
+        with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+            current = json.load(stream)
+        assert current == expected, "deploy-key transition marker identity mismatch"
+        _assert_entry_identity(marker.name, directory_fd, opened)
+        replacement = {**expected, "state": new_state}
+        encoded = (json.dumps(replacement, sort_keys=True) + "\n").encode()
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        written = 0
+        while written < len(encoded):
+            written += os.write(fd, encoded[written:])
+        os.fsync(fd)
+        _assert_entry_identity(marker.name, directory_fd, opened)
+        os.fsync(directory_fd)
+        _assert_entry_identity(marker.name, directory_fd, opened)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        os.close(fd)
         os.close(directory_fd)
 
 
@@ -646,22 +676,28 @@ def _public_key_fingerprint(key: str) -> str:
     fields = normalized.split()
     assert len(fields) >= 2, "public key algorithm and blob are required"
     algorithm = fields[0]
-    supported = {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256",
-                 "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"}
-    assert algorithm in supported, "unsupported public key algorithm"
+    assert algorithm == "ssh-ed25519", "only ssh-ed25519 public keys are supported"
     try:
         blob = base64.b64decode(fields[1], validate=True)
     except ValueError as exc:
         raise AssertionError("public key blob is malformed base64") from exc
-    assert len(blob) >= 4, "public key blob is truncated"
-    algorithm_length = int.from_bytes(blob[:4], "big")
-    assert 0 < algorithm_length <= len(blob) - 4, "public key blob algorithm is malformed"
+
+    def ssh_string(offset: int, label: str) -> tuple[bytes, int]:
+        assert len(blob) - offset >= 4, f"public key blob {label} length is truncated"
+        length = int.from_bytes(blob[offset:offset + 4], "big")
+        offset += 4
+        assert length <= len(blob) - offset, f"public key blob {label} is truncated"
+        return blob[offset:offset + length], offset + length
+
+    embedded_raw, offset = ssh_string(0, "algorithm")
     try:
-        embedded = blob[4:4 + algorithm_length].decode("ascii")
+        embedded = embedded_raw.decode("ascii")
     except UnicodeDecodeError as exc:
         raise AssertionError("public key blob algorithm is malformed") from exc
     assert embedded == algorithm, "public key algorithm does not match decoded blob"
-    assert len(blob) > 4 + algorithm_length, "public key blob has no key material"
+    key_material, offset = ssh_string(offset, "key")
+    assert len(key_material) == 32, "ssh-ed25519 public key must be exactly 32 bytes"
+    assert offset == len(blob), "public key blob has trailing bytes"
     digest = base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
     return f"SHA256:{digest}"
 
@@ -781,7 +817,14 @@ def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: 
         "deploy-key title or fingerprint already exists"
     pending = {"state": "created-unverified", "repo": repo, "title": title, "fingerprint": fingerprint}
     _create_json_marker_exclusive(uncertain, pending, evidence_root=evidence_root)
-    created = api.create(title, public_key.strip())
+    try:
+        created = api.create(title, public_key.strip())
+    except APIError as exc:
+        if exc.status == 422:
+            _transition_json_marker_state(
+                uncertain, evidence_root=evidence_root, expected=pending,
+                new_state="create-rejected")
+        raise
     key_id = _assert_deploy_key(created, title, fingerprint)
     _assert_deploy_key(api.get(key_id), title, fingerprint, key_id)
     _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
@@ -869,13 +912,22 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
         with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
             initial = json.load(stream)
         assert isinstance(initial, dict) and isinstance(initial.get("fingerprint"), str)
+        state = initial.get("state")
+        assert state in {"created-unverified", "create-rejected"}, "deploy-key marker state mismatch"
         _, directory_fd2, fd2, info2 = _load_key_marker(
-            uncertain, evidence_root, "created-unverified", repo, title, initial["fingerprint"])
+            uncertain, evidence_root, state, repo, title, initial["fingerprint"])
         fingerprint = initial["fingerprint"]
         os.close(fd); os.close(directory_fd)
         directory_fd, fd, info = directory_fd2, fd2, info2
         try:
             normalized = _validate_key_list(api.list())
+            if state == "create-rejected":
+                assert not any(item_title == title or item_fingerprint == fingerprint
+                               for _, _, item_title, item_fingerprint in normalized), \
+                    "rejected deploy-key identity exists; marker retained without deletion"
+                _assert_entry_identity(uncertain.name, directory_fd, info)
+                _durable_unlink(uncertain.name, directory_fd)
+                return
             matches = [(item, key_id) for item, key_id, item_title, item_fingerprint in normalized
                        if item_title == title and item_fingerprint == fingerprint]
             assert sum(item_title == title for _, _, item_title, _ in normalized) <= 1, \

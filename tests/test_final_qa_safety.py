@@ -12,6 +12,7 @@ import stat
 import subprocess
 import shutil
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -187,6 +188,32 @@ def test_public_key_fingerprint_normalizes_comment_and_spacing_and_rejects_bad_k
             helpers._public_key_fingerprint(bad)
 
 
+def test_public_key_fingerprint_strictly_parses_ed25519_ssh_blob() -> None:
+    algorithm = b"ssh-ed25519"
+    def line(blob: bytes, outer: str = "ssh-ed25519") -> str:
+        return f"{outer} {base64.b64encode(blob).decode()} comment with spaces"
+    ssh_string = lambda value: len(value).to_bytes(4, "big") + value
+    valid = ssh_string(algorithm) + ssh_string(b"k" * 32)
+    assert helpers._public_key_fingerprint(line(valid)) == helpers._public_key_fingerprint(
+        "  " + line(valid, "ssh-ed25519") + "  ")
+    malformed = (
+        b"", b"\0\0\0", b"\0\0\0\x0cssh-ed2551",  # truncated length/algorithm
+        ssh_string(algorithm),
+        ssh_string(algorithm) + ssh_string(b"k" * 31),
+        ssh_string(algorithm) + ssh_string(b"k" * 33),
+        valid + b"trailing",
+        ssh_string(b"ssh-rsa") + ssh_string(b"k" * 32),
+        (999).to_bytes(4, "big") + algorithm + ssh_string(b"k" * 32),
+    )
+    for blob in malformed:
+        with pytest.raises(AssertionError):
+            helpers._public_key_fingerprint(line(blob))
+    with pytest.raises(AssertionError):
+        helpers._public_key_fingerprint("ssh-rsa " + line(valid).split()[1])
+    with pytest.raises(AssertionError):
+        helpers._public_key_fingerprint("ssh-ed25519 not-base64!")
+
+
 def test_create_requires_post_get_and_complete_list_exact_key_proof(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
     api = FakeKeys(listed=[[], [obj]], created=obj, readback=obj)
@@ -232,6 +259,80 @@ def test_github_deploy_key_list_paginates_until_short_page_and_fails_at_boundary
     assert calls[-1].endswith("page=2")
 
 
+def test_github_deploy_key_list_complete_pagination_edges(monkeypatch) -> None:
+    full = [deploy_key(i + 1, f"key-{i}", public_key((i % 250) + 1)) for i in range(100)]
+    api = helpers.GitHubDeployKeysAPI("o/r")
+
+    responses = [(200, full), (500, {"message": "boom"})]
+    monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
+    with pytest.raises(helpers.APIError):
+        api.list()
+
+    responses = [(200, full), (200, [])]
+    monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
+    assert len(api.list()) == 100 and not responses
+
+    api.MAX_LIST_PAGES = 2
+    responses = [(200, full), (200, full)]
+    monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
+    with pytest.raises(helpers.APIError, match="safety bound"):
+        api.list()
+
+
+def test_duplicate_identity_split_across_pages_blocks_cleanup_and_retains_marker(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); exact = deploy_key(key=key)
+    root.mkdir(mode=0o700)
+    helpers._create_json_marker_exclusive(marker, {
+        "state": "owned", "repo": "o/r", "title": exact["title"], "key_id": 7,
+        "fingerprint": helpers._public_key_fingerprint(key)}, evidence_root=root)
+    api = helpers.GitHubDeployKeysAPI("o/r")
+    full = [exact] + [deploy_key(i + 20, f"other-{i}", public_key((i % 250) + 2)) for i in range(99)]
+    responses = [(200, exact), (200, full), (200, [deploy_key(999, "duplicate", key)])]
+    monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
+    with pytest.raises(AssertionError, match="fingerprint is not unique"):
+        helpers.cleanup_deploy_key_markers(api, repo="o/r", title=exact["title"], marker=marker, evidence_root=root)
+    assert marker.exists()
+
+
+def test_rejected_create_cleanup_never_deletes_preexisting_key_and_consumes_only_proved_absence(tmp_path: Path) -> None:
+    key = public_key(); exact = deploy_key(key=key)
+    for name, listed, consumed in (("present", [exact], False), ("absent", [], True)):
+        root = tmp_path / name; marker = root / "owned.json"
+        api = FakeKeys(listed=[[], listed], created=helpers.APIError(422, "validation failed"), readback=exact)
+        with pytest.raises(helpers.APIError):
+            helpers.create_deploy_key(api, exact["title"], key, repo="o/r", marker=marker, evidence_root=root)
+        uncertain = marker.with_suffix(".json.uncertain")
+        assert json.loads(uncertain.read_text())["state"] == "create-rejected"
+        with (pytest.raises(AssertionError) if not consumed else nullcontext()):
+            helpers.cleanup_deploy_key_markers(api, repo="o/r", title=exact["title"], marker=marker, evidence_root=root)
+        assert uncertain.exists() is not consumed
+        assert not any(call[0] == "delete" for call in api.calls)
+
+
+def test_interrupted_rejected_state_transition_is_fail_closed_without_delete(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    key = public_key(); pending = {"state": "created-unverified", "repo": "o/r",
+        "title": "kubecrate-qa-run", "fingerprint": helpers._public_key_fingerprint(key)}
+    helpers._create_json_marker_exclusive(uncertain, pending, evidence_root=root)
+    real_write = os.write; writes = 0
+    def interrupted_write(fd, data):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return real_write(fd, data[:8])
+        raise InterruptedError("simulated transition interruption")
+    monkeypatch.setattr(helpers.os, "write", interrupted_write)
+    with pytest.raises(InterruptedError):
+        helpers._transition_json_marker_state(
+            uncertain, evidence_root=root, expected=pending, new_state="create-rejected")
+    monkeypatch.setattr(helpers.os, "write", real_write)
+    api = FakeKeys(listed=[[deploy_key(key=key)]], readback=deploy_key(key=key))
+    with pytest.raises(json.JSONDecodeError):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title=pending["title"], marker=marker, evidence_root=root)
+    assert uncertain.exists() and not any(call[0] == "delete" for call in api.calls)
+
+
 def prepare_public_key(root: Path, key: str) -> None:
     private = root / "private"; private.mkdir(parents=True, mode=0o700)
     root.chmod(0o700); private.chmod(0o700)
@@ -254,6 +355,24 @@ def test_actual_deploy_key_cli_create_and_owned_cleanup_prove_exact_identity_wit
                          "--evidence-root", str(root), "--marker", str(marker))
     assert deleted.returncode == 0, deleted.stderr
     assert not marker.exists() and "-X DELETE repos/o/r/keys/7" in (tmp_path / "gh.log").read_text()
+
+
+@pytest.mark.parametrize("listed,retained", [([], False), (None, True)])
+def test_actual_deploy_key_cli_422_rejection_never_deletes(tmp_path: Path, listed, retained: bool) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
+    prepare_public_key(root, key)
+    rejected = run_helper(tmp_path, [(200, "[]"), (422, '{"message":"validation failed"}')],
+                          "create-deploy-key", "--repo", "o/r", "--title", obj["title"],
+                          "--evidence-root", str(root), "--marker", str(marker))
+    uncertain = marker.with_suffix(".json.uncertain")
+    assert rejected.returncode != 0 and json.loads(uncertain.read_text())["state"] == "create-rejected"
+    queue = [obj] if listed is None else listed
+    cleaned = run_helper(tmp_path, [(200, json.dumps(queue))], "cleanup-deploy-key-markers",
+                         "--repo", "o/r", "--title", obj["title"], "--evidence-root", str(root),
+                         "--marker", str(marker))
+    assert (cleaned.returncode != 0) is retained
+    assert uncertain.exists() is retained
+    assert "DELETE" not in (tmp_path / "gh.log").read_text()
 
 
 def test_owned_cleanup_mismatch_or_ambiguous_list_never_deletes_and_retains_marker(tmp_path: Path) -> None:
@@ -1257,6 +1376,69 @@ def test_actual_shell_ref_marker_survives_helper_signal_and_is_consumed(tmp_path
     assert barrier.exists(); os.killpg(process.pid, signal.SIGTERM); process.wait(timeout=10)
     assert process.returncode != 0 and not (evidence / "owned-ref.json").exists()
     assert "-X DELETE" in (tmp_path / "gh.log").read_text()
+
+
+def test_production_cleanup_trap_deletes_created_key_after_sync_wait_failure(tmp_path: Path) -> None:
+    repo = tmp_path / "sync-failure"; (repo / "scripts").mkdir(parents=True)
+    shutil.copy2(LIFECYCLE, repo / "scripts/final-qa-lifecycle.sh")
+    shutil.copy2(HELPER_PATH, repo / "scripts/final_qa_helpers.py")
+    key = public_key(); obj = deploy_key(key=key); encoded = base64.b64encode(key.encode()).decode()
+    runner = repo / "runner.sh"
+    runner.write_text('''#!/usr/bin/env bash
+set -Eeuo pipefail
+REPO=o/r; QA_BRANCH=kubecrate-qa/test; CANDIDATE_SHA="$CANDIDATE_SHA"; CLUSTER=kubecrate-qa-test; CONTEXT=kind-kubecrate-qa-test
+EVIDENCE="$EVIDENCE"; OWNED_REF_MARKER="$EVIDENCE/owned-ref.json"; UNCERTAIN_REF_MARKER="$OWNED_REF_MARKER.uncertain"
+OWNED_KEY_MARKER="$EVIDENCE/owned-deploy-key.json"; KEY_TITLE=kubecrate-qa-run; KEY_ID=; PORT_FORWARD_PID=
+BRANCH_CREATED=false; CLUSTER_CREATED=true; INITIAL_TREE="$(git write-tree)"; RED_STATE=none; EVIDENCE_READY=false
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+assert_context() { test "$(kubectl config current-context)" = "$CONTEXT"; }
+source scripts/final-qa-lifecycle.sh
+python3 scripts/final_qa_helpers.py prepare-evidence --evidence-root "$EVIDENCE"; EVIDENCE_READY=true
+install_cleanup_traps
+python3 scripts/final_qa_helpers.py create-ref --repo "$REPO" --ref "refs/heads/$QA_BRANCH" --sha "$CANDIDATE_SHA" --evidence-root "$EVIDENCE" --marker "$OWNED_REF_MARKER"
+BRANCH_CREATED=true
+assert_context
+kubectl --context "$CONTEXT" get secret flux-system -n flux-system -o jsonpath='{.data.identity\\.pub}' |
+  python3 scripts/final_qa_helpers.py write-public-key --evidence-root "$EVIDENCE"
+KEY_ID="$(python3 scripts/final_qa_helpers.py create-deploy-key --repo "$REPO" --title "$KEY_TITLE" --evidence-root "$EVIDENCE" --marker "$OWNED_KEY_MARKER")"
+python3 scripts/final_qa_helpers.py cleanup-private --evidence-root "$EVIDENCE"
+kubectl --context "$CONTEXT" wait --for=condition=Ready helmrelease/flux-system-sync -n flux-system --timeout=180s
+'''); runner.chmod(0o755)
+    init_repo(repo, "sync lifecycle")
+    subprocess.run(["git", "-C", repo, "add", "scripts", "runner.sh"], check=True)
+    subprocess.run(["git", "-C", repo, "commit", "--amend", "-qm", "sync lifecycle"], check=True)
+    sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
+    evidence = tmp_path / "sync-evidence"; log = tmp_path / "sync.log"; deleted = tmp_path / "cluster-deleted"
+    ref_json = ref_obj("refs/heads/kubecrate-qa/test", sha)
+    bindir = fake_gh(tmp_path, [(404, '{"message":"Not Found"}'), (201, ref_json), (200, ref_json),
+        (200, "[]"), (201, json.dumps(obj)), (200, json.dumps(obj)),
+        (200, json.dumps([obj])), (200, json.dumps(obj)), (200, json.dumps([obj])), (204, ""),
+        (404, '{"message":"Not Found"}'), (200, "[]"), (200, ref_json), (204, ""),
+        (404, '{"message":"Not Found"}')], tmp_path / "gh.log")
+    for name in ("kubectl", "kind"):
+        path = bindir / name
+        path.write_text(f'''#!/usr/bin/env bash
+echo "{name} $*" >>"$CALL_LOG"
+if [[ "{name}" == kubectl && "$*" == *"config current-context"* ]]; then echo kind-kubecrate-qa-test
+elif [[ "{name}" == kubectl && "$*" == *"get secret flux-system"* ]]; then echo "$PUBLIC_KEY_B64"
+elif [[ "{name}" == kubectl && "$*" == *"wait --for=condition=Ready helmrelease/flux-system-sync"* ]]; then exit 23
+elif [[ "{name}" == kind && "$*" == "get clusters" ]]; then test -f "$CLUSTER_DELETED" || echo kubecrate-qa-test
+elif [[ "{name}" == kind && "$*" == *"delete cluster"* ]]; then touch "$CLUSTER_DELETED"
+fi
+'''); path.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"),
+           "FAKE_GH_LOG": str(tmp_path / "gh.log"), "CALL_LOG": str(log), "PUBLIC_KEY_B64": encoded,
+           "CLUSTER_DELETED": str(deleted), "CANDIDATE_SHA": sha, "EVIDENCE": str(evidence)}
+    result = subprocess.run([runner], cwd=repo, env=env, text=True, capture_output=True)
+    gh_calls = (tmp_path / "gh.log").read_text(); local_calls = log.read_text()
+    assert result.returncode == 23, result.stderr
+    assert "-X POST repos/o/r/keys" in gh_calls and "-X DELETE repos/o/r/keys/7" in gh_calls
+    assert gh_calls.index("-X DELETE repos/o/r/keys/7") < gh_calls.index("-X DELETE repos/o/r/git/refs/heads/kubecrate-qa/test")
+    assert local_calls.index("wait --for=condition=Ready helmrelease/flux-system-sync") < local_calls.index("kind delete cluster")
+    assert not (evidence / "owned-deploy-key.json").exists()
+    assert not (evidence / "owned-deploy-key.json.uncertain").exists()
+    assert not (evidence / "owned-ref.json").exists()
+    assert not (evidence / "private").exists() and deleted.exists()
 
 
 def run_shipped_ref_cleanup(tmp_path: Path, *, branch_created: bool, owned: str = "absent",
