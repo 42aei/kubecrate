@@ -19,6 +19,7 @@ BRANCH_CREATED=false
 CLUSTER_CREATED=false
 INITIAL_TREE=""
 RED_STATE=none
+EVIDENCE_READY=false
 OWNED_REF_MARKER="${EVIDENCE}/owned-ref.json"
 UNCERTAIN_REF_MARKER="${OWNED_REF_MARKER}.uncertain"
 
@@ -48,7 +49,8 @@ if test "${KUBECRATE_QA_IDENTITY_GATE_ONLY:-0}" = 1; then
   trap - EXIT INT TERM
   exit 0
 fi
-mkdir -p "${EVIDENCE}"
+python3 scripts/final_qa_helpers.py prepare-evidence --evidence-root "${EVIDENCE}"
+EVIDENCE_READY=true
 for cmd in gh kind kubectl kustomize helm flux ssh-keygen curl base64; do require "${cmd}"; done
 protected_branch "${QA_BRANCH}" && fail "refusing protected QA branch ${QA_BRANCH}"
 case "${CLUSTER}" in kind-dev-misc-local|kubecrate-fix-eso) fail "refusing shared cluster ${CLUSTER}";; esac
@@ -133,7 +135,7 @@ assert obj.get("title") == sys.argv[2]
 for field in ("read_only", "verified", "enabled"):
     assert type(obj.get(field)) is bool and obj[field] is True, field
 ' "${KEY_ID}" "kubecrate-qa-${RUN_ID}" <<<"${KEY_READ}"
-rm -rf "${EVIDENCE}/private"
+python3 scripts/final_qa_helpers.py cleanup-private --evidence-root "${EVIDENCE}"
 
 assert_context
 flux --context "${CONTEXT}" reconcile source git flux-system -n flux-system --timeout=180s

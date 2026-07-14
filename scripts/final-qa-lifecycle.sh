@@ -42,12 +42,12 @@ cleanup() {
     fi
     test "$(key_state)" = absent || cleanup_failed=true
   fi
-  if test -f "${OWNED_REF_MARKER}"; then
+  if ${EVIDENCE_READY:-false} && test -f "${OWNED_REF_MARKER}"; then
     python3 scripts/final_qa_helpers.py delete-ref-marker \
       --repo "${REPO}" --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}" \
       --evidence-root "${EVIDENCE}" --marker "${OWNED_REF_MARKER}" >/dev/null 2>&1 || cleanup_failed=true
   fi
-  if test -f "${UNCERTAIN_REF_MARKER}"; then
+  if ${EVIDENCE_READY:-false} && test -f "${UNCERTAIN_REF_MARKER}"; then
     printf 'final-qa: unverified ref creation requires manual investigation: %s\n' "${UNCERTAIN_REF_MARKER}" >&2
     cleanup_failed=true
   fi
@@ -60,7 +60,9 @@ cleanup() {
     fi
     test "$(cluster_state)" = absent || cleanup_failed=true
   fi
-  rm -rf "${EVIDENCE}/private"
+  if ${EVIDENCE_READY:-false}; then
+    python3 scripts/final_qa_helpers.py cleanup-private --evidence-root "${EVIDENCE}" || cleanup_failed=true
+  fi
   git diff --quiet && git diff --cached --quiet || cleanup_failed=true
   test "$(git write-tree)" = "${INITIAL_TREE}" || cleanup_failed=true
   if ${cleanup_failed}; then
@@ -78,12 +80,12 @@ install_cleanup_traps() {
 
 port_forward_ready() {
   test -n "${PORT_FORWARD_PID}" && kill -0 "${PORT_FORWARD_PID}" 2>/dev/null || return 1
-  curl --fail --silent http://127.0.0.1:18080/status.json >/dev/null 2>&1
+  curl --fail --silent "${KUBECRATE_QA_STATUS_URL:-http://127.0.0.1:18080/status.json}" >/dev/null 2>&1
 }
 
 wait_port_forward() {
   scripts/wait-port-forward.sh "${PORT_FORWARD_PID}" "${EVIDENCE}/port-forward.log" \
-    http://127.0.0.1:18080/status.json "${KUBECRATE_QA_PORT_FORWARD_TIMEOUT:-20}" \
+    "${KUBECRATE_QA_STATUS_URL:-http://127.0.0.1:18080/status.json}" "${KUBECRATE_QA_PORT_FORWARD_TIMEOUT:-20}" \
     "${KUBECRATE_QA_PORT_FORWARD_POLL_INTERVAL:-0.25}" || fail "CrateCheck transport not ready; see ${EVIDENCE}/port-forward.log"
 }
 
@@ -105,7 +107,7 @@ browser_dump() {
   browser=""
   for candidate in chromium chromium-browser google-chrome; do command -v "${candidate}" >/dev/null 2>&1 && browser="${candidate}" && break; done
   test -n "${browser}" || fail "Chromium/Chrome required for browser UI evidence"
-  "${browser}" --headless --no-sandbox --disable-gpu --dump-dom http://127.0.0.1:18080/status >"${out}"
+  "${browser}" --headless --no-sandbox --disable-gpu --dump-dom "${KUBECRATE_QA_UI_URL:-http://127.0.0.1:18080/status}" >"${out}"
 }
 
 validate_status() {
@@ -115,7 +117,7 @@ validate_status() {
 
 capture_green() {
   phase="$1"; assert_context
-  curl --fail --silent --show-error http://127.0.0.1:18080/status.json >"${EVIDENCE}/${phase}-status.json"
+  curl --fail --silent --show-error "${KUBECRATE_QA_STATUS_URL:-http://127.0.0.1:18080/status.json}" >"${EVIDENCE}/${phase}-status.json"
   validate_status green "${EVIDENCE}/${phase}-status.json"
   browser_dump "${EVIDENCE}/${phase}-status.html"
   python3 scripts/final_qa_helpers.py validate-html --phase green "${EVIDENCE}/${phase}-status.html"
@@ -133,7 +135,7 @@ controlled_red() {
 
 capture_red() {
   assert_context
-  curl --fail --silent --show-error http://127.0.0.1:18080/status.json >"${EVIDENCE}/red-status.json"
+  curl --fail --silent --show-error "${KUBECRATE_QA_STATUS_URL:-http://127.0.0.1:18080/status.json}" >"${EVIDENCE}/red-status.json"
   validate_status red "${EVIDENCE}/red-status.json"
   browser_dump "${EVIDENCE}/red-status.html"
   python3 scripts/final_qa_helpers.py validate-html --phase red "${EVIDENCE}/red-status.html"

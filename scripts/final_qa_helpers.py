@@ -84,23 +84,43 @@ def _assert_ref(obj: Any, ref: str, sha: str) -> None:
 
 
 def _private_evidence_dir(root: Path) -> tuple[Path, int]:
-    """Return a no-follow directory fd for a private, caller-owned evidence root."""
-    root = Path(os.path.abspath(root))
-    current = Path(root.anchor)
-    for component in root.parts[1:]:
-        current /= component
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            current.mkdir(mode=0o700)
-            info = current.lstat()
-        assert not stat.S_ISLNK(info.st_mode), f"symlink evidence path component refused: {current}"
-        assert stat.S_ISDIR(info.st_mode), f"evidence path component is not a directory: {current}"
-    info = root.lstat()
-    assert info.st_uid == os.getuid(), "evidence directory must be owned by current user"
-    os.chmod(root, 0o700, follow_symlinks=False)
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    return root, fd
+    """Create/open a private evidence root using a descriptor-relative no-follow walk."""
+    raw = os.fspath(root)
+    assert raw, "empty evidence path refused"
+    parts = Path(raw).parts
+    assert ".." not in parts, "evidence path traversal refused"
+    absolute = os.path.isabs(raw)
+    components = list(parts[1:] if absolute else parts)
+    assert components and all(part not in {"", ".", ".."} for part in components), "invalid evidence path"
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    directory_fd = os.open("/" if absolute else ".", flags)
+    resolved = Path("/") if absolute else Path.cwd()
+    try:
+        for index, component in enumerate(components):
+            final = index == len(components) - 1
+            try:
+                child_fd = os.open(component, flags, dir_fd=directory_fd)
+                created = False
+            except FileNotFoundError:
+                os.mkdir(component, 0o700, dir_fd=directory_fd)
+                child_fd = os.open(component, flags, dir_fd=directory_fd)
+                created = True
+            info = os.fstat(child_fd)
+            mode = stat.S_IMODE(info.st_mode)
+            trusted_sticky = info.st_uid == 0 and bool(mode & stat.S_ISVTX)
+            if final:
+                assert info.st_uid == os.getuid(), "evidence directory must be owned by current user"
+                assert mode == 0o700, "existing evidence directory must have mode 0700"
+            elif not created:
+                assert info.st_uid in {0, os.getuid()}, "unsafe evidence parent owner"
+                assert not (mode & 0o022) or trusted_sticky, "unsafe writable evidence parent"
+            os.close(directory_fd)
+            directory_fd = child_fd
+            resolved /= component
+        return resolved, directory_fd
+    except BaseException:
+        os.close(directory_fd)
+        raise
 
 
 def _validated_marker(path: Path, evidence_root: Path, *, must_exist: bool) -> tuple[Path, int]:
@@ -121,6 +141,26 @@ def _validated_marker(path: Path, evidence_root: Path, *, must_exist: bool) -> t
     except BaseException:
         os.close(directory_fd)
         raise
+
+
+def _open_marker(path: Path, evidence_root: Path) -> tuple[Path, int, int, os.stat_result]:
+    marker, directory_fd = _validated_marker(path, evidence_root, must_exist=True)
+    try:
+        fd = os.open(marker.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+        info = os.fstat(fd)
+        assert stat.S_ISREG(info.st_mode), "marker must be a regular file"
+        assert info.st_uid == os.getuid(), "marker must be owned by current user"
+        assert stat.S_IMODE(info.st_mode) == 0o600, "marker must have mode 0600"
+        return marker, directory_fd, fd, info
+    except BaseException:
+        os.close(directory_fd)
+        raise
+
+
+def _assert_entry_identity(name: str, directory_fd: int, opened: os.stat_result) -> None:
+    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    assert stat.S_ISREG(current.st_mode), "marker entry is no longer a regular file"
+    assert (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino), "marker entry was replaced"
 
 
 def _durable_unlink(name: str, directory_fd: int, *, missing_ok: bool = False) -> None:
@@ -181,9 +221,11 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
         assert evidence_root is not None
         _write_marker(marker, repo, ref, sha, "owned", evidence_root=evidence_root)
         assert uncertain is not None
-        _, directory_fd = _validated_marker(uncertain, evidence_root, must_exist=True)
+        marker, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
         try:
-            _durable_unlink(uncertain.name, directory_fd)
+            os.close(fd)
+            _assert_entry_identity(marker.name, directory_fd, info)
+            _durable_unlink(marker.name, directory_fd)
         finally:
             os.close(directory_fd)
 
@@ -198,17 +240,50 @@ def delete_owned_ref(api: RefsAPI, ref: str, sha: str) -> None:
 
 def delete_ref_marker(marker: Path, *, evidence_root: Path, expected_repo: str, expected_ref: str,
                       expected_sha: str, api: RefsAPI | None = None) -> None:
-    marker, directory_fd = _validated_marker(marker, evidence_root, must_exist=True)
+    marker, directory_fd, fd, info = _open_marker(marker, evidence_root)
     try:
-        fd = os.open(marker.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
         with os.fdopen(fd, encoding="utf-8") as stream:
             obj = json.load(stream)
         assert isinstance(obj, dict) and obj.get("state") == "owned", "marker does not prove ownership"
         assert obj.get("repo") == expected_repo, "marker repository mismatch"
         assert obj.get("ref") == expected_ref, "marker ref mismatch"
         assert obj.get("sha") == expected_sha, "marker SHA mismatch"
-        delete_owned_ref(api or GitHubRefsAPI(expected_repo), expected_ref, expected_sha)
+        _assert_entry_identity(marker.name, directory_fd, info)
+        refs = api or GitHubRefsAPI(expected_repo)
+        current = refs.get(expected_ref)
+        assert current is not None, "owned QA ref unexpectedly absent before deletion"
+        _assert_ref(current, expected_ref, expected_sha)
+        _assert_entry_identity(marker.name, directory_fd, info)
+        refs.delete(expected_ref)
+        assert refs.get(expected_ref) is None, "QA ref deletion absence not proved"
+        _assert_entry_identity(marker.name, directory_fd, info)
         _durable_unlink(marker.name, directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def cleanup_private(evidence_root: Path) -> None:
+    """Delete only ordinary files in the confined private evidence child."""
+    _, directory_fd = _private_evidence_dir(evidence_root)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        try:
+            private_fd = os.open("private", flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return
+        try:
+            assert os.fstat(private_fd).st_uid == os.getuid(), "private evidence must be caller-owned"
+            names = os.listdir(private_fd)
+            for name in names:
+                entry = os.stat(name, dir_fd=private_fd, follow_symlinks=False)
+                assert stat.S_ISREG(entry.st_mode), "private evidence contains unsafe entry"
+            for name in names:
+                os.unlink(name, dir_fd=private_fd)
+            os.fsync(private_fd)
+        finally:
+            os.close(private_fd)
+        os.rmdir("private", dir_fd=directory_fd)
+        os.fsync(directory_fd)
     finally:
         os.close(directory_fd)
 
@@ -360,14 +435,12 @@ def validate_html(document: str, phase: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("create-ref", "delete-ref"):
-        p = sub.add_parser(command)
-        p.add_argument("--repo", required=True)
-        p.add_argument("--ref", required=True)
-        p.add_argument("--sha", required=True)
-        if command == "create-ref":
-            p.add_argument("--marker", required=True, type=Path)
-            p.add_argument("--evidence-root", required=True, type=Path)
+    p = sub.add_parser("create-ref")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--ref", required=True)
+    p.add_argument("--sha", required=True)
+    p.add_argument("--marker", required=True, type=Path)
+    p.add_argument("--evidence-root", required=True, type=Path)
     p = sub.add_parser("delete-ref-marker")
     p.add_argument("--marker", required=True, type=Path)
     p.add_argument("--evidence-root", required=True, type=Path)
@@ -380,12 +453,14 @@ def main() -> int:
         p.add_argument("path", type=Path)
     p = sub.add_parser("restore")
     p.add_argument("--context", required=True)
+    p = sub.add_parser("prepare-evidence")
+    p.add_argument("--evidence-root", required=True, type=Path)
+    p = sub.add_parser("cleanup-private")
+    p.add_argument("--evidence-root", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "create-ref":
         create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker,
                          evidence_root=args.evidence_root)
-    elif args.command == "delete-ref":
-        delete_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha)
     elif args.command == "delete-ref-marker":
         delete_ref_marker(args.marker, evidence_root=args.evidence_root, expected_repo=args.repo,
                           expected_ref=args.ref, expected_sha=args.sha)
@@ -393,6 +468,11 @@ def main() -> int:
         validate_status(json.loads(args.path.read_text()), args.phase)
     elif args.command == "validate-html":
         validate_html(args.path.read_text(), args.phase)
+    elif args.command == "prepare-evidence":
+        _, fd = _private_evidence_dir(args.evidence_root)
+        os.close(fd)
+    elif args.command == "cleanup-private":
+        cleanup_private(args.evidence_root)
     else:
         restore_cluster(args.context)
     return 0

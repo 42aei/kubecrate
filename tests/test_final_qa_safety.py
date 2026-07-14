@@ -310,11 +310,69 @@ def test_github_parser_uses_final_http_block(tmp_path: Path, raw: str, status: i
 def test_github_parser_accepts_stderr_response_and_rejects_stale_or_malformed(tmp_path: Path) -> None:
     raw = 'HTTP/1.1 500 Stale\n\n{"message":"stale"}\nHTTP/2 200 OK\ncontent-type: application/json\n\n{"ref":"final"}'
     result = run_helper(tmp_path, [[200, raw, "stderr"]], "delete-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a"*40)
-    assert result.returncode != 0  # final 200 body is parsed; identity then fails, never stale 500
+    assert result.returncode != 0
+    assert not (tmp_path / "gh.log").exists()  # removed ungated form fails before any API call
     with pytest.raises(helpers.APIError):
         helpers.GitHubRefsAPI._parse_response("HTTP/2 nope\n\n{}")
     with pytest.raises(helpers.APIError):
         helpers.GitHubRefsAPI._parse_response("HTTP/2 200 OK\n\nnot-json")
+
+
+def test_existing_permissive_evidence_root_is_refused_without_rehabilitation(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; root.mkdir(mode=0o755)
+    result = run_helper(tmp_path, [], "prepare-evidence", "--evidence-root", str(root))
+    assert result.returncode != 0 and stat.S_IMODE(root.stat().st_mode) == 0o755
+    assert not (tmp_path / "gh.log").exists()
+
+
+def test_parent_component_swap_to_symlink_is_refused(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = Path("parent/evidence"); root.mkdir(parents=True, mode=0o700); root.parent.chmod(0o700)
+    outside = tmp_path / "outside"; outside.mkdir(mode=0o700)
+    real_open = helpers.os.open; swapped = False
+    def swap_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "evidence" and kwargs.get("dir_fd") is not None and not swapped:
+            root.rename(root.with_name("moved")); root.symlink_to(outside, target_is_directory=True); swapped = True
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(helpers.os, "open", swap_open)
+    with pytest.raises(OSError):
+        helpers._private_evidence_dir(root)
+    assert list(outside.iterdir()) == []
+
+
+def test_marker_wrong_mode_fails_before_api_and_is_retained(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; root.mkdir(mode=0o700); marker = root / "owned.json"
+    marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); marker.chmod(0o644)
+    api = FakeRefs([])
+    with pytest.raises(AssertionError):
+        helpers.delete_ref_marker(marker, evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, api=api)
+    assert marker.exists() and api.calls == []
+
+
+def test_marker_replacement_before_api_is_detected_and_retained(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; root.mkdir(mode=0o700); marker = root / "owned.json"
+    marker.write_text(json.dumps({"state":"owned","repo":"o/r","ref":"refs/heads/qa","sha":"a"*40})); marker.chmod(0o600)
+    original = helpers._assert_entry_identity; swapped = False
+    def swap(name, directory_fd, opened):
+        nonlocal swapped
+        if not swapped:
+            replacement = root / "replacement"
+            replacement.write_text(marker.read_text()); replacement.chmod(0o600); replacement.replace(marker); swapped = True
+        original(name, directory_fd, opened)
+    monkeypatch.setattr(helpers, "_assert_entry_identity", swap)
+    api = FakeRefs([])
+    with pytest.raises(AssertionError):
+        helpers.delete_ref_marker(marker, evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, api=api)
+    assert marker.exists() and api.calls == []
+
+
+def test_confined_private_cleanup_refuses_symlink_child(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; root.mkdir(mode=0o700)
+    external = tmp_path / "external"; external.mkdir(); victim = external / "keep"; victim.write_text("safe")
+    (root / "private").symlink_to(external, target_is_directory=True)
+    result = run_helper(tmp_path, [], "cleanup-private", "--evidence-root", str(root))
+    assert result.returncode != 0 and victim.read_text() == "safe"
 
 
 def run_transport_wait(tmp_path: Path, curl_script: str, process_script: str = "sleep 5") -> subprocess.CompletedProcess:
@@ -355,17 +413,18 @@ def lifecycle_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "lifecycle"; (repo / "scripts").mkdir(parents=True)
     shutil.copy2(LIFECYCLE, repo / "scripts/final-qa-lifecycle.sh")
     shutil.copy2(HELPER_PATH, repo / "scripts/final_qa_helpers.py")
+    shutil.copy2(WAIT_PORT_FORWARD, repo / "scripts/wait-port-forward.sh")
     harness = repo / "harness.sh"
     harness.write_text('''#!/usr/bin/env bash
 set -Eeuo pipefail
 REPO=o/r; QA_BRANCH=kubecrate-qa/test; CANDIDATE_SHA="${CANDIDATE_SHA}"; CLUSTER=kubecrate-qa-test; CONTEXT=kind-kubecrate-qa-test
 EVIDENCE="${EVIDENCE}"; OWNED_REF_MARKER="${EVIDENCE}/owned-ref.json"; UNCERTAIN_REF_MARKER="${OWNED_REF_MARKER}.uncertain"
-KEY_ID=; PORT_FORWARD_PID=; BRANCH_CREATED=false; CLUSTER_CREATED=true; INITIAL_TREE="$(git write-tree)"; RED_STATE=none
+KEY_ID=; PORT_FORWARD_PID=; BRANCH_CREATED=false; CLUSTER_CREATED=true; INITIAL_TREE="$(git write-tree)"; RED_STATE=none; EVIDENCE_READY=false
 fail() { echo "ERROR: $*" >&2; return 1; }
 assert_context() { test "$(kubectl config current-context)" = "${CONTEXT}"; }
 source scripts/final-qa-lifecycle.sh
-ensure_port_forward() { echo "ensure_port_forward" >>"${CALL_LOG}"; }
-capture_green() { assert_context; ensure_port_forward; echo "capture_green $1" >>"${CALL_LOG}"; }
+python3 scripts/final_qa_helpers.py prepare-evidence --evidence-root "${EVIDENCE}"
+EVIDENCE_READY=true
 install_cleanup_traps
 if test "${SCENARIO}" = after-ref-helper; then
   python3 scripts/final_qa_helpers.py create-ref --repo "${REPO}" --ref "refs/heads/${QA_BRANCH}" --sha "${CANDIDATE_SHA}" --evidence-root "${EVIDENCE}" --marker "${OWNED_REF_MARKER}"
@@ -380,12 +439,17 @@ while :; do sleep 1; done
     subprocess.run(["git", "-C", repo, "add", "harness.sh"], check=True)
     subprocess.run(["git", "-C", repo, "commit", "--amend", "-qm", "lifecycle"], check=True)
     bindir = tmp_path / "lifecycle-bin"; bindir.mkdir(); log = tmp_path / "calls.log"
-    for name in ("flux", "kubectl", "kind", "curl"):
+    status_file = tmp_path / "status.json"; status_file.write_text(json.dumps(payload()))
+    html_file = tmp_path / "status.html"; html_file.write_text(html())
+    for name in ("flux", "kubectl", "kind", "curl", "chromium"):
         command = bindir / name
         command.write_text("#!/usr/bin/env bash\nname=$(basename $0); echo \"$name $*\" >>\"$CALL_LOG\"\n"
                            "if [[ $name == kubectl && $* == *'config current-context'* ]]; then echo kind-kubecrate-qa-test; fi\n"
+                           "if [[ $name == kubectl && $* == *'port-forward'* ]]; then sleep 30; fi\n"
                            "if [[ $name == kind && $* == 'get clusters' ]]; then test -f \"$CLUSTER_DELETED\" || echo kubecrate-qa-test; fi\n"
                            "if [[ $name == kind && $* == *'delete cluster'* ]]; then touch \"$CLUSTER_DELETED\"; fi\n"
+                           "if [[ $name == curl ]]; then cat \"$STATUS_FILE\"; fi\n"
+                           "if [[ $name == chromium ]]; then cat \"$HTML_FILE\"; fi\n"
                            "if [[ $name == flux && $* == *suspend* && $SCENARIO == after-suspend ]]; then touch \"$BARRIER\"; fi\n"
                            "if [[ $name == kubectl && $* == *'delete secret'* && $SCENARIO == after-delete ]]; then touch \"$BARRIER\"; fi\n"
                            "test \"${FAIL_RESTORE:-0}\" != 1 || [[ $* != *resume* ]]\n")
@@ -398,7 +462,8 @@ def run_lifecycle_signal(tmp_path: Path, scenario: str, *, fail_restore: bool = 
     sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "CALL_LOG": str(log), "SCENARIO": scenario,
            "CANDIDATE_SHA": sha, "EVIDENCE": str(evidence), "BARRIER": str(barrier), "CLUSTER_DELETED": str(tmp_path / "deleted"),
-           "KUBECRATE_QA_OBSERVE_SECONDS": "0", "FAIL_RESTORE": "1" if fail_restore else "0"}
+           "KUBECRATE_QA_OBSERVE_SECONDS": "0", "KUBECRATE_QA_PORT_FORWARD_TIMEOUT": "1", "KUBECRATE_QA_PORT_FORWARD_POLL_INTERVAL": ".01",
+           "STATUS_FILE": str(tmp_path / "status.json"), "HTML_FILE": str(tmp_path / "status.html"), "FAIL_RESTORE": "1" if fail_restore else "0"}
     process = subprocess.Popen([repo / "harness.sh"], cwd=repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     deadline = time.monotonic() + 5
     while not barrier.exists() and process.poll() is None and time.monotonic() < deadline: time.sleep(0.01)
@@ -414,7 +479,9 @@ def test_actual_shell_signal_restores_before_cluster_delete(tmp_path: Path, scen
     assert rc != 0
     assert calls.index("flux --context kind-kubecrate-qa-test resume") < calls.index("kind delete cluster")
     assert "kubectl --context kind-kubecrate-qa-test get secret eso-smoke-source" in calls
-    assert "ensure_port_forward" in calls
+    assert "kubectl --context kind-kubecrate-qa-test port-forward" in calls
+    assert "curl --fail --silent --show-error" in calls
+    assert "chromium --headless" in calls
 
 
 def test_actual_shell_restoration_failure_is_nonzero_before_teardown(tmp_path: Path) -> None:
@@ -427,7 +494,8 @@ def test_actual_shell_ref_marker_survives_helper_signal_and_is_consumed(tmp_path
     sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(); ref = "refs/heads/kubecrate-qa/test"
     ghbin = fake_gh(tmp_path, [(404, '{"message":"Not Found"}'), (201, ref_obj(ref, sha)), (200, ref_obj(ref, sha)), (200, ref_obj(ref, sha)), (204, ''), (404, '{"message":"Not Found"}')], tmp_path / "gh.log")
     env = {**os.environ, "PATH": f"{ghbin}:{bindir}:{os.environ['PATH']}", "CALL_LOG": str(log), "SCENARIO": "after-ref-helper", "CANDIDATE_SHA": sha,
-           "EVIDENCE": str(evidence), "BARRIER": str(barrier), "CLUSTER_DELETED": str(tmp_path / "deleted"), "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(tmp_path / "gh.log")}
+           "EVIDENCE": str(evidence), "BARRIER": str(barrier), "CLUSTER_DELETED": str(tmp_path / "deleted"), "STATUS_FILE": str(tmp_path / "status.json"),
+           "HTML_FILE": str(tmp_path / "status.html"), "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(tmp_path / "gh.log")}
     process = subprocess.Popen([repo / "harness.sh"], cwd=repo, env=env, start_new_session=True); deadline = time.monotonic() + 5
     while not barrier.exists() and process.poll() is None and time.monotonic() < deadline: time.sleep(.01)
     assert barrier.exists(); os.killpg(process.pid, signal.SIGTERM); process.wait(timeout=10)
@@ -446,6 +514,21 @@ def test_shipped_entrypoint_ignores_test_failpoint_env_and_refuses_shared_cluste
     calls = log.read_text() if log.exists() else ""
     assert result.returncode != 0 and "refusing shared cluster" in result.stderr
     assert not any(word in calls for word in ("create cluster", "delete cluster", "suspend", "delete secret", "api -X"))
+
+
+def test_shipped_entrypoint_symlinked_evidence_early_failure_mutates_nothing(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"; repo.mkdir(); shutil.copytree(ROOT / "scripts", repo / "scripts"); sha = init_repo(repo, "guard")
+    external = tmp_path / "external"; private = external / "private"; private.mkdir(parents=True); victim = private / "keep"; victim.write_text("untouched")
+    evidence = tmp_path / "evidence"; evidence.symlink_to(external, target_is_directory=True)
+    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls"
+    for name in ("gh", "kind", "kubectl"):
+        command = bindir / name; command.write_text(f'#!/usr/bin/env bash\necho "{name} $*" >>"$CALL_LOG"\n'); command.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "CALL_LOG": str(log), "KUBECRATE_QA_CANDIDATE": sha,
+           "KUBECRATE_QA_EVIDENCE": str(evidence)}
+    result = subprocess.run([repo / "scripts/final-qa-exact-tree.sh"], cwd=repo, env=env, text=True, capture_output=True)
+    assert result.returncode != 0 and victim.read_text() == "untouched"
+    calls = log.read_text() if log.exists() else ""
+    assert not any(word in calls for word in ("api", "delete cluster", "delete secret", "suspend"))
 
 
 def init_repo(path: Path, content: str) -> str:
