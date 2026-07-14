@@ -59,6 +59,17 @@ Do not collapse these axes together in docs or tasks.
 - Each platform service slice should include an AI-runnable validation path with an end-to-end proof. Prefer a small application service fixture, such as nginx or a minimal Go/Node app, that consumes the platform service through its documented interface and proves the operator-visible outcome.
 - Platform service validation should prove real consumption, not only installation. Examples: a secret projection service is validated by an application service loading a projected Secret; ingress is validated by reaching an application service through the ingress path; certificate management is validated by a certificate issued and used for TLS; observability is validated by application or platform signals appearing in the expected collector or dashboard path.
 
+## Hermes / Kanban delivery workflow
+
+- Use one durable delivery card assigned to the default/orchestrator profile for non-trivial implementation. Do not create routine coder, code-review, and QA profile cards.
+- Inside that card, run sequential isolated subagent passes: coder implementation, independent review, coder fix/re-review loops as needed, then final QA.
+- Keep `ready_for_review`, `needs_changes`, and `ready_for_qa` as concise verified checkpoints on the same card. Complete it only after the required final QA pass; Kanban completion does not imply merge or release.
+- Create a separate child only when a phase must survive independently, wait for human authorization or credentials, or run later in a separate environment or window. Historical profile chains may be recovered, but are not templates for new work.
+- The orchestrator owns the exact worktree and candidate identity, gives every subagent self-contained scope, acceptance criteria, prior findings, safety constraints, and output contract, and independently verifies filesystem, git, test, and live-evidence claims.
+- Reviewer subagents inspect independently and do not rewrite implementation. If review or QA finds implementation defects, route a fresh coder fix pass through independent review before QA.
+- Subagents are not durable and inherit no parent context. After interruption, resume from the latest verified card checkpoint and rerun any unverified pass.
+- Use a QA-only rerun only when implementation did not change. Do not merge to the default branch without explicit authorization for that exact merge.
+
 ## Repository placement rules
 
 - Docs and planning artifacts live under `docs/` until an installable slice requires runtime files.
