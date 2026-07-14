@@ -2,6 +2,7 @@
 """Behavioral tests for exact-tree final-QA safety helpers."""
 
 import ctypes
+import base64
 import errno
 import importlib.util
 import json
@@ -146,6 +147,8 @@ class FakeKeys:
 
     def list(self):
         self.calls.append(("list",))
+        if self.listed and isinstance(self.listed[0], list):
+            return self.listed.pop(0)
         return self.listed
 
     def create(self, title, key):
@@ -162,14 +165,159 @@ class FakeKeys:
         self.readback = None
 
 
-def deploy_key(key_id=7, title="kubecrate-qa-run", key="ssh-ed25519 AAAAtest"):
+def deploy_key(key_id=7, title="kubecrate-qa-run", key=None):
+    key = key or public_key()
     return {"id": key_id, "title": title, "key": key,
             "read_only": True, "verified": True, "enabled": True}
 
 
+def public_key(seed: int = 1, comment: str = "qa") -> str:
+    algorithm = b"ssh-ed25519"
+    blob = len(algorithm).to_bytes(4, "big") + algorithm + len(bytes([seed]) * 32).to_bytes(4, "big") + bytes([seed]) * 32
+    return f"ssh-ed25519 {base64.b64encode(blob).decode()} {comment}"
+
+
+def test_public_key_fingerprint_normalizes_comment_and_spacing_and_rejects_bad_keys() -> None:
+    key = public_key()
+    bare = " ".join(key.split()[:2])
+    assert helpers._public_key_fingerprint(key) == helpers._public_key_fingerprint(f"  {bare}   other comment  ")
+    assert helpers._public_key_fingerprint(key).startswith("SHA256:")
+    for bad in ("ssh-ed25519 !!!", "ssh-dss AAAA", "ssh-rsa " + key.split()[1], "ssh-ed25519 AAAA"):
+        with pytest.raises(AssertionError):
+            helpers._public_key_fingerprint(bad)
+
+
+def test_create_requires_post_get_and_complete_list_exact_key_proof(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
+    api = FakeKeys(listed=[[], [obj]], created=obj, readback=obj)
+    assert helpers.create_deploy_key(api, obj["title"], key, repo="o/r", marker=marker, evidence_root=root) == 7
+    assert json.loads(marker.read_text())["fingerprint"] == helpers._public_key_fingerprint(key)
+    assert ("list",) in api.calls
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda obj: {k: v for k, v in obj.items() if k != "key"},
+    lambda obj: {**obj, "key": public_key(2)},
+    lambda obj: {**obj, "read_only": False},
+])
+def test_create_missing_mismatched_or_non_strict_key_proof_retains_uncertainty(tmp_path: Path, mutation) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); exact = deploy_key(key=key)
+    api = FakeKeys(listed=[[], [exact]], created=mutation(exact), readback=exact)
+    with pytest.raises(AssertionError):
+        helpers.create_deploy_key(api, exact["title"], key, repo="o/r", marker=marker, evidence_root=root)
+    assert not marker.exists() and marker.with_suffix(".json.uncertain").exists()
+
+
+def test_create_rejects_duplicate_title_or_fingerprint_across_authoritative_list(tmp_path: Path) -> None:
+    key = public_key(); exact = deploy_key(key=key)
+    for duplicate in (deploy_key(8, exact["title"], public_key(2)), deploy_key(8, "other", key)):
+        root = tmp_path / str(duplicate["id"]) / "evidence"
+        marker = root / "owned.json"; api = FakeKeys(listed=[[], [exact, duplicate]], created=exact, readback=exact)
+        with pytest.raises(AssertionError):
+            helpers.create_deploy_key(api, exact["title"], key, repo="o/r", marker=marker, evidence_root=root)
+        assert not marker.exists()
+
+
+def test_github_deploy_key_list_paginates_until_short_page_and_fails_at_boundary(monkeypatch) -> None:
+    api = helpers.GitHubDeployKeysAPI("o/r"); calls = []
+    pages: list[object] = [[deploy_key(i + 1, f"key-{i}", public_key((i % 250) + 1)) for i in range(100)], [deploy_key(101, "target", public_key(251))]]
+    def request(method, endpoint, fields=None):
+        calls.append(endpoint); return 200, pages.pop(0)
+    monkeypatch.setattr(api, "_request", request)
+    assert len(api.list()) == 101
+    assert calls == ["repos/o/r/keys?per_page=100&page=1", "repos/o/r/keys?per_page=100&page=2"]
+
+    calls.clear(); pages[:] = [[deploy_key(i + 1, f"key-{i}", public_key((i % 250) + 1)) for i in range(100)], "bad"]
+    with pytest.raises(helpers.APIError): api.list()
+    assert calls[-1].endswith("page=2")
+
+
+def prepare_public_key(root: Path, key: str) -> None:
+    private = root / "private"; private.mkdir(parents=True, mode=0o700)
+    root.chmod(0o700); private.chmod(0o700)
+    path = private / "identity.pub"; path.write_text(key + "\n"); path.chmod(0o600)
+
+
+def test_actual_deploy_key_cli_create_and_owned_cleanup_prove_exact_identity_without_key_leak(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
+    prepare_public_key(root, key)
+    created = run_helper(tmp_path, [(200, "[]"), (201, json.dumps(obj)), (200, json.dumps(obj)),
+                                    (200, json.dumps([obj]))],
+                         "create-deploy-key", "--repo", "o/r", "--title", obj["title"],
+                         "--evidence-root", str(root), "--marker", str(marker))
+    assert created.returncode == 0, created.stderr
+    log = (tmp_path / "gh.log").read_text()
+    assert key not in created.stdout + created.stderr + log
+    deleted = run_helper(tmp_path, [(200, json.dumps(obj)), (200, json.dumps([obj])),
+                                    (204, ""), (404, '{"message":"Not Found"}'), (200, "[]")],
+                         "cleanup-deploy-key-markers", "--repo", "o/r", "--title", obj["title"],
+                         "--evidence-root", str(root), "--marker", str(marker))
+    assert deleted.returncode == 0, deleted.stderr
+    assert not marker.exists() and "-X DELETE repos/o/r/keys/7" in (tmp_path / "gh.log").read_text()
+
+
+def test_owned_cleanup_mismatch_or_ambiguous_list_never_deletes_and_retains_marker(tmp_path: Path) -> None:
+    key = public_key(); exact = deploy_key(key=key)
+    for name, readback, listed in (
+        ("mismatch", deploy_key(key=public_key(2)), [exact]),
+        ("duplicate", exact, [exact, deploy_key(8, "other", key)]),
+    ):
+        root = tmp_path / name; marker = root / "owned.json"; root.mkdir(mode=0o700)
+        helpers._create_json_marker_exclusive(marker, {
+            "state": "owned", "repo": "o/r", "title": exact["title"], "key_id": 7,
+            "fingerprint": helpers._public_key_fingerprint(key)}, evidence_root=root)
+        api = FakeKeys(listed=[listed], readback=readback)
+        with pytest.raises(AssertionError):
+            helpers.cleanup_deploy_key_markers(api, repo="o/r", title=exact["title"],
+                                               marker=marker, evidence_root=root)
+        assert marker.exists() and not any(call[0] == "delete" for call in api.calls)
+
+
+@pytest.mark.parametrize("phase", ["during-post", "after-post"])
+def test_actual_deploy_key_helper_interruption_retains_uncertainty_and_cleanup_never_deletes(
+    tmp_path: Path, phase: str
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    key = public_key(); obj = deploy_key(key=key); prepare_public_key(root, key)
+    bindir = tmp_path / "blocking-key-bin"; bindir.mkdir(); barrier = tmp_path / "barrier"; log = tmp_path / "key.log"
+    gh = bindir / "gh"
+    gh.write_text(f'''#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+log=pathlib.Path(os.environ["FAKE_GH_LOG"]); log.open("a").write(" ".join(sys.argv[1:])+"\\n")
+endpoint=next(a for a in sys.argv if a.startswith("repos/")); method=sys.argv[sys.argv.index("-X")+1]
+if method == "GET" and "?" in endpoint: print("[]"); raise SystemExit(0)
+if ("{phase}" == "during-post" and method == "POST") or ("{phase}" == "after-post" and method == "GET" and endpoint.endswith("/7")):
+ pathlib.Path(os.environ["FAKE_GH_BARRIER"]).write_text(method)
+ while True: time.sleep(1)
+print(json.dumps(json.loads({json.dumps(json.dumps(obj))})))
+'''); gh.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_LOG": str(log),
+           "FAKE_GH_BARRIER": str(barrier)}
+    command = ["python3", HELPER_PATH, "create-deploy-key", "--repo", "o/r", "--title", obj["title"],
+               "--evidence-root", str(root), "--marker", str(marker)]
+    process = subprocess.Popen(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               start_new_session=True)
+    deadline = time.monotonic() + 5
+    while not barrier.exists() and process.poll() is None and time.monotonic() < deadline: time.sleep(.01)
+    assert barrier.exists(), process.communicate(timeout=1)
+    os.killpg(process.pid, signal.SIGTERM); process.communicate(timeout=5)
+    assert process.returncode != 0 and uncertain.exists() and not marker.exists()
+    assert key not in log.read_text()
+
+    # A complete but ambiguous list retains the diagnostic and never deletes.
+    cleanup_bin = fake_gh(tmp_path, [(200, json.dumps([obj, deploy_key(8, "other", key)]))], tmp_path / "cleanup.log")
+    cleanup_env = {**os.environ, "PATH": f"{cleanup_bin}:{os.environ['PATH']}",
+                   "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(tmp_path / "cleanup.log")}
+    cleanup = subprocess.run(["python3", HELPER_PATH, "cleanup-deploy-key-markers", "--repo", "o/r",
+                              "--title", obj["title"], "--evidence-root", str(root), "--marker", str(marker)],
+                             env=cleanup_env, text=True, capture_output=True)
+    assert cleanup.returncode != 0 and uncertain.exists()
+    assert "DELETE" not in (tmp_path / "cleanup.log").read_text()
+
+
 def test_deploy_key_create_readback_and_exact_cleanup(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned-deploy-key.json"
-    obj = deploy_key(); api = FakeKeys(created=obj, readback=obj)
+    obj = deploy_key(); api = FakeKeys(listed=[[], [obj], [obj], []], created=obj, readback=obj)
     assert helpers.create_deploy_key(
         api, "kubecrate-qa-run", obj["key"], repo="o/r", marker=marker,
         evidence_root=root) == 7
@@ -185,20 +333,20 @@ def test_malformed_deploy_key_create_retains_crash_cleanup_intent(tmp_path: Path
     api = FakeKeys(created=bad)
     with pytest.raises(AssertionError):
         helpers.create_deploy_key(
-            api, "kubecrate-qa-run", "ssh-ed25519 AAAAtest", repo="o/r",
+            api, "kubecrate-qa-run", public_key(), repo="o/r",
             marker=marker, evidence_root=root)
     assert not marker.exists() and marker.with_suffix(".json.uncertain").exists()
 
 
 def test_interrupt_after_deploy_key_create_recovers_unique_exact_key(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned-deploy-key.json"
-    key = "ssh-ed25519 AAAAtest"; obj = deploy_key(key=key)
+    key = public_key(); obj = deploy_key(key=key)
     root.mkdir(mode=0o700)
     helpers._create_json_marker_exclusive(
         marker.with_suffix(".json.uncertain"),
         {"state": "created-unverified", "repo": "o/r", "title": "kubecrate-qa-run",
          "fingerprint": helpers._public_key_fingerprint(key)}, evidence_root=root)
-    api = FakeKeys(listed=[obj], readback=obj)
+    api = FakeKeys(listed=[[obj], []], readback=obj)
     helpers.cleanup_deploy_key_markers(
         api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
     assert ("delete", 7) in api.calls and not marker.with_suffix(".json.uncertain").exists()

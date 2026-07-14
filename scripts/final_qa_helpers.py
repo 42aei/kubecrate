@@ -588,6 +588,7 @@ def cleanup_ref_markers(owned_marker: Path, uncertain_marker: Path, *, evidence_
 
 
 class GitHubDeployKeysAPI:
+    MAX_LIST_PAGES = 100
     def __init__(self, repo: str):
         self.repo = repo
         self._refs = GitHubRefsAPI(repo)
@@ -596,10 +597,19 @@ class GitHubDeployKeysAPI:
         return self._refs._request(method, endpoint, fields)
 
     def list(self) -> list[dict[str, Any]]:
-        status, body = self._request("GET", f"repos/{self.repo}/keys?per_page=100")
-        if status != 200 or not isinstance(body, list) or not all(isinstance(item, dict) for item in body):
-            raise APIError(status, "deploy-key list response must be an array of objects")
-        return body
+        result: list[dict[str, Any]] = []
+        for page in range(1, self.MAX_LIST_PAGES + 1):
+            status, body = self._request(
+                "GET", f"repos/{self.repo}/keys?per_page=100&page={page}")
+            if status != 200 or not isinstance(body, list) or not all(
+                    isinstance(item, dict) for item in body):
+                raise APIError(status, "deploy-key list page must be an array of objects")
+            if len(body) > 100:
+                raise APIError(status, "deploy-key list page exceeds requested size")
+            result.extend(body)
+            if len(body) < 100:
+                return result
+        raise APIError(0, "deploy-key pagination exceeded safety bound")
 
     def get(self, key_id: int) -> dict[str, Any] | None:
         status, body = self._request("GET", f"repos/{self.repo}/keys/{key_id}")
@@ -629,21 +639,85 @@ class GitHubDeployKeysAPI:
 
 
 def _public_key_fingerprint(key: str) -> str:
+    """Return the OpenSSH SHA256 fingerprint of the decoded public-key blob."""
+    assert isinstance(key, str), "public key must be text"
     normalized = key.strip()
-    assert normalized and "\n" not in normalized and "\r" not in normalized, "public key must be one nonempty line"
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    assert "\n" not in normalized and "\r" not in normalized, "public key must be one line"
+    fields = normalized.split()
+    assert len(fields) >= 2, "public key algorithm and blob are required"
+    algorithm = fields[0]
+    supported = {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256",
+                 "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"}
+    assert algorithm in supported, "unsupported public key algorithm"
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+    except ValueError as exc:
+        raise AssertionError("public key blob is malformed base64") from exc
+    assert len(blob) >= 4, "public key blob is truncated"
+    algorithm_length = int.from_bytes(blob[:4], "big")
+    assert 0 < algorithm_length <= len(blob) - 4, "public key blob algorithm is malformed"
+    try:
+        embedded = blob[4:4 + algorithm_length].decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise AssertionError("public key blob algorithm is malformed") from exc
+    assert embedded == algorithm, "public key algorithm does not match decoded blob"
+    assert len(blob) > 4 + algorithm_length, "public key blob has no key material"
+    digest = base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+    return f"SHA256:{digest}"
 
 
-def _assert_deploy_key(obj: Any, title: str, key_id: int | None = None) -> int:
+def _assert_deploy_key(obj: Any, title: str, fingerprint: str,
+                       key_id: int | None = None) -> int:
     assert isinstance(obj, dict), "deploy-key response must be an object"
     value = obj.get("id")
     assert type(value) is int and value > 0, "deploy-key id must be a positive integer"
     if key_id is not None:
         assert value == key_id, "deploy-key id mismatch"
     assert obj.get("title") == title, "deploy-key title mismatch"
+    key = obj.get("key")
+    assert isinstance(key, str), "deploy-key public key is missing"
+    assert _public_key_fingerprint(key) == fingerprint, "deploy-key public key fingerprint mismatch"
     for field in ("read_only", "verified", "enabled"):
         assert type(obj.get(field)) is bool and obj[field] is True, f"deploy-key {field} must be true"
     return value
+
+
+def _validate_key_list(items: Any) -> list[tuple[dict[str, Any], int, str, str]]:
+    """Strictly normalize a complete authoritative deploy-key listing."""
+    assert isinstance(items, list), "deploy-key list must be complete array"
+    normalized = []
+    for item in items:
+        assert isinstance(item, dict), "deploy-key list entry must be an object"
+        title = item.get("title")
+        assert isinstance(title, str) and title, "deploy-key list title is malformed"
+        key = item.get("key")
+        assert isinstance(key, str), "deploy-key list public key is missing"
+        fingerprint = _public_key_fingerprint(key)
+        key_id = _assert_deploy_key(item, title, fingerprint)
+        normalized.append((item, key_id, title, fingerprint))
+    return normalized
+
+
+def _assert_unique_exact_key(items: Any, *, key_id: int, title: str,
+                             fingerprint: str) -> dict[str, Any]:
+    normalized = _validate_key_list(items)
+    exact = [item for item, item_id, item_title, item_fingerprint in normalized
+             if item_id == key_id and item_title == title and item_fingerprint == fingerprint]
+    assert len(exact) == 1, "exact deploy-key is not uniquely listed"
+    assert sum(item_title == title for _, _, item_title, _ in normalized) == 1, \
+        "deploy-key title is not unique"
+    assert sum(item_fingerprint == fingerprint for _, _, _, item_fingerprint in normalized) == 1, \
+        "deploy-key fingerprint is not unique"
+    assert sum(item_id == key_id for _, item_id, _, _ in normalized) == 1, \
+        "deploy-key id is not unique"
+    return exact[0]
+
+
+def _assert_key_absent(items: Any, *, key_id: int, title: str, fingerprint: str) -> None:
+    normalized = _validate_key_list(items)
+    assert not any(item_id == key_id or item_title == title or item_fingerprint == fingerprint
+                   for _, item_id, item_title, item_fingerprint in normalized), \
+        "deleted deploy-key identity remains in authoritative list"
 
 
 def _read_private_file(evidence_root: Path, name: str) -> str:
@@ -701,12 +775,17 @@ def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: 
     uncertain = marker.with_suffix(marker.suffix + ".uncertain")
     _assert_fresh_marker_destinations(marker, uncertain, evidence_root)
     fingerprint = _public_key_fingerprint(public_key)
-    assert not any(item.get("title") == title for item in api.list()), "deploy-key title already exists"
+    before = _validate_key_list(api.list())
+    assert not any(item_title == title or item_fingerprint == fingerprint
+                   for _, _, item_title, item_fingerprint in before), \
+        "deploy-key title or fingerprint already exists"
     pending = {"state": "created-unverified", "repo": repo, "title": title, "fingerprint": fingerprint}
     _create_json_marker_exclusive(uncertain, pending, evidence_root=evidence_root)
     created = api.create(title, public_key.strip())
-    key_id = _assert_deploy_key(created, title)
-    _assert_deploy_key(api.get(key_id), title, key_id)
+    key_id = _assert_deploy_key(created, title, fingerprint)
+    _assert_deploy_key(api.get(key_id), title, fingerprint, key_id)
+    _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
+                             fingerprint=fingerprint)
     owned = {**pending, "state": "owned", "key_id": key_id}
     _create_json_marker_exclusive(marker, owned, evidence_root=evidence_root)
     pending_path, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
@@ -765,9 +844,13 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             if _key_marker_exists(uncertain, evidence_root):
                 pending_open = _load_key_marker(
                     uncertain, evidence_root, "created-unverified", repo, title, initial["fingerprint"])
-            _assert_deploy_key(api.get(key_id), title, key_id)
+            _assert_deploy_key(api.get(key_id), title, initial["fingerprint"], key_id)
+            _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
+                                     fingerprint=initial["fingerprint"])
             api.delete(key_id)
             assert api.get(key_id) is None, "deploy-key deletion absence not proved"
+            _assert_key_absent(api.list(), key_id=key_id, title=title,
+                               fingerprint=initial["fingerprint"])
             _assert_entry_identity(marker.name, directory_fd, info)
             _durable_unlink(marker.name, directory_fd)
             if pending_open is not None:
@@ -792,17 +875,21 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
         os.close(fd); os.close(directory_fd)
         directory_fd, fd, info = directory_fd2, fd2, info2
         try:
-            matches = [item for item in api.list() if item.get("title") == title]
-            assert len(matches) <= 1, "deploy-key title is not unique"
+            normalized = _validate_key_list(api.list())
+            matches = [(item, key_id) for item, key_id, item_title, item_fingerprint in normalized
+                       if item_title == title and item_fingerprint == fingerprint]
+            assert sum(item_title == title for _, _, item_title, _ in normalized) <= 1, \
+                "deploy-key title is not unique"
+            assert sum(item_fingerprint == fingerprint for _, _, _, item_fingerprint in normalized) <= 1, \
+                "deploy-key fingerprint is not unique"
             if matches:
-                candidate = matches[0]
-                key_text = candidate.get("key")
-                assert isinstance(key_text, str) and _public_key_fingerprint(key_text) == fingerprint, \
-                    "deploy-key public key fingerprint mismatch"
-                key_id = _assert_deploy_key(candidate, title)
-                _assert_deploy_key(api.get(key_id), title, key_id)
+                candidate, key_id = matches[0]
+                _assert_deploy_key(candidate, title, fingerprint, key_id)
+                _assert_deploy_key(api.get(key_id), title, fingerprint, key_id)
                 api.delete(key_id)
                 assert api.get(key_id) is None, "deploy-key deletion absence not proved"
+                _assert_key_absent(api.list(), key_id=key_id, title=title,
+                                   fingerprint=fingerprint)
             _assert_entry_identity(uncertain.name, directory_fd, info)
             _durable_unlink(uncertain.name, directory_fd)
         finally:
@@ -856,13 +943,15 @@ class GitHubRefsAPI:
         if success_status is None:
             raise APIError(0, f"unsupported HTTP method: {method}")
         command = ["gh", "api", "-X", method, endpoint]
+        input_text = None
         if method == "DELETE":
             command.append("--silent")
-        for key, value in (fields or {}).items():
-            flag = "-F" if isinstance(value, bool) else "-f"
-            rendered = str(value).lower() if isinstance(value, bool) else str(value)
-            command.extend([flag, f"{key}={rendered}"])
-        result = subprocess.run(command, text=True, capture_output=True)
+        if fields:
+            # Keep public-key and ref payloads out of argv/process listings and
+            # command logs. gh accepts an exact JSON body from stdin.
+            command.extend(["--input", "-"])
+            input_text = json.dumps(fields, separators=(",", ":"))
+        result = subprocess.run(command, text=True, capture_output=True, input=input_text)
         if not result.returncode:
             return success_status, self._parse_body(result.stdout, success_status)
 
