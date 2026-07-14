@@ -128,61 +128,6 @@ def test_ref_race_422_never_establishes_ownership(tmp_path: Path) -> None:
     assert not any(c[0] == "delete" for c in api.calls)
 
 
-@pytest.mark.parametrize("phase", ["during-post", "after-post-return"])
-def test_signal_barrier_retains_pre_post_uncertainty_and_cleanup_fails_closed(
-    tmp_path: Path, phase: str
-) -> None:
-    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
-    barrier = tmp_path / "remote-create-barrier"; exact = {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": "a" * 40}}
-    pid = os.fork()
-    if pid == 0:
-        class BarrierRefs:
-            gets = 0
-
-            def get(self, _ref):
-                self.gets += 1
-                if self.gets == 1:
-                    return None
-                assert phase == "after-post-return"
-                barrier.write_text("POST returned; authoritative GET entered")
-                signal.pause()
-
-            def create(self, _ref, _sha):
-                if phase == "during-post":
-                    barrier.write_text("POST entered with uncertainty durable")
-                    signal.pause()
-                return exact
-
-            def delete(self, _ref):
-                raise AssertionError("DELETE must not run")
-
-        try:
-            helpers.create_owned_ref(
-                BarrierRefs(), "refs/heads/qa", "a" * 40,
-                repo="o/r", marker=marker, evidence_root=root,
-            )
-        finally:
-            os._exit(2)
-
-    deadline = time.monotonic() + 5
-    while not barrier.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert barrier.exists()
-    assert json.loads(uncertain.read_text())["state"] == "created-unverified"
-    os.kill(pid, signal.SIGTERM)
-    _, status = os.waitpid(pid, 0)
-    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGTERM
-    assert uncertain.exists() and not marker.exists()
-    cleanup_api = FakeRefs([])
-    with pytest.raises(AssertionError, match="ownership diagnostics retained"):
-        helpers.cleanup_ref_markers(
-            marker, uncertain, evidence_root=root, expected_repo="o/r",
-            expected_ref="refs/heads/qa", expected_sha="a" * 40,
-            branch_created=False, api=cleanup_api,
-        )
-    assert uncertain.exists() and cleanup_api.calls == []
-
-
 def test_unknown_lookup_fails_closed_before_create() -> None:
     api = FakeRefs([helpers.APIError(500, "unknown")])
     with pytest.raises(helpers.APIError):
@@ -272,6 +217,119 @@ def run_helper(tmp_path: Path, responses: list, *args: str) -> subprocess.Comple
     bindir = fake_gh(tmp_path, responses, log)
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(log)}
     return subprocess.run(["python3", HELPER_PATH, *args], env=env, text=True, capture_output=True)
+
+
+def blocking_fake_gh(tmp_path: Path, phase: str, ref: str, sha: str) -> tuple[Path, Path, Path]:
+    bindir = tmp_path / "blocking-bin"; bindir.mkdir()
+    barrier = tmp_path / "gh-barrier"; log = tmp_path / "blocking-gh.log"; count = tmp_path / "gh-count"
+    gh = bindir / "gh"
+    gh.write_text(f'''#!/usr/bin/env python3
+import json, os, pathlib, signal, sys, time
+log = pathlib.Path(os.environ["FAKE_GH_LOG"])
+with log.open("a") as stream:
+    stream.write(" ".join(sys.argv[1:]) + "\\n")
+count = pathlib.Path(os.environ["FAKE_GH_COUNT"])
+n = int(count.read_text()) + 1 if count.exists() else 1
+count.write_text(str(n))
+method = sys.argv[sys.argv.index("-X") + 1]
+if method == "GET" and n == 1:
+    print('{{"message":"Not Found"}}')
+    print("gh: request failed (HTTP 404)", file=sys.stderr)
+    raise SystemExit(1)
+if ("{phase}" == "during-post" and method == "POST") or ("{phase}" == "before-readback" and method == "GET" and n == 3):
+    pathlib.Path(os.environ["FAKE_GH_BARRIER"]).write_text(method)
+    while True: time.sleep(1)
+print(json.dumps({{"ref":"{ref}","object":{{"type":"commit","sha":"{sha}"}}}}))
+''')
+    gh.chmod(0o755)
+    return bindir, barrier, log
+
+
+@pytest.mark.parametrize("phase,signum", [("during-post", signal.SIGTERM), ("before-readback", signal.SIGINT)])
+def test_actual_helper_cli_interruption_retains_durable_uncertainty_and_cleanup_fails_closed(
+    tmp_path: Path, phase: str, signum: signal.Signals
+) -> None:
+    ref = "refs/heads/qa"; sha = "a" * 40; root = tmp_path / "evidence"; marker = root / "owned.json"
+    uncertain = marker.with_suffix(".json.uncertain"); bindir, barrier, log = blocking_fake_gh(tmp_path, phase, ref, sha)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_LOG": str(log),
+           "FAKE_GH_COUNT": str(tmp_path / "gh-count"), "FAKE_GH_BARRIER": str(barrier)}
+    command = ["python3", HELPER_PATH, "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha,
+               "--evidence-root", str(root), "--marker", str(marker)]
+    process = subprocess.Popen(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               start_new_session=True)
+    try:
+        deadline = time.monotonic() + 5
+        while not barrier.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert barrier.exists(), process.communicate(timeout=1)
+        assert json.loads(uncertain.read_text()) == {
+            "repo": "o/r", "ref": ref, "sha": sha, "state": "created-unverified"}
+        assert stat.S_IMODE(uncertain.stat().st_mode) == 0o600
+        os.killpg(process.pid, signum)
+        process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+    assert process.returncode != 0 and uncertain.exists() and not marker.exists()
+    before = uncertain.read_bytes(); inode = uncertain.stat().st_ino
+    cleanup = subprocess.run([
+        "python3", HELPER_PATH, "cleanup-ref-markers", "--repo", "o/r", "--ref", ref, "--sha", sha,
+        "--evidence-root", str(root), "--owned-marker", str(marker), "--uncertain-marker", str(uncertain),
+        "--branch-created", "false"], env=env, text=True, capture_output=True, timeout=5)
+    assert cleanup.returncode != 0
+    assert uncertain.read_bytes() == before and uncertain.stat().st_ino == inode
+    calls = log.read_text()
+    assert "-X DELETE" not in calls
+    assert calls.count("-X GET") == (1 if phase == "during-post" else 2)
+
+
+@pytest.mark.parametrize("entry,kind", [
+    ("uncertain", "same"), ("uncertain", "mismatch"), ("owned", "same"),
+    ("uncertain", "malformed"), ("uncertain", "symlink"), ("owned", "wrong-mode"),
+    ("owned", "directory"),
+])
+def test_create_cli_refuses_existing_evidence_without_api_or_overwrite(
+    tmp_path: Path, entry: str, kind: str
+) -> None:
+    root = tmp_path / "evidence"; root.mkdir(mode=0o700); owned = root / "owned.json"
+    uncertain = owned.with_suffix(".json.uncertain"); target = uncertain if entry == "uncertain" else owned
+    payload = {"repo": "o/r", "ref": "refs/heads/qa", "sha": "a" * 40,
+               "state": "created-unverified" if entry == "uncertain" else "owned"}
+    if kind == "mismatch": payload["sha"] = "b" * 40
+    if kind == "malformed": target.write_text("{not-json"); target.chmod(0o600)
+    elif kind == "symlink": target.symlink_to(tmp_path / "victim")
+    elif kind == "wrong-mode": target.write_text(json.dumps(payload)); target.chmod(0o644)
+    elif kind == "directory": target.mkdir(mode=0o700)
+    else: target.write_text(json.dumps(payload)); target.chmod(0o600)
+    before = os.lstat(target)
+    content = None if target.is_dir() else (target.read_bytes() if not target.is_symlink() else os.readlink(target))
+    responses = [(404, '{"message":"Not Found"}'),
+                 (201, ref_obj("refs/heads/qa", "a" * 40)),
+                 (200, ref_obj("refs/heads/qa", "a" * 40))]
+    result = run_helper(tmp_path, responses, "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa",
+                        "--sha", "a" * 40, "--evidence-root", str(root), "--marker", str(owned))
+    after = os.lstat(target)
+    assert result.returncode != 0 and (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+    after_content = None if target.is_dir() else (target.read_bytes() if not target.is_symlink() else os.readlink(target))
+    assert after_content == content
+    assert not (tmp_path / "gh.log").exists()
+
+
+def test_exclusive_marker_publish_loses_race_without_overwrite(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json.uncertain"; raced = b"racing evidence\n"
+    real_link = helpers.os.link; published = False
+    def race_link(src, dst, **kwargs):
+        nonlocal published
+        if not published:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=kwargs["dst_dir_fd"])
+            os.write(fd, raced); os.fsync(fd); os.close(fd); published = True
+        return real_link(src, dst, **kwargs)
+    monkeypatch.setattr(helpers.os, "link", race_link)
+    with pytest.raises(FileExistsError):
+        helpers._create_marker_exclusive(
+            marker, "o/r", "refs/heads/qa", "a" * 40, "created-unverified", evidence_root=root)
+    assert marker.read_bytes() == raced
 
 
 @pytest.mark.parametrize("responses", [
@@ -431,12 +489,17 @@ def test_marker_refuses_unsafe_paths_and_malformed_content(tmp_path: Path, kind:
 
 def test_marker_write_and_unlink_fsync_file_and_parent(monkeypatch, tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; events = []
-    real_fsync, real_replace, real_unlink = helpers.os.fsync, helpers.os.replace, helpers.os.unlink
+    real_fsync, real_replace, real_link, real_unlink = helpers.os.fsync, helpers.os.replace, helpers.os.link, helpers.os.unlink
     monkeypatch.setattr(helpers.os, "fsync", lambda fd: (events.append(("fsync", stat.S_ISDIR(os.fstat(fd).st_mode))), real_fsync(fd))[1])
     monkeypatch.setattr(helpers.os, "replace", lambda *a, **kw: (events.append(("replace", False)), real_replace(*a, **kw))[1])
+    monkeypatch.setattr(helpers.os, "link", lambda *a, **kw: (events.append(("link", False)), real_link(*a, **kw))[1])
     monkeypatch.setattr(helpers.os, "unlink", lambda *a, **kw: (events.append(("unlink", False)), real_unlink(*a, **kw))[1])
     helpers._write_marker(marker, "o/r", "refs/heads/qa", "a"*40, "owned", evidence_root=root)
     assert events[:3] == [("fsync", False), ("replace", False), ("fsync", True)]
+    marker.unlink(); events.clear()
+    helpers._create_marker_exclusive(marker, "o/r", "refs/heads/qa", "a"*40, "owned", evidence_root=root)
+    assert events == [("fsync", False), ("link", False), ("fsync", True),
+                      ("unlink", False), ("fsync", True)]
     api = FakeRefs([{"ref":"refs/heads/qa","object":{"type":"commit","sha":"a"*40}}, None])
     helpers.cleanup_ref_markers(marker, marker.with_suffix(".json.uncertain"), evidence_root=root, expected_repo="o/r", expected_ref="refs/heads/qa", expected_sha="a"*40, branch_created=True, api=api)
     assert events[-2:] == [("unlink", False), ("fsync", True)]

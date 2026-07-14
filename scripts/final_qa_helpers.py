@@ -198,16 +198,78 @@ def _write_marker(path: Path, repo: str, ref: str, sha: str, state: str, *, evid
         os.close(directory_fd)
 
 
+def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
+                             *, evidence_root: Path) -> None:
+    """Durably publish a marker without ever replacing an existing entry."""
+    path, directory_fd = _validated_marker(path, evidence_root, must_exist=False)
+    payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
+    temporary = f".{path.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}"
+    fd = -1
+    temporary_exists = False
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory_fd)
+        temporary_exists = True
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+                follow_symlinks=False)
+        os.fsync(directory_fd)
+        os.unlink(temporary, dir_fd=directory_fd)
+        temporary_exists = False
+        os.fsync(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temporary_exists:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            else:
+                os.fsync(directory_fd)
+        os.close(directory_fd)
+
+
+def _assert_fresh_marker_destinations(marker: Path, uncertain: Path, evidence_root: Path) -> None:
+    """Descriptor-safely require both evidence destinations to be absent."""
+    root, directory_fd = _private_evidence_dir(evidence_root)
+    owned = Path(os.path.abspath(marker))
+    pending = Path(os.path.abspath(uncertain))
+    try:
+        assert owned.parent == root and pending.parent == root, "markers must be directly under the evidence root"
+        for path in (owned, pending):
+            assert path.name not in {"", ".", ".."}, "invalid marker name"
+            try:
+                entry = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            assert stat.S_ISREG(entry.st_mode), f"{path.name}: unsafe marker entry"
+            assert entry.st_uid == os.getuid(), f"{path.name}: unsafe marker owner"
+            assert stat.S_IMODE(entry.st_mode) == 0o600, f"{path.name}: unsafe marker mode"
+            raise AssertionError(f"{path.name}: existing marker refuses fresh create")
+    finally:
+        os.close(directory_fd)
+
+
 def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker: Path | None = None,
                      evidence_root: Path | None = None) -> None:
     assert ref.startswith("refs/heads/"), "only an exact heads ref is allowed"
-    assert api.get(ref) is None, "QA ref already exists"
     uncertain = marker.with_suffix(marker.suffix + ".uncertain") if marker else None
+    if uncertain:
+        assert marker is not None and evidence_root is not None
+        _assert_fresh_marker_destinations(marker, uncertain, evidence_root)
+    assert api.get(ref) is None, "QA ref already exists"
     if uncertain:
         assert evidence_root is not None
         # Persist the attempt before POST so termination during or immediately
         # after remote creation cannot erase the only cleanup diagnostic.
-        _write_marker(uncertain, repo, ref, sha, "created-unverified", evidence_root=evidence_root)
+        _create_marker_exclusive(
+            uncertain, repo, ref, sha, "created-unverified", evidence_root=evidence_root)
 
     created: dict[str, Any] | None = None
     post_error: BaseException | None = None
@@ -238,7 +300,7 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
 
     if marker:
         assert evidence_root is not None
-        _write_marker(marker, repo, ref, sha, "owned", evidence_root=evidence_root)
+        _create_marker_exclusive(marker, repo, ref, sha, "owned", evidence_root=evidence_root)
         assert uncertain is not None
         marker, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
         try:
