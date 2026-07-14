@@ -202,22 +202,40 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
                      evidence_root: Path | None = None) -> None:
     assert ref.startswith("refs/heads/"), "only an exact heads ref is allowed"
     assert api.get(ref) is None, "QA ref already exists"
-    try:
-        created = api.create(ref, sha)
-    except APIError as exc:
-        # A schema-invalid 201 means GitHub may have created the ref even though
-        # ownership cannot be proved. Persist a blocker, never a deletion claim.
-        if marker and exc.status == 201:
-            assert evidence_root is not None
-            _write_marker(marker.with_suffix(marker.suffix + ".uncertain"), repo, ref, sha, "created-unverified", evidence_root=evidence_root)
-        raise
     uncertain = marker.with_suffix(marker.suffix + ".uncertain") if marker else None
     if uncertain:
         assert evidence_root is not None
+        # Persist the attempt before POST so termination during or immediately
+        # after remote creation cannot erase the only cleanup diagnostic.
         _write_marker(uncertain, repo, ref, sha, "created-unverified", evidence_root=evidence_root)
-    if created is not None:
-        _assert_ref(created, ref, sha)
-    _assert_ref(api.get(ref), ref, sha)
+
+    created: dict[str, Any] | None = None
+    post_error: BaseException | None = None
+    try:
+        created = api.create(ref, sha)
+    except APIError as exc:
+        # status=201 denotes a successful POST whose response could not be
+        # parsed/validated. It still requires authoritative readback. Nonzero
+        # outcomes (including a racing 422) retain uncertainty and fail closed.
+        if exc.status != 201:
+            raise
+        post_error = exc
+    if post_error is None and created is not None:
+        try:
+            _assert_ref(created, ref, sha)
+        except AssertionError as exc:
+            post_error = exc
+
+    try:
+        _assert_ref(api.get(ref), ref, sha)
+    except BaseException as readback_error:
+        if post_error is not None:
+            post_error.add_note(f"authoritative GET also failed: {readback_error}")
+            raise post_error from readback_error
+        raise
+    if post_error is not None:
+        raise post_error
+
     if marker:
         assert evidence_root is not None
         _write_marker(marker, repo, ref, sha, "owned", evidence_root=evidence_root)

@@ -95,12 +95,14 @@ class FakeRefs:
     def get(self, ref):
         self.calls.append(("get", ref))
         value = self.lookup.pop(0)
-        if isinstance(value, Exception):
+        if isinstance(value, BaseException):
             raise value
         return value
 
     def create(self, ref, sha):
         self.calls.append(("create", ref, sha))
+        if callable(self.create_result):
+            return self.create_result(ref, sha)
         if isinstance(self.create_result, Exception):
             raise self.create_result
         return self.create_result
@@ -120,8 +122,65 @@ def test_ref_race_422_never_establishes_ownership(tmp_path: Path) -> None:
             api, "refs/heads/qa", "a" * 40, repo="o/r", marker=marker, evidence_root=root
         )
     assert not marker.exists()
-    assert not marker.with_suffix(".json.uncertain").exists()
+    # The pre-POST attempt marker is deliberately retained: a 422 after an
+    # absent preflight can be a race and cannot prove which actor created it.
+    assert marker.with_suffix(".json.uncertain").exists()
     assert not any(c[0] == "delete" for c in api.calls)
+
+
+@pytest.mark.parametrize("phase", ["during-post", "after-post-return"])
+def test_signal_barrier_retains_pre_post_uncertainty_and_cleanup_fails_closed(
+    tmp_path: Path, phase: str
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    barrier = tmp_path / "remote-create-barrier"; exact = {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": "a" * 40}}
+    pid = os.fork()
+    if pid == 0:
+        class BarrierRefs:
+            gets = 0
+
+            def get(self, _ref):
+                self.gets += 1
+                if self.gets == 1:
+                    return None
+                assert phase == "after-post-return"
+                barrier.write_text("POST returned; authoritative GET entered")
+                signal.pause()
+
+            def create(self, _ref, _sha):
+                if phase == "during-post":
+                    barrier.write_text("POST entered with uncertainty durable")
+                    signal.pause()
+                return exact
+
+            def delete(self, _ref):
+                raise AssertionError("DELETE must not run")
+
+        try:
+            helpers.create_owned_ref(
+                BarrierRefs(), "refs/heads/qa", "a" * 40,
+                repo="o/r", marker=marker, evidence_root=root,
+            )
+        finally:
+            os._exit(2)
+
+    deadline = time.monotonic() + 5
+    while not barrier.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert barrier.exists()
+    assert json.loads(uncertain.read_text())["state"] == "created-unverified"
+    os.kill(pid, signal.SIGTERM)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGTERM
+    assert uncertain.exists() and not marker.exists()
+    cleanup_api = FakeRefs([])
+    with pytest.raises(AssertionError, match="ownership diagnostics retained"):
+        helpers.cleanup_ref_markers(
+            marker, uncertain, evidence_root=root, expected_repo="o/r",
+            expected_ref="refs/heads/qa", expected_sha="a" * 40,
+            branch_created=False, api=cleanup_api,
+        )
+    assert uncertain.exists() and cleanup_api.calls == []
 
 
 def test_unknown_lookup_fails_closed_before_create() -> None:
@@ -225,7 +284,9 @@ def test_helper_cli_does_not_claim_ownership_for_422_unknown_or_malformed(tmp_pa
     result = run_helper(tmp_path, responses, "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40, "--evidence-root", str(root), "--marker", str(marker))
     assert result.returncode != 0
     assert not marker.exists()
-    if responses[-1][0] == 201:
+    # Every attempted POST is durably uncertain unless exact POST evidence and
+    # authoritative GET jointly establish ownership.
+    if len(responses) > 1:
         assert marker.with_suffix(".json.uncertain").exists()
     else:
         assert not marker.with_suffix(".json.uncertain").exists()
@@ -297,17 +358,38 @@ def test_helper_cli_empty_create_body_unproved_readback_retains_uncertainty_with
     assert "-X DELETE" not in (tmp_path / "gh.log").read_text()
 
 
-def test_helper_cli_mismatched_create_object_retains_uncertainty_without_readback_or_delete(tmp_path: Path) -> None:
+@pytest.mark.parametrize("post_body", [
+    ref_obj("refs/heads/other", "a" * 40),
+    "[]",
+    '"scalar"',
+    "not-json",
+])
+def test_helper_cli_bad_nonempty_create_evidence_still_reads_back_but_never_owns(
+    tmp_path: Path, post_body: str
+) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    exact = ref_obj("refs/heads/qa", "a" * 40)
     result = run_helper(
         tmp_path,
-        [(404, '{"message":"Not Found"}'), (201, ref_obj("refs/heads/other", "a" * 40))],
+        [(404, '{"message":"Not Found"}'), (201, post_body), (200, exact)],
         "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
         "--evidence-root", str(root), "--marker", str(marker),
     )
     assert result.returncode != 0 and not marker.exists() and uncertain.exists()
     log = (tmp_path / "gh.log").read_text()
-    assert log.count("-X GET") == 1 and "-X DELETE" not in log
+    assert log.count("-X GET") == 2 and "-X DELETE" not in log
+
+
+def test_exact_create_object_and_exact_readback_establish_ownership(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    exact = ref_obj("refs/heads/qa", "a" * 40)
+    result = run_helper(
+        tmp_path, [(404, '{"message":"Not Found"}'), (201, exact), (200, exact)],
+        "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
+        "--evidence-root", str(root), "--marker", str(marker),
+    )
+    assert result.returncode == 0 and marker.exists() and not uncertain.exists()
+    assert (tmp_path / "gh.log").read_text().count("-X GET") == 2
 
 
 def test_helper_cli_changed_ref_refuses_delete_and_retains_marker(tmp_path: Path) -> None:
