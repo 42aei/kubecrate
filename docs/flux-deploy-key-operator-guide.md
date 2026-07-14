@@ -31,7 +31,7 @@ There is no public REST endpoint that exposes the org-level deploy-key policy di
 1. Navigate to the Member privileges settings page.
 2. Confirm that the **Deploy keys** option is enabled (not disabled/unchecked).
 
-Alternatively, run the preflight at `scripts/preflight-flux-deploy-key.py`, which detects the downstream symptom (existing keys with `enabled: false`, or HTTP 422 on key creation) and guides the operator to the settings page.
+Alternatively, run the preflight at `scripts/preflight-flux-deploy-key.py`. It generates a valid temporary Ed25519 key, creates it read-only, reads it back and validates its identity and boolean metadata, deletes only the captured ID, and verifies absence. Every unknown status, malformed body, schema mismatch, or cleanup failure blocks cluster creation. Private key material is confined to an automatically removed temporary directory.
 
 ## Disabled existing keys
 
@@ -132,7 +132,9 @@ For each disposable kind cluster created by a QA or validation run:
 2. **Cluster creation**: bootstrap Flux; retrieve the generated public key.
 3. **Registration**: register the public key as a read-only deploy key with a `kubecrate-qa-*` title.
 4. **Validation**: run the GitOps-managed operation validation.
-5. **Cleanup**: after the cluster is deleted, remove the deploy key from the repository.
+5. **Cleanup**: after validation, remove and verify absence of the exact captured deploy key, QA branch, and disposable cluster.
+
+For final QA, use the executable safeguarded workflow in [Exact-tree final QA](final-qa-exact-tree.md). It publishes and verifies the immutable candidate tree, selects the unique branch through a runtime-only manifest artifact, performs browser plus `/status.json` green → controlled ESO red → restored green evidence, and guarantees verified trap cleanup.
 
 ## Cleanup
 

@@ -22,6 +22,8 @@ from pathlib import Path
 # so we use importlib.
 import importlib.util
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _MODULE_PATH = REPO_ROOT / "scripts" / "preflight-flux-deploy-key.py"
 _spec = importlib.util.spec_from_file_location(
@@ -170,87 +172,162 @@ def test_disabled_keys_missing_enabled_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# org-policy capability probe
+# disposable create/read/delete capability probe
 # ---------------------------------------------------------------------------
 
 
-def test_policy_allows_keys() -> None:
-    """POST returns 422 with 'key is invalid' → org allows deploy keys."""
-    gh = lambda args, **kw: _cp(
-        returncode=1,
-        stderr=(
-            "HTTP 422: Validation Failed\n"
-            "key is invalid. Please verify the public key and try again.\n"
-        ),
+def _valid_key() -> str:
+    return "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockedValidDisposableKeyMaterial preflight"
+
+
+def _probe_gh(*responses):
+    calls = []
+    queue = list(responses)
+
+    def gh(args, **kw):
+        calls.append(tuple(args))
+        assert queue, f"unexpected gh call: {args}"
+        return queue.pop(0)
+
+    return gh, calls
+
+
+def _created(**overrides):
+    body = {
+        "id": 123,
+        "title": "kubecrate-deploy-key-preflight",
+        "read_only": True,
+        "verified": True,
+        "enabled": True,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_lifecycle_probe_successful_create_read_delete() -> None:
+    gh, calls = _probe_gh(
+        _cp(stdout=json.dumps(_created())),
+        _cp(stdout=json.dumps(_created())),
+        _cp(),
+        _cp(returncode=1, stderr="HTTP 404: Not Found"),
     )
-    blocked, detail = pf.check_org_deploy_key_policy("org/repo", gh)
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
+    )
     assert blocked is False
-    assert "allows deploy-key creation" in detail
+    assert "create/read/delete" in detail
+    assert any("repos/org/repo/keys/123" in call for call in calls)
 
 
-def test_policy_disallows_keys() -> None:
-    """POST returns 422 with 'Deploy keys are not supported' → org blocks."""
-    gh = lambda args, **kw: _cp(
-        returncode=1,
-        stderr=(
-            "HTTP 422: Validation Failed\n"
-            "Deploy keys are not supported for this organization. "
-            "To enable deploy keys, an organization owner must enable "
-            "them in the organization's member privileges.\n"
-        ),
+@pytest.mark.parametrize("field", ["read_only", "verified", "enabled"])
+def test_lifecycle_probe_rejects_false_metadata_and_cleans_up(field) -> None:
+    gh, calls = _probe_gh(
+        _cp(stdout=json.dumps(_created())),
+        _cp(stdout=json.dumps(_created(**{field: False}))),
+        _cp(),
+        _cp(returncode=1, stderr="HTTP 404: Not Found"),
     )
-    blocked, detail = pf.check_org_deploy_key_policy("42aei/kubecrate", gh)
-    assert blocked is True
-    assert "org-level deploy-key policy is OFF" in detail
-    assert "organizations/42aei/settings/member_privileges" in detail
-
-
-def test_policy_disallows_keys_stdout() -> None:
-    """Policy-denial message in stdout (some gh versions put it there)."""
-    gh = lambda args, **kw: _cp(
-        returncode=1,
-        stdout=(
-            '{"message":"Deploy keys are not supported for this organization."}'
-        ),
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
     )
-    blocked, _ = pf.check_org_deploy_key_policy("org/repo", gh)
     assert blocked is True
+    assert field in detail
+    assert any("DELETE" in call for call in calls)
 
 
-def test_policy_combined_output() -> None:
-    """Policy-denial message split across stdout + stderr."""
-    gh = lambda args, **kw: _cp(
-        returncode=1,
-        stdout="HTTP/1.1 422 Unprocessable Entity\n",
-        stderr=(
-            '{"message":"Deploy keys are not supported for this '
-            "organization.\"}\\n"
-        ),
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"id": 123, "title": "kubecrate-deploy-key-preflight", "verified": True, "enabled": True},
+        _created(read_only="true"),
+        _created(verified=1),
+        _created(enabled="yes"),
+        _created(id="123"),
+        _created(title="wrong-key"),
+    ],
+)
+def test_lifecycle_probe_rejects_missing_wrongly_typed_or_wrong_identity(payload) -> None:
+    gh, calls = _probe_gh(
+        _cp(stdout=json.dumps(_created())),
+        _cp(stdout=json.dumps(payload)),
+        _cp(),
+        _cp(returncode=1, stderr="HTTP 404: Not Found"),
     )
-    blocked, _ = pf.check_org_deploy_key_policy("org/repo", gh)
-    assert blocked is True
-
-
-def test_policy_api_auth_error() -> None:
-    """Non-422 API error → blocked with unexpected-response message."""
-    gh = lambda args, **kw: _cp(
-        returncode=1,
-        stderr="gh auth: bad credentials (HTTP 401)",
+    blocked, _ = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
     )
-    blocked, detail = pf.check_org_deploy_key_policy("org/repo", gh)
     assert blocked is True
-    assert "unexpected response from deploy-key API" in detail
+    assert any("DELETE" in call for call in calls)
 
 
-def test_policy_unexpected_success() -> None:
-    """API returns 200/201 for an invalid key → blocked defensively."""
-    gh = lambda args, **kw: _cp(
-        returncode=0,
-        stdout=json.dumps({"id": 999, "key": "...", "title": "preflight-policy-probe"}),
+def test_lifecycle_probe_rejects_arbitrary_422() -> None:
+    gh, calls = _probe_gh(_cp(returncode=1, stderr="HTTP 422: Validation Failed"))
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
     )
-    blocked, detail = pf.check_org_deploy_key_policy("org/repo", gh)
     assert blocked is True
-    assert "unexpected success" in detail
+    assert "422" in detail
+    assert not any("DELETE" in call for call in calls)
+
+
+def test_lifecycle_probe_rejects_malformed_create_response() -> None:
+    gh, _ = _probe_gh(_cp(stdout="not-json"))
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
+    )
+    assert blocked is True
+    assert "malformed" in detail
+
+
+def test_lifecycle_probe_create_failure() -> None:
+    gh, calls = _probe_gh(_cp(returncode=1, stderr="HTTP 500"))
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
+    )
+    assert blocked is True
+    assert "creation failed" in detail
+    assert not any("DELETE" in call for call in calls)
+
+
+def test_lifecycle_probe_delete_failure() -> None:
+    gh, _ = _probe_gh(
+        _cp(stdout=json.dumps(_created())),
+        _cp(stdout=json.dumps(_created())),
+        _cp(returncode=1, stderr="HTTP 500"),
+    )
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
+    )
+    assert blocked is True
+    assert "cleanup deletion failed" in detail
+
+
+def test_lifecycle_probe_post_delete_key_still_present() -> None:
+    gh, _ = _probe_gh(
+        _cp(stdout=json.dumps(_created())),
+        _cp(stdout=json.dumps(_created())),
+        _cp(),
+        _cp(stdout=json.dumps(_created())),
+    )
+    blocked, detail = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
+    )
+    assert blocked is True
+    assert "still present" in detail
+
+
+def test_lifecycle_probe_cleanup_attempted_after_read_failure() -> None:
+    gh, calls = _probe_gh(
+        _cp(stdout=json.dumps(_created())),
+        _cp(returncode=1, stderr="HTTP 503"),
+        _cp(),
+        _cp(returncode=1, stderr="HTTP 404: Not Found"),
+    )
+    blocked, _ = pf.check_deploy_key_lifecycle(
+        "org/repo", gh, public_key_factory=_valid_key
+    )
+    assert blocked is True
+    assert any("DELETE" in call for call in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -258,78 +335,52 @@ def test_policy_unexpected_success() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_main_all_clear() -> None:
-    """Auth ok, no keys, policy allows → exit 0."""
-    call_seq = []
-
-    def gh(args, **kw):
-        call_seq.append(tuple(args))
-        if args[:2] == ["auth", "status"]:
-            return _cp(returncode=0)
-        if "POST" in args:
-            return _cp(
-                returncode=1,
-                stderr="HTTP 422: key is invalid\n",
-            )
+def _main_gh(args, **kw):
+    if args[:2] == ["auth", "status"]:
+        return _cp()
+    if args == ["api", "repos/42aei/kubecrate/keys", "--jq", "."]:
         return _cp(stdout="[]")
+    if "POST" in args:
+        return _cp(stdout=json.dumps(_created()))
+    if "DELETE" in args:
+        return _cp()
+    if "repos/42aei/kubecrate/keys/123" in args:
+        read_calls = getattr(_main_gh, "read_calls", 0)
+        _main_gh.read_calls = read_calls + 1
+        if read_calls == 0:
+            return _cp(stdout=json.dumps(_created()))
+        return _cp(returncode=1, stderr="HTTP 404: Not Found")
+    raise AssertionError(args)
 
-    rc = pf.main(gh, argv=[])
-    assert rc == 0
+
+def test_main_all_clear(monkeypatch) -> None:
+    monkeypatch.setattr(pf, "generate_disposable_public_key", _valid_key)
+    _main_gh.read_calls = 0
+    assert pf.main(_main_gh, argv=[]) == 0
 
 
-def test_main_auth_fails() -> None:
-    """Auth fails → non-zero exit."""
+def test_main_auth_fails(monkeypatch) -> None:
+    monkeypatch.setattr(pf, "generate_disposable_public_key", _valid_key)
+
     def gh(args, **kw):
         if args[:2] == ["auth", "status"]:
-            return _cp(returncode=1, stderr="not authenticated")
-        return _cp(stdout="[]")
+            return _cp(returncode=1)
+        return _main_gh(args, **kw)
 
-    rc = pf.main(gh, argv=[])
-    assert rc != 0
+    _main_gh.read_calls = 0
+    assert pf.main(gh, argv=[]) != 0
 
 
-def test_main_disabled_keys_blocker() -> None:
-    """Existing disabled keys → non-zero exit."""
+def test_main_disabled_keys_blocker(monkeypatch) -> None:
+    monkeypatch.setattr(pf, "generate_disposable_public_key", _valid_key)
+
     def gh(args, **kw):
-        if args[:2] == ["auth", "status"]:
-            return _cp(returncode=0)
-        if "POST" in args:
-            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
-        return _cp(stdout=json.dumps([
-            {"id": 1, "title": "old", "enabled": False},
-        ]))
+        if args == ["api", "repos/42aei/kubecrate/keys", "--jq", "."]:
+            return _cp(stdout=json.dumps([{"id": 1, "enabled": False}]))
+        return _main_gh(args, **kw)
 
-    rc = pf.main(gh, argv=[])
-    assert rc != 0
-
-
-def test_main_policy_blocks() -> None:
-    """Org policy blocks keys → non-zero exit."""
-    def gh(args, **kw):
-        if args[:2] == ["auth", "status"]:
-            return _cp(returncode=0)
-        if "POST" in args:
-            return _cp(
-                returncode=1,
-                stderr="Deploy keys are not supported for this organization.",
-            )
-        return _cp(stdout="[]")
-
-    rc = pf.main(gh, argv=[])
-    assert rc != 0
-
-
-def test_main_zero_keys_policy_allows() -> None:
-    """Zero existing keys but org policy allows → exit 0 (not a false pass)."""
-    def gh(args, **kw):
-        if args[:2] == ["auth", "status"]:
-            return _cp(returncode=0)
-        if "POST" in args:
-            return _cp(returncode=1, stderr="HTTP 422: key is invalid\n")
-        return _cp(stdout="[]")
-
-    rc = pf.main(gh, argv=[])
-    assert rc == 0
+    _main_gh.read_calls = 0
+    assert pf.main(gh, argv=[]) != 0
 
 
 # ---------------------------------------------------------------------------

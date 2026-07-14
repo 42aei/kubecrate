@@ -6,10 +6,10 @@ target Git provider (GitHub) allows deploy-key registration for the configured
 repository and whether any existing deploy keys are disabled.  It exits 0 when
 the path is clear and non-zero when a blocker is detected.
 
-It does not retrieve, print, or touch private key material.  It never creates
-or deletes a deploy key: the POST capability probe uses an intentionally
-invalid key that GitHub will always reject, and the response message
-distinguishes org-policy denial from a normal invalid-key rejection.
+It generates a temporary Ed25519 key pair, registers only its public key, and
+performs a fail-closed create/read/delete/absence capability probe. Private key
+material is confined to an automatically removed temporary directory and is
+never printed.
 
 Usage:
     python3 scripts/preflight-flux-deploy-key.py
@@ -23,6 +23,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
@@ -136,91 +138,109 @@ def check_disabled_keys(
     return len(disabled)
 
 
-def check_org_deploy_key_policy(
-    repo: str, gh: GhRunner = _default_gh_runner
-) -> tuple[bool, str]:
-    """Probe whether the GitHub org allows deploy-key creation.
-
-    Sends a POST to repos/<repo>/keys with an intentionally invalid SSH key.
-    GitHub will always reject the invalid key with HTTP 422, but the
-    *reason* differs:
-
-      - Org allows deploy keys  → message says "key is invalid" (or similar)
-      - Org disallows deploy keys → message says "Deploy keys are not
-        supported for this organization"
-
-    Returns (blocked: bool, detail: str).
-
-    This is safe: the probe key is not valid SSH material and GitHub will
-    never accept it, even if the org policy allows deploy keys.
-    """
-    # Intentionally invalid key — base64-encoded garbage that is clearly
-    # not a real SSH public key.  GitHub rejects it in every scenario.
-    probe_title = "preflight-policy-probe"
-    probe_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQDPREFLIGHT_PROBE_DO_NOT_USE"
-
-    result = gh(
-        [
-            "api",
-            f"repos/{repo}/keys",
-            "-X", "POST",
-            "-f", f"title={probe_title}",
-            "-f", f"key={probe_key}",
-            "-f", "read_only=true",
-            "--include",  # include response headers for status inspection
-        ],
-    )
-
-    stdout = result.stdout
-    stderr = result.stderr
-    combined = stdout + stderr
-
-    # Check if the response contains the org-policy-denial message.
-    if "Deploy keys are not supported" in combined:
-        org = repo.split("/")[0] if "/" in repo else repo
-        return (
-            True,
-            f"org-level deploy-key policy is OFF — "
-            f"GitHub returned HTTP 422 with message: "
-            f"\"Deploy keys are not supported for this organization.\" "
-            f"An org owner must enable deploy keys at "
-            f"https://github.com/organizations/{org}/settings/member_privileges "
-            f"before Flux bootstrap can register a deploy key.",
+def generate_disposable_public_key() -> str:
+    """Generate a valid public key while destroying private material on return."""
+    with tempfile.TemporaryDirectory(prefix="kubecrate-deploy-key-preflight-") as tmp:
+        key_path = Path(tmp) / "id_ed25519"
+        result = subprocess.run(
+            [
+                "ssh-keygen", "-q", "-t", "ed25519", "-N", "",
+                "-C", "kubecrate-deploy-key-preflight", "-f", str(key_path),
+            ],
+            capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            raise RuntimeError("ssh-keygen failed while creating disposable probe key")
+        return key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
 
-    # An HTTP 422 that does NOT mention "not supported" is likely the
-    # expected "key is invalid" rejection — the org allows deploy keys,
-    # our probe was just garbage.
+
+def _parse_object(result: subprocess.CompletedProcess[str], phase: str) -> dict[str, Any]:
     if result.returncode != 0:
-        # Could be a network/auth/rate-limit error, not a policy block.
-        # We cannot definitively say the org allows keys, but we also have
-        # no positive signal of a policy block.
-        if "HTTP 422" in combined or "422" in combined:
-            return (
-                False,
-                "org allows deploy-key creation "
-                "(POST /keys returned HTTP 422 with invalid-key rejection, "
-                "not an org-policy denial).",
-            )
-        # Unexpected failure (auth, network, API error).
-        return (
-            True,
-            f"unexpected response from deploy-key API endpoint: "
-            f"exit={result.returncode}. "
-            f"Check gh auth scopes and repository access. "
-            f"stderr: {stderr.strip()[:300]}",
+        raise RuntimeError(
+            f"{phase} failed (exit={result.returncode}): "
+            f"{(result.stderr or result.stdout).strip()[:300]}"
         )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"malformed {phase} response: expected JSON object") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"malformed {phase} response: expected JSON object")
+    return payload
 
-    # If we somehow got a 200/201 back, that would mean GitHub accepted our
-    # deliberately-invalid key.  This should never happen with the current
-    # GitHub API, but we handle it defensively.
-    return (
-        True,
-        "unexpected success from deploy-key API: GitHub accepted an "
-        "intentionally invalid probe key. This should never happen; "
-        "the GitHub API behaviour may have changed. "
-        "Investigate before proceeding.",
-    )
+
+def _validate_probe_key(payload: dict[str, Any], key_id: int, title: str) -> None:
+    if type(payload.get("id")) is not int or payload["id"] != key_id:
+        raise RuntimeError("created key identity mismatch: id")
+    if payload.get("title") != title:
+        raise RuntimeError("created key identity mismatch: title")
+    for field in ("read_only", "verified", "enabled"):
+        if type(payload.get(field)) is not bool:
+            raise RuntimeError(f"created key {field} is missing or not a boolean")
+        if payload[field] is not True:
+            raise RuntimeError(f"created key {field} is not true")
+
+
+def check_deploy_key_lifecycle(
+    repo: str,
+    gh: GhRunner = _default_gh_runner,
+    public_key_factory: Callable[[], str] | None = None,
+) -> tuple[bool, str]:
+    """Create, read, delete, and prove absence of one captured disposable key."""
+    if public_key_factory is None:
+        public_key_factory = generate_disposable_public_key
+    title = "kubecrate-deploy-key-preflight"
+    key_id: int | None = None
+    deleted = False
+    failure: str | None = None
+    try:
+        public_key = public_key_factory()
+        created = _parse_object(
+            gh([
+                "api", f"repos/{repo}/keys", "-X", "POST",
+                "-f", f"title={title}", "-f", f"key={public_key}",
+                "-F", "read_only=true",
+            ]),
+            "deploy-key creation",
+        )
+        created_id = created.get("id")
+        if type(created_id) is not int:
+            raise RuntimeError("malformed deploy-key creation response: integer id required")
+        key_id = created_id
+        _validate_probe_key(created, key_id, title)
+
+        read_back = _parse_object(
+            gh(["api", f"repos/{repo}/keys/{key_id}"]), "deploy-key read"
+        )
+        _validate_probe_key(read_back, key_id, title)
+    except (RuntimeError, OSError) as exc:
+        failure = str(exc)
+    finally:
+        if key_id is not None:
+            deletion = gh(["api", f"repos/{repo}/keys/{key_id}", "-X", "DELETE"])
+            if deletion.returncode != 0:
+                failure = (
+                    f"cleanup deletion failed for captured key id {key_id}: "
+                    f"{deletion.stderr.strip()[:300]}"
+                )
+            else:
+                deleted = True
+
+    if key_id is not None and deleted:
+        absence = gh(["api", f"repos/{repo}/keys/{key_id}"])
+        combined = absence.stdout + absence.stderr
+        if absence.returncode == 0:
+            failure = f"deleted key id {key_id} is still present"
+        elif "404" not in combined and "Not Found" not in combined:
+            failure = (
+                f"could not verify absence of deleted key id {key_id}: "
+                f"{combined.strip()[:300]}"
+            )
+
+    if failure is not None:
+        return True, failure
+    return False, "disposable deploy-key create/read/delete/absence probe passed"
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +288,8 @@ def main(gh: GhRunner = _default_gh_runner, argv: list[str] | None = None) -> in
     if keys is not None:
         blockers += check_disabled_keys(keys, repo)
 
-    # 4. Probe org deploy-key policy (non-destructive POST with invalid key)
-    policy_blocked, policy_detail = check_org_deploy_key_policy(repo, gh)
+    # 4. Prove disposable key create/read/delete capability and absence.
+    policy_blocked, policy_detail = check_deploy_key_lifecycle(repo, gh)
     if policy_blocked:
         print(f"preflight: BLOCKER: {policy_detail}")
         blockers += 1
