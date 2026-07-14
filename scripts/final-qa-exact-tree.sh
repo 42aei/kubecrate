@@ -14,6 +14,7 @@ EXPECTED_CHECKS=7
 EVIDENCE="${KUBECRATE_QA_EVIDENCE:-.tmp/final-qa-${RUN_ID}}"
 QA_VALUES="${EVIDENCE}/flux-sync-values.yaml"
 KEY_ID=""
+KEY_TITLE="kubecrate-qa-${RUN_ID}"
 PORT_FORWARD_PID=""
 BRANCH_CREATED=false
 CLUSTER_CREATED=false
@@ -22,12 +23,31 @@ RED_STATE=none
 EVIDENCE_READY=false
 OWNED_REF_MARKER="${EVIDENCE}/owned-ref.json"
 UNCERTAIN_REF_MARKER="${OWNED_REF_MARKER}.uncertain"
+OWNED_KEY_MARKER="${EVIDENCE}/owned-deploy-key.json"
 
 fail() { printf 'final-qa: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
 assert_context() {
   actual="$(kubectl config current-context 2>/dev/null || true)"
   test "${actual}" = "${CONTEXT}" || fail "expected kubecontext ${CONTEXT}, got ${actual:-none}"
+}
+wait_for_flux_identity() {
+  timeout="${KUBECRATE_QA_IDENTITY_TIMEOUT:-180}"
+  interval="${KUBECRATE_QA_IDENTITY_POLL_INTERVAL:-2}"
+  [[ "${timeout}" =~ ^[1-9][0-9]*$ ]] || fail "identity timeout must be a positive integer"
+  deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    assert_context
+    encoded="$(kubectl --context "${CONTEXT}" get secret flux-system -n flux-system \
+      -o jsonpath='{.data.identity\.pub}' 2>/dev/null || true)"
+    if test -n "${encoded}"; then
+      printf '%s' "${encoded}" | python3 scripts/final_qa_helpers.py write-public-key \
+        --evidence-root "${EVIDENCE}"
+      return 0
+    fi
+    sleep "${interval}"
+  done
+  fail "identity public key was not generated before timeout"
 }
 protected_branch() {
   case "$1" in main|master|default|refs/heads/main|refs/heads/master|refs/heads/default) return 0;; *) return 1;; esac
@@ -104,41 +124,16 @@ kustomize build clusters/kind-dev-misc-local/entrypoint | \
   python3 scripts/render-final-qa-flux-source.py --values "${QA_VALUES}" | \
   kubectl --context "${CONTEXT}" apply -f -
 assert_context
-kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync -n flux-system --timeout=180s
-
-mkdir -p "${EVIDENCE}/private"
-chmod 700 "${EVIDENCE}/private"
-kubectl --context "${CONTEXT}" get secret flux-system -n flux-system -o jsonpath='{.data.identity\.pub}' | base64 -d >"${EVIDENCE}/private/identity.pub"
-python3 - "${EVIDENCE}/private/identity.pub" "${EVIDENCE}/private/key-request.json" "${RUN_ID}" <<'PY'
-import json, pathlib, sys
-pub = pathlib.Path(sys.argv[1]).read_text().strip()
-pathlib.Path(sys.argv[2]).write_text(json.dumps({"title": f"kubecrate-qa-{sys.argv[3]}", "key": pub, "read_only": True}))
-PY
-chmod 600 "${EVIDENCE}/private/key-request.json"
-KEY_JSON="$(gh api -X POST "repos/${REPO}/keys" --input "${EVIDENCE}/private/key-request.json" --jq '{id,title,read_only,verified,enabled}')"
-KEY_ID="$(python3 -c 'import json,sys
-obj=json.load(sys.stdin)
-key_id=obj.get("id")
-assert type(key_id) is int, "created key id must be an integer"
-print(key_id)
-' <<<"${KEY_JSON}")"
-python3 -c 'import json,sys
-obj=json.load(sys.stdin); expected=int(sys.argv[1])
-assert type(obj.get("id")) is int and obj["id"] == expected
-assert obj.get("title") == sys.argv[2]
-for field in ("read_only", "verified", "enabled"):
-    assert type(obj.get(field)) is bool and obj[field] is True, field
-' "${KEY_ID}" "kubecrate-qa-${RUN_ID}" <<<"${KEY_JSON}"
-KEY_READ="$(gh api "repos/${REPO}/keys/${KEY_ID}" --jq '{id,title,read_only,verified,enabled}')"
-python3 -c 'import json,sys
-obj=json.load(sys.stdin); expected=int(sys.argv[1])
-assert type(obj.get("id")) is int and obj["id"] == expected
-assert obj.get("title") == sys.argv[2]
-for field in ("read_only", "verified", "enabled"):
-    assert type(obj.get(field)) is bool and obj[field] is True, field
-' "${KEY_ID}" "kubecrate-qa-${RUN_ID}" <<<"${KEY_READ}"
+wait_for_flux_identity
+KEY_ID="$(python3 scripts/final_qa_helpers.py create-deploy-key --repo "${REPO}" \
+  --title "${KEY_TITLE}" --evidence-root "${EVIDENCE}" --marker "${OWNED_KEY_MARKER}")"
 python3 scripts/final_qa_helpers.py cleanup-private --evidence-root "${EVIDENCE}"
 
+assert_context
+kubectl --context "${CONTEXT}" annotate --overwrite helmrelease/flux-system-sync -n flux-system \
+  reconcile.fluxcd.io/requestedAt="$(date +%s)"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync -n flux-system --timeout=180s
 assert_context
 flux --context "${CONTEXT}" reconcile source git flux-system -n flux-system --timeout=180s
 assert_context

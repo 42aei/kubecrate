@@ -33,14 +33,12 @@ cleanup() {
     restore_if_needed || cleanup_failed=true
   fi
   test -z "${PORT_FORWARD_PID}" || kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
-  if test -n "${KEY_ID}"; then
-    key_before="$(key_state)"
-    if test "${key_before}" = present; then
-      gh api -X DELETE "repos/${REPO}/keys/${KEY_ID}" >/dev/null 2>&1 || cleanup_failed=true
-    elif test "${key_before}" = unknown; then
-      cleanup_failed=true
-    fi
-    test "$(key_state)" = absent || cleanup_failed=true
+  if ${EVIDENCE_READY:-false}; then
+    key_title="${KEY_TITLE:-kubecrate-qa-${RUN_ID:-unknown}}"
+    key_marker="${OWNED_KEY_MARKER:-${EVIDENCE}/owned-deploy-key.json}"
+    python3 scripts/final_qa_helpers.py cleanup-deploy-key-markers \
+      --repo "${REPO}" --title "${key_title}" --evidence-root "${EVIDENCE}" \
+      --marker "${key_marker}" >/dev/null || cleanup_failed=true
   fi
   if ${EVIDENCE_READY:-false}; then
     python3 scripts/final_qa_helpers.py cleanup-ref-markers \

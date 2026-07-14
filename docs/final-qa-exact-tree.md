@@ -35,9 +35,9 @@ In fail-closed order the script:
 1. proves the locally executed scripts/manifests are exactly the candidate commit and tree, with no tracked or untracked shadow files;
 2. creates and verifies an exact GitHub QA ref atomically before cluster creation;
 3. runs the real disposable deploy-key create/read/delete preflight;
-4. creates a unique kind cluster and applies the runtime-only Flux source artifact;
-5. creates a unique read-only deploy key and verifies matching ID/title plus boolean `read_only=true`, `verified=true`, and `enabled=true`;
-6. verifies Flux reconciliation on the expected context;
+4. creates a unique kind cluster, applies the runtime-only Flux source artifact, then boundedly waits for `Secret/flux-system` to contain a non-empty `identity.pub` without logging key material;
+5. writes the generated public key only through a descriptor-confined `0700`/`0600` private path, durably records cleanup intent, creates the unique read-only deploy key, and verifies create plus exact readback metadata before removing private key artifacts;
+6. explicitly requests the sync HelmRelease to reconcile, waits for it to become Ready only after deploy-key registration, then verifies Flux source and Kustomization reconciliation on the expected context;
 7. requires the exact seven unique check IDs, strict summary counts, and structured browser check cards whose exact configured names and status attributes map back to those IDs (CrateCheck's current UI renders names rather than IDs);
 8. suspends the smoke Kustomization, immediately records mutation state, deletes only the non-sensitive source Secret, and requires only `eso-externalsecret-ready` and/or `eso-projected-secret-exists` to be non-green while unrelated checks stay green;
 9. resumes and reconciles on the explicit disposable context, proves the smoke Kustomization Ready, source Secret present, ExternalSecret Ready, and exact API/browser seven-green restoration;

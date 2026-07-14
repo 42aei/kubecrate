@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import hashlib
 import html.parser
 import json
 import os
@@ -50,6 +52,13 @@ class APIError(RuntimeError):
     def __init__(self, status: int, message: str):
         super().__init__(f"GitHub API HTTP {status}: {message}")
         self.status = status
+
+
+class DeployKeysAPI(Protocol):
+    def list(self) -> list[dict[str, Any]]: ...
+    def get(self, key_id: int) -> dict[str, Any] | None: ...
+    def create(self, title: str, key: str) -> dict[str, Any] | None: ...
+    def delete(self, key_id: int) -> None: ...
 
 
 class RefsAPI(Protocol):
@@ -318,11 +327,9 @@ def _link_fd(fd: int, directory_fd: int, name: str) -> None:
             os.close(proc_fd)
 
 
-def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
-                             *, evidence_root: Path) -> None:
-    """Durably publish an anonymous marker inode without pathname cleanup."""
+def _create_json_marker_exclusive(path: Path, payload: dict[str, Any], *, evidence_root: Path) -> None:
+    """Durably publish an anonymous JSON marker inode without pathname cleanup."""
     path, directory_fd = _validated_marker(path, evidence_root, must_exist=False)
-    payload = {"repo": repo, "ref": ref, "sha": sha, "state": state}
     fd = -1
     try:
         if not hasattr(os, "O_TMPFILE"):
@@ -368,6 +375,13 @@ def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: s
         if fd >= 0:
             os.close(fd)
         os.close(directory_fd)
+
+
+def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
+                             *, evidence_root: Path) -> None:
+    _create_json_marker_exclusive(
+        path, {"repo": repo, "ref": ref, "sha": sha, "state": state},
+        evidence_root=evidence_root)
 
 
 def _assert_fresh_marker_destinations(marker: Path, uncertain: Path, evidence_root: Path) -> None:
@@ -573,6 +587,228 @@ def cleanup_ref_markers(owned_marker: Path, uncertain_marker: Path, *, evidence_
         os.close(directory_fd)
 
 
+class GitHubDeployKeysAPI:
+    def __init__(self, repo: str):
+        self.repo = repo
+        self._refs = GitHubRefsAPI(repo)
+
+    def _request(self, method: str, endpoint: str, fields: dict[str, Any] | None = None) -> tuple[int, Any]:
+        return self._refs._request(method, endpoint, fields)
+
+    def list(self) -> list[dict[str, Any]]:
+        status, body = self._request("GET", f"repos/{self.repo}/keys?per_page=100")
+        if status != 200 or not isinstance(body, list) or not all(isinstance(item, dict) for item in body):
+            raise APIError(status, "deploy-key list response must be an array of objects")
+        return body
+
+    def get(self, key_id: int) -> dict[str, Any] | None:
+        status, body = self._request("GET", f"repos/{self.repo}/keys/{key_id}")
+        if status == 404:
+            if not isinstance(body, dict) or body.get("message") != "Not Found":
+                raise APIError(status, "malformed deploy-key absence response")
+            return None
+        if status != 200 or not isinstance(body, dict):
+            raise APIError(status, "deploy-key response must be an object")
+        return body
+
+    def create(self, title: str, key: str) -> dict[str, Any] | None:
+        status, body = self._request(
+            "POST", f"repos/{self.repo}/keys", {"title": title, "key": key, "read_only": True})
+        if status != 201:
+            raise APIError(status, "unexpected deploy-key create response")
+        if body is None:
+            return None
+        if not isinstance(body, dict):
+            raise APIError(status, "deploy-key create response must be an object")
+        return body
+
+    def delete(self, key_id: int) -> None:
+        status, _ = self._request("DELETE", f"repos/{self.repo}/keys/{key_id}")
+        if status != 204:
+            raise APIError(status, "unexpected deploy-key delete response")
+
+
+def _public_key_fingerprint(key: str) -> str:
+    normalized = key.strip()
+    assert normalized and "\n" not in normalized and "\r" not in normalized, "public key must be one nonempty line"
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def _assert_deploy_key(obj: Any, title: str, key_id: int | None = None) -> int:
+    assert isinstance(obj, dict), "deploy-key response must be an object"
+    value = obj.get("id")
+    assert type(value) is int and value > 0, "deploy-key id must be a positive integer"
+    if key_id is not None:
+        assert value == key_id, "deploy-key id mismatch"
+    assert obj.get("title") == title, "deploy-key title mismatch"
+    for field in ("read_only", "verified", "enabled"):
+        assert type(obj.get(field)) is bool and obj[field] is True, f"deploy-key {field} must be true"
+    return value
+
+
+def _read_private_file(evidence_root: Path, name: str) -> str:
+    _, root_fd = _private_evidence_dir(evidence_root)
+    private_fd = -1
+    fd = -1
+    try:
+        private_fd = os.open("private", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=root_fd)
+        info = os.fstat(private_fd)
+        assert info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, "private directory must be 0700"
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=private_fd)
+        opened = os.fstat(fd)
+        assert stat.S_ISREG(opened.st_mode) and opened.st_uid == os.getuid(), "unsafe private file"
+        assert stat.S_IMODE(opened.st_mode) == 0o600, "private file must be 0600"
+        with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+            return stream.read()
+    finally:
+        if fd >= 0: os.close(fd)
+        if private_fd >= 0: os.close(private_fd)
+        os.close(root_fd)
+
+
+def write_public_key(evidence_root: Path, encoded: str) -> None:
+    try:
+        raw = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise AssertionError("identity.pub is not valid base64 UTF-8") from exc
+    _public_key_fingerprint(raw)
+    _, root_fd = _private_evidence_dir(evidence_root)
+    private_fd = -1
+    fd = -1
+    try:
+        try:
+            os.mkdir("private", 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        private_fd = os.open("private", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=root_fd)
+        info = os.fstat(private_fd)
+        assert info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, "private directory must be 0700"
+        fd = os.open("identity.pub", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=private_fd)
+        os.fchmod(fd, 0o600)
+        os.write(fd, raw.strip().encode() + b"\n")
+        os.fsync(fd); os.fsync(private_fd)
+    finally:
+        if fd >= 0: os.close(fd)
+        if private_fd >= 0: os.close(private_fd)
+        os.close(root_fd)
+
+
+def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: str,
+                      marker: Path, evidence_root: Path) -> int:
+    uncertain = marker.with_suffix(marker.suffix + ".uncertain")
+    _assert_fresh_marker_destinations(marker, uncertain, evidence_root)
+    fingerprint = _public_key_fingerprint(public_key)
+    assert not any(item.get("title") == title for item in api.list()), "deploy-key title already exists"
+    pending = {"state": "created-unverified", "repo": repo, "title": title, "fingerprint": fingerprint}
+    _create_json_marker_exclusive(uncertain, pending, evidence_root=evidence_root)
+    created = api.create(title, public_key.strip())
+    key_id = _assert_deploy_key(created, title)
+    _assert_deploy_key(api.get(key_id), title, key_id)
+    owned = {**pending, "state": "owned", "key_id": key_id}
+    _create_json_marker_exclusive(marker, owned, evidence_root=evidence_root)
+    pending_path, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
+    try:
+        os.close(fd); _assert_entry_identity(pending_path.name, directory_fd, info)
+        _durable_unlink(pending_path.name, directory_fd)
+    finally:
+        os.close(directory_fd)
+    return key_id
+
+
+def _load_key_marker(path: Path, evidence_root: Path, state: str, repo: str, title: str,
+                     fingerprint: str) -> tuple[dict[str, Any], int, int, os.stat_result]:
+    marker, directory_fd, fd, info = _open_marker(path, evidence_root)
+    with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+        obj = json.load(stream)
+    assert isinstance(obj, dict) and obj.get("state") == state, "deploy-key marker state mismatch"
+    assert obj.get("repo") == repo and obj.get("title") == title, "deploy-key marker identity mismatch"
+    assert obj.get("fingerprint") == fingerprint, "deploy-key marker fingerprint mismatch"
+    return obj, directory_fd, fd, info
+
+
+def _key_marker_exists(path: Path, evidence_root: Path) -> bool:
+    root, directory_fd = _private_evidence_dir(evidence_root)
+    marker = Path(os.path.abspath(path))
+    try:
+        assert marker.parent == root and marker.name not in {"", ".", ".."}, \
+            "deploy-key marker must be directly under evidence root"
+        try:
+            info = os.stat(marker.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        assert stat.S_ISREG(info.st_mode), "unsafe deploy-key marker entry"
+        assert info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600, \
+            "unsafe deploy-key marker ownership or mode"
+        return True
+    finally:
+        os.close(directory_fd)
+
+
+def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
+                               marker: Path, evidence_root: Path) -> None:
+    uncertain = marker.with_suffix(marker.suffix + ".uncertain")
+    if _key_marker_exists(marker, evidence_root):
+        marker, directory_fd, fd, info = _open_marker(marker, evidence_root)
+        with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+            initial = json.load(stream)
+        assert isinstance(initial, dict) and isinstance(initial.get("fingerprint"), str)
+        obj, directory_fd2, fd2, info2 = _load_key_marker(
+            marker, evidence_root, "owned", repo, title, initial["fingerprint"])
+        os.close(fd); os.close(directory_fd)
+        directory_fd, fd, info = directory_fd2, fd2, info2
+        try:
+            key_id = obj.get("key_id"); assert type(key_id) is int and key_id > 0
+            pending_open = None
+            if _key_marker_exists(uncertain, evidence_root):
+                pending_open = _load_key_marker(
+                    uncertain, evidence_root, "created-unverified", repo, title, initial["fingerprint"])
+            _assert_deploy_key(api.get(key_id), title, key_id)
+            api.delete(key_id)
+            assert api.get(key_id) is None, "deploy-key deletion absence not proved"
+            _assert_entry_identity(marker.name, directory_fd, info)
+            _durable_unlink(marker.name, directory_fd)
+            if pending_open is not None:
+                pending_path, pending_dir_fd, pending_fd, pending_info = (
+                    uncertain, pending_open[1], pending_open[2], pending_open[3])
+                try:
+                    _assert_entry_identity(pending_path.name, pending_dir_fd, pending_info)
+                    _durable_unlink(pending_path.name, pending_dir_fd)
+                finally:
+                    os.close(pending_fd); os.close(pending_dir_fd)
+        finally:
+            os.close(fd); os.close(directory_fd)
+        return
+    if _key_marker_exists(uncertain, evidence_root):
+        uncertain, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
+        with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+            initial = json.load(stream)
+        assert isinstance(initial, dict) and isinstance(initial.get("fingerprint"), str)
+        _, directory_fd2, fd2, info2 = _load_key_marker(
+            uncertain, evidence_root, "created-unverified", repo, title, initial["fingerprint"])
+        fingerprint = initial["fingerprint"]
+        os.close(fd); os.close(directory_fd)
+        directory_fd, fd, info = directory_fd2, fd2, info2
+        try:
+            matches = [item for item in api.list() if item.get("title") == title]
+            assert len(matches) <= 1, "deploy-key title is not unique"
+            if matches:
+                candidate = matches[0]
+                key_text = candidate.get("key")
+                assert isinstance(key_text, str) and _public_key_fingerprint(key_text) == fingerprint, \
+                    "deploy-key public key fingerprint mismatch"
+                key_id = _assert_deploy_key(candidate, title)
+                _assert_deploy_key(api.get(key_id), title, key_id)
+                api.delete(key_id)
+                assert api.get(key_id) is None, "deploy-key deletion absence not proved"
+            _assert_entry_identity(uncertain.name, directory_fd, info)
+            _durable_unlink(uncertain.name, directory_fd)
+        finally:
+            os.close(fd); os.close(directory_fd)
+
+
 class GitHubRefsAPI:
     def __init__(self, repo: str):
         self.repo = repo
@@ -611,7 +847,7 @@ class GitHubRefsAPI:
         except json.JSONDecodeError as exc:
             raise APIError(status, "malformed JSON response") from exc
 
-    def _request(self, method: str, endpoint: str, fields: dict[str, str] | None = None) -> tuple[int, Any]:
+    def _request(self, method: str, endpoint: str, fields: dict[str, Any] | None = None) -> tuple[int, Any]:
         # Successful gh API calls print a body-only JSON document on stdout.
         # Do not parse gh's mixed-LF/CRLF --include framing on this path: the
         # process return code already establishes success and each method has
@@ -623,7 +859,9 @@ class GitHubRefsAPI:
         if method == "DELETE":
             command.append("--silent")
         for key, value in (fields or {}).items():
-            command.extend(["-f", f"{key}={value}"])
+            flag = "-F" if isinstance(value, bool) else "-f"
+            rendered = str(value).lower() if isinstance(value, bool) else str(value)
+            command.extend([flag, f"{key}={rendered}"])
         result = subprocess.run(command, text=True, capture_output=True)
         if not result.returncode:
             return success_status, self._parse_body(result.stdout, success_status)
@@ -777,6 +1015,18 @@ def main() -> int:
     p.add_argument("--evidence-root", required=True, type=Path)
     p = sub.add_parser("cleanup-private")
     p.add_argument("--evidence-root", required=True, type=Path)
+    p = sub.add_parser("write-public-key")
+    p.add_argument("--evidence-root", required=True, type=Path)
+    p = sub.add_parser("create-deploy-key")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--title", required=True)
+    p.add_argument("--evidence-root", required=True, type=Path)
+    p.add_argument("--marker", required=True, type=Path)
+    p = sub.add_parser("cleanup-deploy-key-markers")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--title", required=True)
+    p.add_argument("--evidence-root", required=True, type=Path)
+    p.add_argument("--marker", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "create-ref":
         create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker,
@@ -796,6 +1046,18 @@ def main() -> int:
         os.close(fd)
     elif args.command == "cleanup-private":
         cleanup_private(args.evidence_root)
+    elif args.command == "write-public-key":
+        write_public_key(args.evidence_root, sys.stdin.read().strip())
+    elif args.command == "create-deploy-key":
+        public_key = _read_private_file(args.evidence_root, "identity.pub")
+        key_id = create_deploy_key(
+            GitHubDeployKeysAPI(args.repo), args.title, public_key, repo=args.repo,
+            marker=args.marker, evidence_root=args.evidence_root)
+        print(key_id)
+    elif args.command == "cleanup-deploy-key-markers":
+        cleanup_deploy_key_markers(
+            GitHubDeployKeysAPI(args.repo), repo=args.repo, title=args.title,
+            marker=args.marker, evidence_root=args.evidence_root)
     else:
         restore_cluster(args.context)
     return 0

@@ -96,10 +96,32 @@ def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
 
 def test_created_deploy_key_is_validated_before_readback_and_cleanup_is_fail_closed() -> None:
     text = source()
-    ordered(text, 'KEY_JSON="$(gh api -X POST', 'created key id must be an integer', 'KEY_READ="$(gh api')
-    assert 'test "$(key_state)" = absent || cleanup_failed=true' in text
+    run = text[text.index('kubectl --context "${CONTEXT}" apply -f -'):]
+    ordered(
+        run,
+        'kubectl --context "${CONTEXT}" apply -f -',
+        'wait_for_flux_identity',
+        'final_qa_helpers.py create-deploy-key',
+        'kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync',
+        'flux --context "${CONTEXT}" reconcile source git',
+    )
+    sync_wait = 'kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync'
+    assert run.index(sync_wait) > run.index('final_qa_helpers.py create-deploy-key')
+    assert 'final_qa_helpers.py cleanup-deploy-key-markers' in text
     assert 'final_qa_helpers.py cleanup-ref-markers' in text
     assert 'test "$(cluster_state)" = absent || cleanup_failed=true' in text
+
+
+def test_identity_wait_is_bounded_private_and_context_guarded() -> None:
+    text = source()
+    wait = text[text.index("wait_for_flux_identity()") : text.index("protected_branch()")]
+    assert 'KUBECRATE_QA_IDENTITY_TIMEOUT' in wait
+    assert 'KUBECRATE_QA_IDENTITY_POLL_INTERVAL' in wait
+    assert 'assert_context' in wait
+    assert '.data.identity\\.pub' in wait
+    assert "identity public key was not generated before timeout" in wait
+    assert 'write-public-key' in text
+    assert '>"${EVIDENCE}/private/identity.pub"' not in text
 
 
 def test_green_red_green_captures_json_and_real_browser_ui() -> None:
@@ -125,7 +147,7 @@ def test_cleanup_trap_verifies_exact_key_branch_and_cluster_absence() -> None:
     text = source()
     assert "trap cleanup EXIT" in text
     for token in (
-        'repos/${REPO}/keys/${KEY_ID}',
+        'cleanup-deploy-key-markers',
         'final_qa_helpers.py cleanup-ref-markers',
         'kind delete cluster --name "${CLUSTER}"',
         "cleanup verification failed",

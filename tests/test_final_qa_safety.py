@@ -137,6 +137,73 @@ def test_unknown_lookup_fails_closed_before_create() -> None:
     assert not any(c[0] == "create" for c in api.calls)
 
 
+class FakeKeys:
+    def __init__(self, listed=None, created=None, readback=None):
+        self.listed = list(listed or [])
+        self.created = created
+        self.readback = readback
+        self.calls = []
+
+    def list(self):
+        self.calls.append(("list",))
+        return self.listed
+
+    def create(self, title, key):
+        self.calls.append(("create", title))
+        if isinstance(self.created, BaseException): raise self.created
+        return self.created
+
+    def get(self, key_id):
+        self.calls.append(("get", key_id))
+        return self.readback
+
+    def delete(self, key_id):
+        self.calls.append(("delete", key_id))
+        self.readback = None
+
+
+def deploy_key(key_id=7, title="kubecrate-qa-run", key="ssh-ed25519 AAAAtest"):
+    return {"id": key_id, "title": title, "key": key,
+            "read_only": True, "verified": True, "enabled": True}
+
+
+def test_deploy_key_create_readback_and_exact_cleanup(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned-deploy-key.json"
+    obj = deploy_key(); api = FakeKeys(created=obj, readback=obj)
+    assert helpers.create_deploy_key(
+        api, "kubecrate-qa-run", obj["key"], repo="o/r", marker=marker,
+        evidence_root=root) == 7
+    assert marker.exists() and not marker.with_suffix(".json.uncertain").exists()
+    helpers.cleanup_deploy_key_markers(
+        api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
+    assert ("delete", 7) in api.calls and not marker.exists()
+
+
+@pytest.mark.parametrize("bad", [None, [], {"id": "7"}, {"id": 7, "title": "wrong"}])
+def test_malformed_deploy_key_create_retains_crash_cleanup_intent(tmp_path: Path, bad) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned-deploy-key.json"
+    api = FakeKeys(created=bad)
+    with pytest.raises(AssertionError):
+        helpers.create_deploy_key(
+            api, "kubecrate-qa-run", "ssh-ed25519 AAAAtest", repo="o/r",
+            marker=marker, evidence_root=root)
+    assert not marker.exists() and marker.with_suffix(".json.uncertain").exists()
+
+
+def test_interrupt_after_deploy_key_create_recovers_unique_exact_key(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned-deploy-key.json"
+    key = "ssh-ed25519 AAAAtest"; obj = deploy_key(key=key)
+    root.mkdir(mode=0o700)
+    helpers._create_json_marker_exclusive(
+        marker.with_suffix(".json.uncertain"),
+        {"state": "created-unverified", "repo": "o/r", "title": "kubecrate-qa-run",
+         "fingerprint": helpers._public_key_fingerprint(key)}, evidence_root=root)
+    api = FakeKeys(listed=[obj], readback=obj)
+    helpers.cleanup_deploy_key_markers(
+        api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
+    assert ("delete", 7) in api.calls and not marker.with_suffix(".json.uncertain").exists()
+
+
 def test_owned_create_establishes_exact_ref() -> None:
     sha = "a" * 40
     obj = {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": sha}}
