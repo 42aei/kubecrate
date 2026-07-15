@@ -19,7 +19,7 @@ import sys
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 EXPECTED_IDS = (
     "cratecheck-deployment-ready",
@@ -56,10 +56,10 @@ class APIError(RuntimeError):
 
 
 class DeployKeysAPI(Protocol):
-    def list(self) -> list[dict[str, Any]]: ...
-    def get(self, key_id: int) -> dict[str, Any] | None: ...
+    def list(self, guard: Callable[[], None] | None = None) -> list[dict[str, Any]]: ...
+    def get(self, key_id: int, guard: Callable[[], None] | None = None) -> dict[str, Any] | None: ...
     def create(self, title: str, key: str) -> dict[str, Any] | None: ...
-    def delete(self, key_id: int) -> None: ...
+    def delete(self, key_id: int, guard: Callable[[], None] | None = None) -> None: ...
 
 
 class RefsAPI(Protocol):
@@ -174,6 +174,92 @@ def _assert_entry_identity(name: str, directory_fd: int, opened: os.stat_result)
     current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     assert stat.S_ISREG(current.st_mode), "marker entry is no longer a regular file"
     assert (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino), "marker entry was replaced"
+
+
+class HeldMarkerEvidence:
+    """Open, point-in-time-authenticated deploy-key evidence owned by its caller."""
+    def __init__(self, name: str, directory_fd: int, fd: int,
+                 opened: os.stat_result, expected: dict[str, Any]):
+        self.name = name
+        self.directory_fd = directory_fd
+        self.fd = fd
+        self.opened = opened
+        self.expected = expected
+
+    def verify(self) -> None:
+        _verify_held_marker(self)
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+        if self.directory_fd >= 0:
+            os.close(self.directory_fd)
+            self.directory_fd = -1
+
+
+def _stable_marker_metadata(info: os.stat_result) -> tuple[int, ...]:
+    # atime is intentionally excluded because reading may update it.
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _exact_json_value(actual: Any, expected: Any) -> bool:
+    """Compare JSON values without Python's bool/int equality coercion."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return (actual.keys() == expected.keys() and
+                all(_exact_json_value(actual[key], value)
+                    for key, value in expected.items()))
+    if isinstance(expected, list):
+        return (len(actual) == len(expected) and
+                all(_exact_json_value(left, right)
+                    for left, right in zip(actual, expected)))
+    return actual == expected
+
+
+def _verify_held_marker(evidence: HeldMarkerEvidence) -> None:
+    """Fully authenticate one held marker at a single immediate boundary."""
+    assert evidence.fd >= 0 and evidence.directory_fd >= 0, "deploy-key evidence is closed"
+    before = os.fstat(evidence.fd)
+    path_info = _entry_info(evidence.name, evidence.directory_fd)
+    _assert_marker_inode(before, links=1, label="held deploy-key evidence",
+                         authoritative=evidence.opened)
+    _assert_marker_inode(path_info, links=1, label="deploy-key evidence pathname",
+                         authoritative=before)
+    duplicate = os.dup(evidence.fd)
+    try:
+        os.lseek(duplicate, 0, os.SEEK_SET)
+        with os.fdopen(duplicate, encoding="utf-8") as stream:
+            duplicate = -1
+            payload = json.load(stream)
+            assert stream.read() == "", "deploy-key evidence has trailing content"
+    finally:
+        if duplicate >= 0:
+            os.close(duplicate)
+    after = os.fstat(evidence.fd)
+    path_after = _entry_info(evidence.name, evidence.directory_fd)
+    _assert_marker_inode(after, links=1, label="held deploy-key evidence after read",
+                         authoritative=evidence.opened)
+    _assert_marker_inode(path_after, links=1, label="deploy-key evidence pathname after read",
+                         authoritative=after)
+    assert _stable_marker_metadata(before) == _stable_marker_metadata(after), \
+        "deploy-key evidence metadata changed during verification"
+    assert _exact_json_value(payload, evidence.expected), \
+        "deploy-key evidence payload mismatch"
+
+
+def _held_marker(name: str, directory_fd: int, fd: int, opened: os.stat_result,
+                 expected: dict[str, Any]) -> HeldMarkerEvidence:
+    evidence = HeldMarkerEvidence(name, directory_fd, fd, opened, expected)
+    evidence.verify()
+    return evidence
+
+
+def _verify_all(evidence: list[HeldMarkerEvidence]) -> None:
+    for item in evidence:
+        item.verify()
 
 
 def _durable_unlink(name: str, directory_fd: int, *, missing_ok: bool = False) -> None:
@@ -397,32 +483,35 @@ def _rename_noreplace(source: str, destination: str, directory_fd: int) -> None:
 
 
 def _consume_open_marker(marker: Path, directory_fd: int, fd: int,
-                         opened: os.stat_result, expected: dict[str, Any]) -> str:
+                         opened: os.stat_result, expected: dict[str, Any]) -> HeldMarkerEvidence:
     """Atomically retire an authenticated marker as non-active audit evidence."""
     retired = f".retired-deploy-key-{os.urandom(16).hex()}-{marker.name}"
-    os.lseek(fd, 0, os.SEEK_SET)
-    with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
-        current = json.load(stream)
-    assert current == expected, "deploy-key auxiliary marker identity mismatch"
+    evidence = HeldMarkerEvidence(marker.name, directory_fd, fd, opened, expected)
+    evidence.verify()
     _rename_noreplace(marker.name, retired, directory_fd)
     os.fsync(directory_fd)
+    evidence.name = retired
     try:
-        _assert_entry_identity(retired, directory_fd, opened)
+        evidence.verify()
     except AssertionError as exc:
         # Retain the moved entry as diagnostic evidence on a race.  Never
         # remove an inode merely because it occupies the expected path.
         raise AssertionError(
             "deploy-key auxiliary marker was replaced during consumption") from exc
-    return retired
+    return evidence
 
 
 def _consume_marker(path: Path, evidence_root: Path, expected: dict[str, Any]) -> None:
     """Authenticate and durably retire one exact marker inode."""
     marker, directory_fd, fd, opened = _open_marker(path, evidence_root)
+    retired: HeldMarkerEvidence | None = None
     try:
-        _consume_open_marker(marker, directory_fd, fd, opened, expected)
+        retired = _consume_open_marker(marker, directory_fd, fd, opened, expected)
     finally:
-        os.close(fd); os.close(directory_fd)
+        if retired is not None:
+            retired.close()
+        else:
+            os.close(fd); os.close(directory_fd)
 
 
 def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
@@ -644,9 +733,11 @@ class GitHubDeployKeysAPI:
     def _request(self, method: str, endpoint: str, fields: dict[str, Any] | None = None) -> tuple[int, Any]:
         return self._refs._request(method, endpoint, fields)
 
-    def list(self) -> list[dict[str, Any]]:
+    def list(self, guard: Callable[[], None] | None = None) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for page in range(1, self.MAX_LIST_PAGES + 1):
+            if guard is not None:
+                guard()
             status, body = self._request(
                 "GET", f"repos/{self.repo}/keys?per_page=100&page={page}")
             if status != 200 or not isinstance(body, list) or not all(
@@ -659,7 +750,9 @@ class GitHubDeployKeysAPI:
                 return result
         raise APIError(0, "deploy-key pagination exceeded safety bound")
 
-    def get(self, key_id: int) -> dict[str, Any] | None:
+    def get(self, key_id: int, guard: Callable[[], None] | None = None) -> dict[str, Any] | None:
+        if guard is not None:
+            guard()
         status, body = self._request("GET", f"repos/{self.repo}/keys/{key_id}")
         if status == 404:
             if not isinstance(body, dict) or body.get("message") != "Not Found":
@@ -680,7 +773,9 @@ class GitHubDeployKeysAPI:
             raise APIError(status, "deploy-key create response must be an object")
         return body
 
-    def delete(self, key_id: int) -> None:
+    def delete(self, key_id: int, guard: Callable[[], None] | None = None) -> None:
+        if guard is not None:
+            guard()
         status, _ = self._request("DELETE", f"repos/{self.repo}/keys/{key_id}")
         if status != 204:
             raise APIError(status, "unexpected deploy-key delete response")
@@ -922,7 +1017,7 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             identity = {"repo": repo, "title": title,
                         "fingerprint": initial["fingerprint"]}
             auxiliaries: list[tuple[Path, int, int, os.stat_result, dict[str, Any]]] = []
-            retired_auxiliaries: list[tuple[str, int, os.stat_result]] = []
+            held: list[HeldMarkerEvidence] = []
             try:
                 if _key_marker_exists(uncertain, evidence_root):
                     expected_attempt = {"state": "create-attempting", **identity}
@@ -945,28 +1040,38 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                 # Keep every authenticated descriptor open until all auxiliaries
                 # have been inspected, then consume while owned remains linked.
                 for auxiliary in reversed(auxiliaries):
-                    retired = _consume_open_marker(*auxiliary)
-                    retired_auxiliaries.append((retired, auxiliary[1], auxiliary[3]))
-                # Recheck the retired audit entries immediately before the first
-                # remote call. A replacement fails closed while owned remains
-                # authoritative and no pathname is ever unlinked by this flow.
-                for retired, retired_dir_fd, retired_info in retired_auxiliaries:
-                    _assert_entry_identity(retired, retired_dir_fd, retired_info)
-            finally:
-                for _, auxiliary_dir_fd, auxiliary_fd, _, _ in auxiliaries:
-                    os.close(auxiliary_fd); os.close(auxiliary_dir_fd)
-            _assert_entry_identity(marker.name, directory_fd, info)
-            _assert_deploy_key(api.get(key_id), title, initial["fingerprint"], key_id)
-            _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
+                    held.append(_consume_open_marker(*auxiliary))
+                owned_evidence = _held_marker(marker.name, directory_fd, fd, info, expected_owned)
+                all_evidence = [owned_evidence, *held]
+                _assert_deploy_key(api.get(key_id, guard=lambda: _verify_all(all_evidence)),
+                                   title, initial["fingerprint"], key_id)
+                _assert_unique_exact_key(api.list(guard=lambda: _verify_all(all_evidence)),
+                                         key_id=key_id, title=title,
                                      fingerprint=initial["fingerprint"])
-            api.delete(key_id)
-            assert api.get(key_id) is None, "deploy-key deletion absence not proved"
-            _assert_key_absent(api.list(), key_id=key_id, title=title,
-                               fingerprint=initial["fingerprint"])
-            _consume_open_marker(marker, directory_fd, fd, info, expected_owned)
+                api.delete(key_id, guard=lambda: _verify_all(all_evidence))
+                assert api.get(key_id, guard=lambda: _verify_all(all_evidence)) is None, \
+                    "deploy-key deletion absence not proved"
+                _assert_key_absent(api.list(guard=lambda: _verify_all(all_evidence)),
+                                   key_id=key_id, title=title,
+                                   fingerprint=initial["fingerprint"])
+                _verify_all(all_evidence)
+                retired_owned = _consume_open_marker(
+                    marker, directory_fd, fd, info, expected_owned)
+                # Ownership of these two descriptors moved to the held object.
+                fd = directory_fd = -1
+                retired_owned.close()
+            finally:
+                consumed_fds = {evidence.fd for evidence in held}
+                for evidence in held:
+                    evidence.close()
+                # Any auxiliary not successfully retired still owns its tuple fds.
+                for auxiliary in auxiliaries:
+                    if auxiliary[2] not in consumed_fds:
+                        os.close(auxiliary[2]); os.close(auxiliary[1])
 
         finally:
-            os.close(fd); os.close(directory_fd)
+            if fd >= 0: os.close(fd)
+            if directory_fd >= 0: os.close(directory_fd)
         return
     if _key_marker_exists(uncertain, evidence_root):
         uncertain, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
@@ -981,7 +1086,11 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
         os.close(fd); os.close(directory_fd)
         directory_fd, fd, info = directory_fd2, fd2, info2
         outcome_dir_fd = outcome_fd = -1
+        retired_evidence: list[HeldMarkerEvidence] = []
         try:
+            expected_attempt = {"state": "create-attempting", "repo": repo,
+                                "title": title, "fingerprint": fingerprint}
+            assert initial == expected_attempt, "deploy-key attempt marker has unexpected fields"
             assert _key_marker_exists(outcome, evidence_root), \
                 "deploy-key attempt has no durable outcome; retained without deletion"
             outcome_path, outcome_dir_fd, outcome_fd, outcome_info = _open_marker(
@@ -995,15 +1104,27 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                 "deploy-key outcome marker identity mismatch"
             assert outcome_initial.get("fingerprint") == fingerprint, \
                 "deploy-key outcome marker fingerprint mismatch"
-            _assert_entry_identity(outcome_path.name, outcome_dir_fd, outcome_info)
-            normalized = _validate_key_list(api.list())
+            expected_outcome = {"state": outcome_state, "repo": repo, "title": title,
+                                "fingerprint": fingerprint}
+            assert outcome_initial == expected_outcome, \
+                "deploy-key outcome marker has unexpected fields"
+            attempt_evidence = _held_marker(
+                uncertain.name, directory_fd, fd, info, expected_attempt)
+            outcome_evidence = _held_marker(
+                outcome_path.name, outcome_dir_fd, outcome_fd, outcome_info, expected_outcome)
+            evidence = [attempt_evidence, outcome_evidence]
+            normalized = _validate_key_list(api.list(guard=lambda: _verify_all(evidence)))
             if outcome_state == "create-rejected":
                 assert not any(item_title == title or item_fingerprint == fingerprint
                                for _, _, item_title, item_fingerprint in normalized), \
                     "rejected deploy-key identity exists; marker retained without deletion"
-                _consume_open_marker(outcome, outcome_dir_fd, outcome_fd, outcome_info,
-                                     outcome_initial)
-                _consume_open_marker(uncertain, directory_fd, fd, info, initial)
+                _verify_all(evidence)
+                retired_evidence.append(_consume_open_marker(
+                    outcome, outcome_dir_fd, outcome_fd, outcome_info, expected_outcome))
+                outcome_fd = outcome_dir_fd = -1
+                retired_evidence.append(_consume_open_marker(
+                    uncertain, directory_fd, fd, info, expected_attempt))
+                fd = directory_fd = -1
                 return
             matches = [(item, key_id) for item, key_id, item_title, item_fingerprint in normalized
                        if item_title == title and item_fingerprint == fingerprint]
@@ -1014,18 +1135,28 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             if matches:
                 candidate, key_id = matches[0]
                 _assert_deploy_key(candidate, title, fingerprint, key_id)
-                _assert_deploy_key(api.get(key_id), title, fingerprint, key_id)
-                api.delete(key_id)
-                assert api.get(key_id) is None, "deploy-key deletion absence not proved"
-                _assert_key_absent(api.list(), key_id=key_id, title=title,
+                _assert_deploy_key(api.get(key_id, guard=lambda: _verify_all(evidence)),
+                                   title, fingerprint, key_id)
+                api.delete(key_id, guard=lambda: _verify_all(evidence))
+                assert api.get(key_id, guard=lambda: _verify_all(evidence)) is None, \
+                    "deploy-key deletion absence not proved"
+                _assert_key_absent(api.list(guard=lambda: _verify_all(evidence)),
+                                   key_id=key_id, title=title,
                                    fingerprint=fingerprint)
-            _consume_open_marker(outcome, outcome_dir_fd, outcome_fd, outcome_info,
-                                 outcome_initial)
-            _consume_open_marker(uncertain, directory_fd, fd, info, initial)
+            _verify_all(evidence)
+            retired_evidence.append(_consume_open_marker(
+                outcome, outcome_dir_fd, outcome_fd, outcome_info, expected_outcome))
+            outcome_fd = outcome_dir_fd = -1
+            retired_evidence.append(_consume_open_marker(
+                uncertain, directory_fd, fd, info, expected_attempt))
+            fd = directory_fd = -1
         finally:
+            for retired in retired_evidence:
+                retired.close()
             if outcome_fd >= 0: os.close(outcome_fd)
             if outcome_dir_fd >= 0: os.close(outcome_dir_fd)
-            os.close(fd); os.close(directory_fd)
+            if fd >= 0: os.close(fd)
+            if directory_fd >= 0: os.close(directory_fd)
         return
     if _key_marker_exists(outcome, evidence_root):
         raise AssertionError(

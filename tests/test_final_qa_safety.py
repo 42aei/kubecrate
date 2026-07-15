@@ -146,7 +146,8 @@ class FakeKeys:
         self.readback = readback
         self.calls = []
 
-    def list(self):
+    def list(self, guard=None):
+        if guard: guard()
         self.calls.append(("list",))
         if self.listed and isinstance(self.listed[0], list):
             return self.listed.pop(0)
@@ -157,11 +158,13 @@ class FakeKeys:
         if isinstance(self.created, BaseException): raise self.created
         return self.created
 
-    def get(self, key_id):
+    def get(self, key_id, guard=None):
+        if guard: guard()
         self.calls.append(("get", key_id))
         return self.readback
 
-    def delete(self, key_id):
+    def delete(self, key_id, guard=None):
+        if guard: guard()
         self.calls.append(("delete", key_id))
         self.readback = None
 
@@ -281,6 +284,82 @@ def test_github_deploy_key_list_paginates_until_short_page_and_fails_at_boundary
     calls.clear(); pages[:] = [[deploy_key(i + 1, f"key-{i}", public_key((i % 250) + 1)) for i in range(100)], "bad"]
     with pytest.raises(helpers.APIError): api.list()
     assert calls[-1].endswith("page=2")
+
+
+def test_github_deploy_key_guard_runs_immediately_before_every_page(monkeypatch) -> None:
+    api = helpers.GitHubDeployKeysAPI("o/r"); events = []
+    full = [deploy_key(i + 1, f"key-{i}", public_key((i % 250) + 1)) for i in range(100)]
+    responses = [(200, full), (200, [])]
+    monkeypatch.setattr(api, "_request", lambda *_args: events.append("request") or responses.pop(0))
+    assert len(api.list(guard=lambda: events.append("guard"))) == 100
+    assert events == ["guard", "request", "guard", "request"]
+
+
+def test_owned_payload_mutation_at_delete_boundary_blocks_delete_and_retains_active(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
+    _write_owned_key_evidence(root, marker, key)
+
+    class MutatingKeys(FakeKeys):
+        def delete(self, key_id, guard=None):
+            marker.write_text(json.dumps({"state": "owned", "repo": "o/r", "title": obj["title"],
+                "fingerprint": helpers._public_key_fingerprint(key), "key_id": 8}) + "\n")
+            if guard: guard()
+            pytest.fail("DELETE crossed a failed evidence guard")
+
+    api = MutatingKeys(listed=[[obj]], readback=obj)
+    with pytest.raises(AssertionError):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
+    assert marker.exists() and not any(call[0] == "delete" for call in api.calls)
+
+
+@pytest.mark.parametrize("mutation", ["payload", "type", "chmod", "hardlink", "replace"])
+def test_held_marker_full_verifier_rejects_content_metadata_and_path_mutation(
+    tmp_path: Path, mutation: str
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key()
+    _write_owned_key_evidence(root, marker, key)
+    expected = json.loads(marker.read_text())
+    path, directory_fd, fd, opened = helpers._open_marker(marker, root)
+    evidence = helpers.HeldMarkerEvidence(path.name, directory_fd, fd, opened, expected)
+    try:
+        if mutation == "payload":
+            marker.write_text(json.dumps({**expected, "key_id": 8}) + "\n")
+        elif mutation == "type":
+            marker.write_text(json.dumps({**expected, "key_id": True}) + "\n")
+        elif mutation == "chmod":
+            marker.chmod(0o640)
+        elif mutation == "hardlink":
+            os.link(marker, root / "extra-link")
+        else:
+            replacement = root / "replacement"
+            replacement.write_text(json.dumps(expected) + "\n"); replacement.chmod(0o600)
+            replacement.replace(marker)
+        with pytest.raises(AssertionError):
+            evidence.verify()
+    finally:
+        evidence.close()
+
+
+def test_post_delete_evidence_mutation_stops_all_later_api_and_retains_active(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
+    _write_owned_key_evidence(root, marker, key)
+
+    class PostDeleteMutation(FakeKeys):
+        def get(self, key_id, guard=None):
+            if self.readback is None:
+                marker.chmod(0o640)
+            if guard: guard()
+            self.calls.append(("get", key_id))
+            return self.readback
+
+    api = PostDeleteMutation(listed=[[obj], []], readback=obj)
+    with pytest.raises(AssertionError):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
+    assert ("delete", 7) in api.calls
+    assert api.calls[-1] == ("delete", 7)
+    assert marker.exists()
 
 
 def test_github_deploy_key_list_complete_pagination_edges(monkeypatch) -> None:
@@ -683,28 +762,28 @@ def test_retired_auxiliary_substitution_before_api_is_retained_and_fails_closed(
     key = public_key(); _write_owned_key_evidence(
         root, marker, key, (("attempt", "create-attempting"),))
     attacker = b"foreign retired replacement\n"
-    real_assert = helpers._assert_entry_identity
+    real_verify = helpers._verify_held_marker
     real_unlink = os.unlink
     retired_checks = 0
 
-    def substitute_before_api(name, directory_fd, opened):
+    def substitute_before_api(evidence):
         nonlocal retired_checks
-        if name.startswith(".retired-deploy-key-"):
+        if evidence.name.startswith(".retired-deploy-key-"):
             retired_checks += 1
             if retired_checks == 2:
-                real_unlink(name, dir_fd=directory_fd)
+                real_unlink(evidence.name, dir_fd=evidence.directory_fd)
                 replacement = os.open(
-                    name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-                    dir_fd=directory_fd)
+                    evidence.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                    dir_fd=evidence.directory_fd)
                 os.write(replacement, attacker); os.close(replacement)
-        return real_assert(name, directory_fd, opened)
+        return real_verify(evidence)
 
-    monkeypatch.setattr(helpers, "_assert_entry_identity", substitute_before_api)
+    monkeypatch.setattr(helpers, "_verify_held_marker", substitute_before_api)
     monkeypatch.setattr(
         helpers.os, "unlink",
         lambda *args, **kwargs: pytest.fail("deploy-key cleanup used pathname unlink"))
     api = FakeKeys(listed=[[deploy_key(key=key)]], readback=deploy_key(key=key))
-    with pytest.raises(AssertionError, match="replaced"):
+    with pytest.raises(AssertionError, match="replaced|link count"):
         helpers.cleanup_deploy_key_markers(
             api, repo="o/r", title="kubecrate-qa-run", marker=marker,
             evidence_root=root)
