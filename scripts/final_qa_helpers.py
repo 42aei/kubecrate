@@ -581,9 +581,11 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
             post_error.add_note(f"authoritative GET also failed: {readback_error}")
             raise post_error from readback_error
         raise
-    if post_error is not None:
-        raise post_error
 
+    # A return-code-successful POST only proves that GitHub accepted the
+    # request. Its body is diagnostic: gh may emit no body, non-object JSON,
+    # malformed output, or a mismatched object. The exact authoritative GET
+    # above is the ownership proof in every successful-POST case.
     if marker:
         assert evidence_root is not None
         _create_marker_exclusive(marker, repo, ref, sha, "owned", evidence_root=evidence_root)

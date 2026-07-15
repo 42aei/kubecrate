@@ -1520,20 +1520,31 @@ def test_helper_cli_empty_create_body_uses_exact_readback_then_marker_gated_dele
     assert "-X DELETE" in (tmp_path / "gh.log").read_text()
 
 
+@pytest.mark.parametrize("post_body", [
+    "",
+    "[]",
+    '"scalar"',
+    "not-json",
+    "HTTP/2 201 Created\r\ncontent-type: application/json\r\n\r\n" +
+    ref_obj("refs/heads/qa", "a" * 40),
+    ref_obj("refs/heads/other", "a" * 40),
+])
 @pytest.mark.parametrize("readback", [
     (404, '{"message":"Not Found"}'),
     (200, "[]"),
+    (200, "not-json"),
     (200, ref_obj("refs/heads/other", "a" * 40)),
     (200, ref_obj("refs/heads/qa", "b" * 40)),
+    (200, json.dumps({"ref": "refs/heads/qa", "object": {"type": "tag", "sha": "a" * 40}})),
     (500, '{"message":"unknown"}'),
 ])
-def test_helper_cli_empty_create_body_unproved_readback_retains_uncertainty_without_delete(
-    tmp_path: Path, readback: tuple[int, str]
+def test_helper_cli_expected_success_post_anomaly_with_unproved_readback_retains_uncertainty(
+    tmp_path: Path, post_body: str, readback: tuple[int, str]
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
     result = run_helper(
         tmp_path,
-        [(404, '{"message":"Not Found"}'), (201, ""), readback],
+        [(404, '{"message":"Not Found"}'), (201, post_body), readback],
         "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
         "--evidence-root", str(root), "--marker", str(marker),
     )
@@ -1542,12 +1553,15 @@ def test_helper_cli_empty_create_body_unproved_readback_retains_uncertainty_with
 
 
 @pytest.mark.parametrize("post_body", [
+    "",
     ref_obj("refs/heads/other", "a" * 40),
     "[]",
     '"scalar"',
     "not-json",
+    "HTTP/2 201 Created\r\ncontent-type: application/json\r\n\r\n" +
+    ref_obj("refs/heads/qa", "a" * 40),
 ])
-def test_helper_cli_bad_nonempty_create_evidence_still_reads_back_but_never_owns(
+def test_helper_cli_expected_success_post_body_is_diagnostic_when_exact_get_proves_ref(
     tmp_path: Path, post_body: str
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
@@ -1558,9 +1572,24 @@ def test_helper_cli_bad_nonempty_create_evidence_still_reads_back_but_never_owns
         "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
         "--evidence-root", str(root), "--marker", str(marker),
     )
-    assert result.returncode != 0 and not marker.exists() and uncertain.exists()
+    assert result.returncode == 0 and marker.exists() and not uncertain.exists()
     log = (tmp_path / "gh.log").read_text()
     assert log.count("-X GET") == 2 and "-X DELETE" not in log
+
+
+def test_helper_cli_non_success_post_never_uses_coincident_exact_ref_as_ownership(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; uncertain = marker.with_suffix(".json.uncertain")
+    exact = ref_obj("refs/heads/qa", "a" * 40)
+    result = run_helper(
+        tmp_path,
+        [(404, '{"message":"Not Found"}'), (422, '{"message":"Reference already exists"}'), (200, exact)],
+        "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
+        "--evidence-root", str(root), "--marker", str(marker),
+    )
+    assert result.returncode != 0 and not marker.exists() and uncertain.exists()
+    log = (tmp_path / "gh.log").read_text()
+    assert log.count("-X GET") == 1 and "-X DELETE" not in log
+    assert len(json.loads((tmp_path / "responses.json").read_text())) == 1
 
 
 def test_exact_create_object_and_exact_readback_establish_ownership(tmp_path: Path) -> None:
@@ -1636,16 +1665,17 @@ def test_github_parser_uses_final_http_block(tmp_path: Path, raw: str, status: i
     assert helpers.GitHubRefsAPI._parse_response(raw) == (status, body)
 
 
-def test_github_refs_api_rejects_non_object_success_and_malformed_404(tmp_path: Path) -> None:
+def test_github_refs_api_non_object_success_is_provisional_and_malformed_404_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"
     result = run_helper(
         tmp_path,
-        [(404, '{"message":"Not Found"}'), (201, "[]")],
+        [(404, '{"message":"Not Found"}'), (201, "[]"),
+         (200, ref_obj("refs/heads/qa", "a" * 40))],
         "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
         "--evidence-root", str(root), "--marker", str(marker),
     )
-    assert result.returncode != 0 and not marker.exists()
-    assert marker.with_suffix(".json.uncertain").exists()
+    assert result.returncode == 0 and marker.exists()
+    assert not marker.with_suffix(".json.uncertain").exists()
 
     bindir = fake_gh(tmp_path, [[404, "[]"]], tmp_path / "lookup.log")
     old = os.environ.copy(); os.environ.update({"PATH": f"{bindir}:{old['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(tmp_path / "lookup.log")})
