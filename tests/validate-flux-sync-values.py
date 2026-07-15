@@ -16,6 +16,8 @@ ENTRYPOINT = ROOT / "clusters/kind-dev-misc-local/entrypoint"
 RENDERER = ROOT / "scripts/render-final-qa-flux-source.py"
 HELM_RELEASE = ROOT / "platform-services/flux/base/helm-release-sync.yaml"
 CHART_VERSION = "1.14.6"
+SYNC_NAME = "flux-system-sync"
+SYNC_NAMESPACE = "flux-system"
 
 
 def load_values(text: str) -> dict:
@@ -200,9 +202,12 @@ def test_exact_qa_renderer_rejects_corrupt_repository_owned_base_types() -> None
         assert result.stdout == ""
 
 
-def test_helm_1146_render_requests_ed25519() -> None:
+def test_helm_1146_render_matches_generated_sync_resource_contract() -> None:
     release = yaml.safe_load(HELM_RELEASE.read_text(encoding="utf-8"))
     assert release["spec"]["chart"]["spec"]["version"] == CHART_VERSION
+    assert release["metadata"]["name"] == SYNC_NAME
+    assert release["metadata"]["namespace"] == SYNC_NAMESPACE
+    assert release["spec"]["releaseName"] == SYNC_NAME
     if not shutil.which("helm"):
         raise AssertionError("helm executable is required for pinned chart render validation")
     version = subprocess.run(
@@ -211,7 +216,7 @@ def test_helm_1146_render_requests_ed25519() -> None:
     assert version.startswith("v3."), f"Helm v3 is required, got: {version}"
     rendered = subprocess.run(
         [
-            "helm", "template", "flux-system", "flux2-sync",
+            "helm", "template", SYNC_NAME, "flux2-sync",
             "--repo", "https://fluxcd-community.github.io/helm-charts",
             "--version", CHART_VERSION, "--namespace", "flux-system", "-f", str(VALUES),
         ],
@@ -225,8 +230,20 @@ def test_helm_1146_render_requests_ed25519() -> None:
     ]
     assert len(jobs) == 1
     command = jobs[0]["spec"]["template"]["spec"]["containers"][0]["command"]
+    create_secret = ["create", "secret", "git", SYNC_NAME]
+    assert any(command[index:index + len(create_secret)] == create_secret
+               for index in range(len(command) - len(create_secret) + 1))
+    assert command.count(f"--namespace={SYNC_NAMESPACE}") == 1
     assert command.count("--ssh-key-algorithm=ed25519") == 1
     assert "--ssh-key-algorithm=ecdsa" not in command
+    for kind in ("GitRepository", "Kustomization"):
+        matches = [
+            document for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict) and document.get("kind") == kind
+        ]
+        assert len(matches) == 1
+        assert matches[0]["metadata"]["name"] == SYNC_NAME
+        assert matches[0]["metadata"]["namespace"] == SYNC_NAMESPACE
 
 
 CONTRACT_CHECKS = (
@@ -261,5 +278,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     run_all_contract_checks()
     if args.helm_render:
-        test_helm_1146_render_requests_ed25519()
+        test_helm_1146_render_matches_generated_sync_resource_contract()
     print("Flux sync values validation passed")

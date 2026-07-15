@@ -35,7 +35,7 @@ In fail-closed order the script:
 1. proves the locally executed scripts/manifests are exactly the candidate commit and tree, with no tracked or untracked shadow files;
 2. creates and verifies an exact GitHub QA ref atomically before cluster creation;
 3. runs the real disposable deploy-key create/read/delete preflight;
-4. creates a unique kind cluster, applies the runtime-only Flux source artifact, then boundedly waits for `Secret/flux-system` to contain a non-empty `identity.pub` without logging key material;
+4. creates a unique kind cluster, applies the runtime-only Flux source artifact, then boundedly waits for the generated sync credential `Secret/flux-system-sync` to contain a non-empty `identity.pub` without logging key material;
 5. writes the generated public key only through a descriptor-confined `0700`/`0600` private path, durably records cleanup intent containing only the OpenSSH-style `SHA256:<base64-without-padding>` fingerprint of the decoded key blob, creates the unique read-only deploy key, and requires exact POST, GET, and complete paginated-list agreement on ID, title, normalized fingerprint, and strict enabled/read-only/verified metadata before removing private key artifacts;
 6. explicitly requests the sync HelmRelease to reconcile, waits for it to become Ready only after deploy-key registration, then verifies Flux source and Kustomization reconciliation on the expected context;
 7. requires the exact seven unique check IDs, strict summary counts, and structured browser check cards whose exact configured names and status attributes map back to those IDs (CrateCheck's current UI renders names rather than IDs);

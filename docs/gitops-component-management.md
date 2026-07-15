@@ -65,7 +65,7 @@ Flux uses a self-managing handoff model for the first slice. Bootstrap installat
 
 #### Bootstrap trust: operator-provided inputs
 
-Bootstrap installation is responsible for receiving, collecting, or generating the trust inputs needed to start bootstrap-critical services. In the first slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path: the chart creates `Secret/flux-system`, and the operator registers the generated public key as a read-only deploy key with the Git provider.
+Bootstrap installation is responsible for receiving, collecting, or generating the trust inputs needed to start bootstrap-critical services. In the first slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path: the `flux-system-sync` chart release creates `Secret/flux-system-sync`, `GitRepository/flux-system-sync`, and `Kustomization/flux-system-sync`, and the operator registers the generated public key as a read-only deploy key with the Git provider.
 
 Bootstrap-critical services may be installed during bootstrap installation and then handed off to GitOps-managed operation. Whether a service is bootstrap-installed or first installed under GitOps-managed operation depends on its operational needs. This document states the input rule without prematurely classifying every service. When a later change introduces a concrete service, that change resolves whether the service follows the bootstrap-install-handoff path or the direct GitOps-managed path.
 

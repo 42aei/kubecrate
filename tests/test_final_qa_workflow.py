@@ -62,7 +62,9 @@ def test_standard_make_validation_requires_pinned_helm_render() -> None:
     assert "tests/validate-flux-sync-values.py --helm-render" in recipe
     validator = (ROOT / "tests/validate-flux-sync-values.py").read_text(encoding="utf-8")
     main = validator[validator.index('if __name__ == "__main__":'):]
-    assert main.index("run_all_contract_checks()") < main.index("test_helm_1146_render_requests_ed25519()")
+    assert main.index("run_all_contract_checks()") < main.index(
+        "test_helm_1146_render_matches_generated_sync_resource_contract()"
+    )
 
 
 def test_contract_check_runner_propagates_failure() -> None:
@@ -126,7 +128,7 @@ def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
         'helm upgrade --install flux-system',
         'kubectl --context "${CONTEXT}" apply -f -',
         'flux --context "${CONTEXT}" reconcile source git',
-        'flux --context "${CONTEXT}" reconcile kustomization flux-system',
+        'flux --context "${CONTEXT}" reconcile kustomization "${SYNC_NAME}"',
         'flux --context "${CONTEXT}" suspend kustomization',
         'kubectl --context "${CONTEXT}" delete secret',
         'final_qa_helpers.py restore --context "${CONTEXT}"',
@@ -145,10 +147,10 @@ def test_created_deploy_key_is_validated_before_readback_and_cleanup_is_fail_clo
         'kubectl --context "${CONTEXT}" apply -f -',
         'wait_for_flux_identity',
         'final_qa_helpers.py create-deploy-key',
-        'kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync',
+        'kubectl --context "${CONTEXT}" wait --for=condition=Ready "helmrelease/${SYNC_NAME}"',
         'flux --context "${CONTEXT}" reconcile source git',
     )
-    sync_wait = 'kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync'
+    sync_wait = 'kubectl --context "${CONTEXT}" wait --for=condition=Ready "helmrelease/${SYNC_NAME}"'
     assert run.index(sync_wait) > run.index('final_qa_helpers.py create-deploy-key')
     assert 'final_qa_helpers.py cleanup-deploy-key-markers' in text
     assert 'final_qa_helpers.py cleanup-ref-markers' in text

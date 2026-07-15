@@ -21,8 +21,8 @@ The first implementation task is the narrow end-to-end tracer bullet. The follow
 ### 1.4 Flux bootstrap and sync contract (enabling)
 
 - [x] 1.4.1 Implement the Flux Helm chart bootstrap contract for release `flux-system` in namespace `flux-system`, including the minimum chart reference and values needed for the first tracer bullet and matching self-managed manifests under `platform-services/flux/base/` and `clusters/kind-dev-misc-local/platform-services/flux/`. Treat `flux-system` as the explicit approved Flux exception for this slice, while the general platform service dedicated namespace rule remains `core-<service-name>` for other services.
-- [x] 1.4.2 Implement the `flux2-sync` contract for this repository and current implementation branch using SSH deploy-key generation, with `Secret/flux-system`, `GitRepository/flux-system`, and `Kustomization/flux-system` as the expected object names in namespace `flux-system`. Do not introduce `core-flux` for the first GitOps controller bootstrap or self-management path.
-- [x] 1.4.3 Implement the public-key retrieval step from `Secret/flux-system` field `identity.pub` and expose it through bootstrap output or operator guidance so the operator can register it as a deploy key with the Git provider.
+- [x] 1.4.2 Implement the `flux2-sync` contract for this repository and current implementation branch using SSH deploy-key generation, with `Secret/flux-system-sync`, `GitRepository/flux-system-sync`, and `Kustomization/flux-system-sync` as the expected object names in namespace `flux-system`. Do not introduce `core-flux` for the first GitOps controller bootstrap or self-management path.
+- [x] 1.4.3 Implement the public-key retrieval step from `Secret/flux-system-sync` field `identity.pub` and expose it through bootstrap output or operator guidance so the operator can register it as a deploy key with the Git provider.
 - [x] 1.4.4 Keep the generated private key in-cluster as Secret material and ensure no committed Helm values or other Git-managed files contain raw credential material.
 - [x] 1.4.5 Wire `clusters/kind-dev-misc-local/entrypoint/kustomization.yaml` to reconcile the same desired-state path bootstrap prepared by including `kubecrate-system-namespace.yaml`, referencing `../platform-services/flux`, and including `kubecrate-reconciliation-marker.yaml`, preserving Flux self-management handoff.
 
@@ -33,16 +33,16 @@ Validation note: static render or build checks are necessary but not sufficient 
 - [x] 1.5.1 Prepare the kind cluster using kind plumbing from 1.2.
 - [x] 1.5.2 Install Flux controllers through the planned Helm-driven bootstrap path against the prepared cluster.
 - [x] 1.5.3 Run the planned `flux2-sync` workflow in SSH mode so the repository and branch are configured for GitOps-managed operation.
-- [x] 1.5.4 Retrieve or display the generated public key from `Secret/flux-system`, register it with the Git provider as a deploy key for this repository, and record the registration evidence used in validation.
-- [x] 1.5.5 Verify Flux controllers are running, `GitRepository/flux-system` is Ready through SSH access, `Kustomization/flux-system` is Ready, and the initial reconciliation completes after deploy-key registration.
+- [x] 1.5.4 Retrieve or display the generated public key from `Secret/flux-system-sync`, register it with the Git provider as a deploy key for this repository, and record the registration evidence used in validation.
+- [x] 1.5.5 Verify Flux controllers are running, `GitRepository/flux-system-sync` is Ready through SSH access, `Kustomization/flux-system-sync` is Ready, and the initial reconciliation completes after deploy-key registration.
 
-Acceptance: Flux controllers are Healthy, `flux2-sync` has produced the required SSH key material in `Secret/flux-system`, the operator has a clear public-key registration step sourced from `identity.pub`, `flux get source git flux-system -n flux-system` and `flux get kustomization flux-system -n flux-system` show Ready, and evidence commands capture the state.
+Acceptance: Flux controllers are Healthy, `flux2-sync` has produced the required SSH key material in `Secret/flux-system-sync`, the operator has a clear public-key registration step sourced from `identity.pub`, `flux get source git flux-system-sync -n flux-system` and `flux get kustomization flux-system-sync -n flux-system` show Ready, and evidence commands capture the state.
 
 ### 1.6 Flux self-management and `kubecrate-reconciliation-marker` at version X
 
 - [x] 1.6.1 Confirm Flux is self-managing: verify Flux reconciles its own installation from the cluster entrypoint path.
 - [x] 1.6.2 Verify `ConfigMap/kubecrate-reconciliation-marker` in namespace `kubecrate-system` is reconciled through Flux at version X (`data.version: v0.1.0` or equivalent tracked config value) from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`.
-- [x] 1.6.3 Capture baseline evidence: Flux status, `Secret/flux-system` presence, `GitRepository/flux-system` readiness, `Kustomization/flux-system` readiness, generated-public-key registration evidence, and `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` showing version X.
+- [x] 1.6.3 Capture baseline evidence: Flux status, `Secret/flux-system-sync` presence, `GitRepository/flux-system-sync` readiness, `Kustomization/flux-system-sync` readiness, generated-public-key registration evidence, and `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` showing version X.
 
 Acceptance: Flux Kustomization for itself shows Ready. `ConfigMap/kubecrate-reconciliation-marker` is present in namespace `kubecrate-system` at version X from `clusters/kind-dev-misc-local/entrypoint/kubecrate-reconciliation-marker.yaml`. The evidence command `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` confirms `v0.1.0`. No bootstrap re-run is needed for Flux or the reconciliation marker proof to be active.
 

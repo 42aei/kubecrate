@@ -4,7 +4,7 @@ This document covers durable operator knowledge for the Flux `flux2-sync` SSH de
 
 ## Deploy-key contract (summary)
 
-- The `flux2-sync` chart creates `Secret/flux-system` with an SSH key pair.
+- The `flux2-sync` chart release `flux-system-sync` creates `Secret/flux-system-sync` with an SSH key pair and reconciles `GitRepository/flux-system-sync` and `Kustomization/flux-system-sync`.
 - Kubecrate explicitly configures chart version `1.14.6` to generate an Ed25519 key; do not rely on the chart's ECDSA default.
 - The operator retrieves the generated public key from `identity.pub` and registers it with the Git provider as a **read-only** deploy key.
 - The generated private key stays in-cluster and must not be committed, printed, or copied.
@@ -38,16 +38,16 @@ Alternatively, run the preflight at `scripts/preflight-flux-deploy-key.py`. It g
 
 ### How keys become disabled
 
-When an organization changes its deploy-key policy from *allow* to *disallow*, GitHub does not delete existing deploy keys — it sets `enabled: false` on each key. Flux will then fail to connect because the private key in `Secret/flux-system` no longer matches an *enabled* public key registered on the repository.
+When an organization changes its deploy-key policy from *allow* to *disallow*, GitHub does not delete existing deploy keys — it sets `enabled: false` on each key. Flux will then fail to connect because the private key in `Secret/flux-system-sync` no longer matches an *enabled* public key registered on the repository.
 
 ### Symptom in Flux
 
 ```
-GitRepository/flux-system: failed to checkout and determine revision:
+GitRepository/flux-system-sync: failed to checkout and determine revision:
 unable to clone 'ssh://git@github.com/...': ...
 ```
 
-The `flux get source git flux-system` command will show the GitRepository as not ready with an authentication or clone error.
+The `flux get source git flux-system-sync` command will show the GitRepository as not ready with an authentication or clone error.
 
 ### Diagnosis checklist
 
@@ -64,7 +64,7 @@ The `flux get source git flux-system` command will show the GitRepository as not
    - Navigate to `https://github.com/<org>/<repo>/settings/keys`
    - Find the key and toggle it back on via the UI
    - Alternatively, delete the disabled key and re-register it: the public key
-     is still available in the cluster (`kubectl -n flux-system get secret flux-system
+     is still available in the cluster (`kubectl -n flux-system get secret flux-system-sync
      -o jsonpath='{.data.identity\\.pub}' | base64 -d`)
 
 ### Re-enabling after org policy change
@@ -77,7 +77,7 @@ After the org policy is restored (deploy keys allowed):
    cluster.
 2. Force a Flux reconciliation:
    ```sh
-   flux reconcile source git flux-system -n flux-system
+   flux reconcile source git flux-system-sync -n flux-system
    ```
 
 New keys registered after the policy is enabled will have `enabled: true` by default.
@@ -110,11 +110,11 @@ Kubecrate always registers Flux deploy keys as **read-only**. This is the correc
 
 ### Registration command examples
 
-After retrieving the public key from `Secret/flux-system`:
+After retrieving the public key from `Secret/flux-system-sync`:
 
 ```sh
 # Retrieve the public key (safe to display)
-PUBKEY=$(kubectl -n flux-system get secret flux-system -o jsonpath='{.data.identity\.pub}' | base64 -d)
+PUBKEY=$(kubectl -n flux-system get secret flux-system-sync -o jsonpath='{.data.identity\.pub}' | base64 -d)
 
 # Register via gh CLI (read-only is the default)
 gh api repos/42aei/kubecrate/keys \

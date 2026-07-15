@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: kubecrate
 spec:
   interval: 30m0s
-  releaseName: flux-system
+  releaseName: flux-system-sync
   storageNamespace: kubecrate-system
   timeout: 5m0s
   chart:

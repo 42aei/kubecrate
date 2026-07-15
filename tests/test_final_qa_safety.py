@@ -2059,7 +2059,7 @@ def test_actual_shell_ref_marker_survives_helper_signal_and_is_consumed(tmp_path
     assert "-X DELETE" in (tmp_path / "gh.log").read_text()
 
 
-def test_production_cleanup_trap_deletes_created_key_after_sync_wait_failure(tmp_path: Path) -> None:
+def test_production_runner_uses_exact_sync_names_and_cleans_up_after_reconcile_failure(tmp_path: Path) -> None:
     repo = tmp_path / "sync-failure"
     for relative in ("scripts", "clusters/kind-dev-misc-local/platform-services/flux", "kind"):
         (repo / relative).mkdir(parents=True, exist_ok=True)
@@ -2088,9 +2088,9 @@ def test_production_cleanup_trap_deletes_created_key_after_sync_wait_failure(tmp
         path.write_text(f'''#!/usr/bin/env bash
 echo "{name} $*" >>"$CALL_LOG"
 if [[ "{name}" == kubectl && "$*" == *"config current-context"* ]]; then echo kind-kubecrate-qa-test
-elif [[ "{name}" == kubectl && "$*" == *"get secret flux-system"* ]]; then echo "$PUBLIC_KEY_B64"
+elif [[ "{name}" == kubectl && "$*" == *"get secret flux-system-sync"* ]]; then echo "$PUBLIC_KEY_B64"
 elif [[ "{name}" == kubectl && "$*" == *"apply -f -"* ]]; then cat >/dev/null
-elif [[ "{name}" == kubectl && "$*" == *"wait --for=condition=Ready helmrelease/flux-system-sync"* ]]; then test ! -e "$KUBECRATE_QA_EVIDENCE/private"; echo sync-failure-private-absent >>"$CALL_LOG"; exit 23
+elif [[ "{name}" == flux && "$*" == *"reconcile kustomization flux-system-sync"* ]]; then test ! -e "$KUBECRATE_QA_EVIDENCE/private"; echo sync-failure-private-absent >>"$CALL_LOG"; exit 23
 elif [[ "{name}" == kind && "$*" == "get clusters" ]]; then test -f "$CLUSTER_CREATED_FILE" && test ! -f "$CLUSTER_DELETED" && echo kubecrate-qa-test || :
 elif [[ "{name}" == kind && "$*" == *"create cluster"* ]]; then touch "$CLUSTER_CREATED_FILE"
 elif [[ "{name}" == kind && "$*" == *"delete cluster"* ]]; then touch "$CLUSTER_DELETED"
@@ -2107,6 +2107,7 @@ exit 0
            "KUBECRATE_QA_CANDIDATE": sha,
            "KUBECRATE_QA_EVIDENCE": str(evidence), "KUBECRATE_QA_RUN_ID": "run",
            "KUBECRATE_QA_BRANCH": "kubecrate-qa/test", "KUBECRATE_QA_CLUSTER": "kubecrate-qa-test",
+           "KUBECRATE_QA_IDENTITY_TIMEOUT": "1", "KUBECRATE_QA_IDENTITY_POLL_INTERVAL": "1",
            "KUBECRATE_GITHUB_REPO": "o/r"}
     result = subprocess.run([repo / "scripts/final-qa-exact-tree.sh"], cwd=repo, env=env, text=True, capture_output=True)
     assert result.returncode == 23, result.stderr
@@ -2122,6 +2123,12 @@ exit 0
     cluster_delete = calls.index("kind delete cluster", ref_delete)
     assert calls.index("kubectl --context kind-kubecrate-qa-test apply -f -") < key_post
     assert key_post < key_read < key_list < sync_failure < key_cleanup_get < key_delete < key_404 < ref_delete < cluster_delete
+    assert "kubectl --context kind-kubecrate-qa-test get secret flux-system-sync -n flux-system" in calls
+    assert "flux --context kind-kubecrate-qa-test reconcile source git flux-system-sync -n flux-system" in calls
+    assert "flux --context kind-kubecrate-qa-test reconcile kustomization flux-system-sync -n flux-system" in calls
+    assert "get secret flux-system -n flux-system" not in calls
+    assert "reconcile source git flux-system -n flux-system" not in calls
+    assert "reconcile kustomization flux-system -n flux-system" not in calls
     assert not (evidence / "owned-deploy-key.json").exists()
     assert not (evidence / "owned-deploy-key.json.uncertain").exists()
     assert not (evidence / "owned-deploy-key.json.uncertain.outcome").exists()

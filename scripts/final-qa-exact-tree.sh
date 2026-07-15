@@ -11,6 +11,7 @@ QA_BRANCH="${KUBECRATE_QA_BRANCH:-kubecrate-qa/${RUN_ID}}"
 CLUSTER="${KUBECRATE_QA_CLUSTER:-kubecrate-qa-${RUN_ID}}"
 CONTEXT="kind-${CLUSTER}"
 EXPECTED_CHECKS=7
+SYNC_NAME=flux-system-sync
 EVIDENCE="${KUBECRATE_QA_EVIDENCE:-.tmp/final-qa-${RUN_ID}}"
 QA_VALUES="${EVIDENCE}/flux-sync-values.yaml"
 KEY_ID=""
@@ -38,7 +39,7 @@ wait_for_flux_identity() {
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     assert_context
-    encoded="$(kubectl --context "${CONTEXT}" get secret flux-system -n flux-system \
+    encoded="$(kubectl --context "${CONTEXT}" get secret "${SYNC_NAME}" -n flux-system \
       -o jsonpath='{.data.identity\.pub}' 2>/dev/null || true)"
     if test -n "${encoded}"; then
       printf '%s' "${encoded}" | python3 scripts/final_qa_helpers.py write-public-key \
@@ -119,14 +120,14 @@ KEY_ID="$(python3 scripts/final_qa_helpers.py create-deploy-key --repo "${REPO}"
 python3 scripts/final_qa_helpers.py cleanup-private --evidence-root "${EVIDENCE}"
 
 assert_context
-kubectl --context "${CONTEXT}" annotate --overwrite helmrelease/flux-system-sync -n flux-system \
+kubectl --context "${CONTEXT}" annotate --overwrite "helmrelease/${SYNC_NAME}" -n flux-system \
   reconcile.fluxcd.io/requestedAt="$(date +%s)"
 assert_context
-kubectl --context "${CONTEXT}" wait --for=condition=Ready helmrelease/flux-system-sync -n flux-system --timeout=180s
+kubectl --context "${CONTEXT}" wait --for=condition=Ready "helmrelease/${SYNC_NAME}" -n flux-system --timeout=180s
 assert_context
-flux --context "${CONTEXT}" reconcile source git flux-system -n flux-system --timeout=180s
+flux --context "${CONTEXT}" reconcile source git "${SYNC_NAME}" -n flux-system --timeout=180s
 assert_context
-flux --context "${CONTEXT}" reconcile kustomization flux-system -n flux-system --timeout=300s
+flux --context "${CONTEXT}" reconcile kustomization "${SYNC_NAME}" -n flux-system --timeout=300s
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Available deployment/cratecheck -n cratecheck --timeout=300s
 

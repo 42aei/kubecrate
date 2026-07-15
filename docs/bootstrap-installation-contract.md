@@ -65,7 +65,7 @@ These inputs are tool-neutral. The contract does not require a kind-specific, Te
 
 Kubecrate uses the term **bootstrap trust material** for the initial operator-supplied or bootstrap-generated trust material used during bootstrap installation.
 
-For the first installable slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path. Bootstrap installation creates the in-cluster `Secret/flux-system`, the operator registers the generated public key as a read-only deploy key with the Git provider, and Flux then uses that Secret to reconcile the configured Git source.
+For the first installable slice, Flux Git access is established through the `flux2-sync` SSH deploy-key generation path. Bootstrap installation creates the in-cluster `Secret/flux-system-sync`, the operator registers the generated public key as a read-only deploy key with the Git provider, and Flux then uses that Secret to reconcile `GitRepository/flux-system-sync` and `Kustomization/flux-system-sync`.
 
 The generated private key stays in-cluster as Secret material and must not be committed or printed. Later changes may introduce External-Secrets Operator or another secret projection model for additional platform services, but that is not required for the first installable Flux tracer bullet.
 
@@ -105,7 +105,7 @@ The first runtime files live in this repository and use reusable `platform servi
 
 External-Secrets Operator is deferred outside the first installable slice. Flux Git credentials for this slice come from the `flux2-sync` SSH deploy-key generation path.
 
-The `flux2-sync` chart creates `Secret/flux-system` with SSH key material. The operator registers the generated public key as a read-only deploy key with the Git provider before Flux can reconcile the private repository.
+The `flux2-sync` chart release `flux-system-sync` creates `Secret/flux-system-sync` with SSH key material, alongside `GitRepository/flux-system-sync` and `Kustomization/flux-system-sync`. The operator registers the generated public key as a read-only deploy key with the Git provider before Flux can reconcile the private repository.
 
 Future secret projection work, including External-Secrets Operator, remains deferred platform services scope with its own acceptance criteria.
 
