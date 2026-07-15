@@ -139,9 +139,14 @@ def test_unknown_lookup_fails_closed_before_create() -> None:
     assert not any(c[0] == "create" for c in api.calls)
 
 
-@pytest.mark.parametrize("bounds", [(-1, .5), (1, 0), (1, -.5)])
+@pytest.mark.parametrize("bounds", [
+    (-1, .5), (1, 0), (1, -.5),
+    (float("nan"), .5), (float("inf"), .5), (float("-inf"), .5),
+    (1, float("nan")), (1, float("inf")), (1, float("-inf")),
+    (True, .5), (1, False), ("1", .5), (1, "0.5"),
+])
 def test_invalid_ref_readback_bounds_fail_before_remote_or_marker_mutation(
-    tmp_path: Path, bounds: tuple[float, float]
+    tmp_path: Path, bounds: tuple[object, object]
 ) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"
     api = FakeRefs([None])
@@ -1129,19 +1134,36 @@ def test_actual_create_ref_cli_retries_malformed_post_and_gets_to_exact(tmp_path
     ref = "refs/heads/qa"; sha = "a" * 40; root = tmp_path / "evidence"; owned = root / "owned.json"
     result = run_helper(tmp_path, [
         (404, '{"message":"Not Found"}'), (201, "[]"),
-        (404, '{"message":"Not Found"}'), (200, ""), (200, "not-json"),
+        (404, '{"message":"Not Found"}'), (200, ""), (200, '"pending"'),
+        (200, "not-json"), (500, '{"message":"private-server-body"}'),
         (200, ref_obj(ref, sha)),
     ], "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha,
        "--evidence-root", str(root), "--marker", str(owned),
        "--readback-timeout", "1", "--readback-interval", ".01")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "" and "not-json" not in result.stderr
+    assert result.stdout.strip() == ""
+    assert all(body not in result.stderr for body in ("pending", "not-json", "private-server-body"))
     assert json.loads(owned.read_text())["state"] == "owned"
     assert not owned.with_suffix(".json.uncertain").exists()
     calls = (tmp_path / "gh.log").read_text().splitlines()
-    assert sum("-X GET" in call for call in calls) == 5
+    assert sum("-X GET" in call for call in calls) == 7
     assert sum("-X POST" in call for call in calls) == 1
+
+
+@pytest.mark.parametrize("option", ["--readback-timeout", "--readback-interval"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_actual_create_ref_cli_rejects_nonfinite_bounds_before_evidence_or_api(
+    tmp_path: Path, option: str, value: str
+) -> None:
+    ref = "refs/heads/qa"; sha = "a" * 40; root = tmp_path / "evidence"; owned = root / "owned.json"
+    result = run_helper(tmp_path, [], "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha,
+        "--evidence-root", str(root), "--marker", str(owned), f"{option}={value}")
+
+    assert result.returncode != 0
+    assert "invalid ref readback bounds" in result.stderr
+    assert not root.exists()
+    assert not (tmp_path / "gh.log").exists()
 
 
 def test_actual_create_ref_cli_exhaustion_is_clear_and_keeps_uncertainty(tmp_path: Path) -> None:

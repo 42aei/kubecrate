@@ -9,6 +9,7 @@ import ctypes
 import hashlib
 import html.parser
 import json
+import math
 import os
 import platform
 import re
@@ -578,7 +579,17 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
                      sleep: Callable[[float], None] = time.sleep,
                      monotonic: Callable[[], float] = time.monotonic) -> None:
     assert ref.startswith("refs/heads/"), "only an exact heads ref is allowed"
-    assert readback_timeout >= 0 and readback_interval > 0, "invalid ref readback bounds"
+    valid_timeout = (
+        type(readback_timeout) in (int, float)
+        and math.isfinite(readback_timeout)
+        and readback_timeout >= 0
+    )
+    valid_interval = (
+        type(readback_interval) in (int, float)
+        and math.isfinite(readback_interval)
+        and readback_interval > 0
+    )
+    assert valid_timeout and valid_interval, "invalid ref readback bounds"
     uncertain = marker.with_suffix(marker.suffix + ".uncertain") if marker else None
     if uncertain:
         assert marker is not None and evidence_root is not None
