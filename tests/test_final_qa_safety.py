@@ -577,9 +577,14 @@ def test_owned_key_consumes_matching_stale_auxiliaries_before_delete_without_evi
     helpers.cleanup_deploy_key_markers(
         api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
     assert ("delete", 7) in api.calls
-    assert len(observed) == len(auxiliaries)
+    assert len(observed) == len(auxiliaries) + 1
+    assert observed[-1] == marker.name
     assert not marker.exists() and not marker.with_suffix(".json.uncertain").exists()
     assert not marker.with_suffix(".json.uncertain.outcome").exists()
+    retired = [path for path in root.iterdir()
+               if path.name.startswith(".retired-deploy-key-")]
+    assert len(retired) == len(auxiliaries) + 1
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in retired)
 
 
 @pytest.mark.parametrize("which,payload", [
@@ -669,6 +674,42 @@ def test_owned_auxiliary_replacement_during_consumption_never_deletes_foreign_or
             api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
     assert marker.exists() and not any(call[0] == "delete" for call in api.calls)
     assert any(path.read_bytes() == foreign for path in root.iterdir() if path.is_file())
+
+
+def test_retired_auxiliary_substitution_before_api_is_retained_and_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"
+    key = public_key(); _write_owned_key_evidence(
+        root, marker, key, (("attempt", "create-attempting"),))
+    attacker = b"foreign retired replacement\n"
+    real_assert = helpers._assert_entry_identity
+    real_unlink = os.unlink
+    retired_checks = 0
+
+    def substitute_before_api(name, directory_fd, opened):
+        nonlocal retired_checks
+        if name.startswith(".retired-deploy-key-"):
+            retired_checks += 1
+            if retired_checks == 2:
+                real_unlink(name, dir_fd=directory_fd)
+                replacement = os.open(
+                    name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                    dir_fd=directory_fd)
+                os.write(replacement, attacker); os.close(replacement)
+        return real_assert(name, directory_fd, opened)
+
+    monkeypatch.setattr(helpers, "_assert_entry_identity", substitute_before_api)
+    monkeypatch.setattr(
+        helpers.os, "unlink",
+        lambda *args, **kwargs: pytest.fail("deploy-key cleanup used pathname unlink"))
+    api = FakeKeys(listed=[[deploy_key(key=key)]], readback=deploy_key(key=key))
+    with pytest.raises(AssertionError, match="replaced"):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title="kubecrate-qa-run", marker=marker,
+            evidence_root=root)
+    assert marker.exists() and api.calls == []
+    assert any(path.read_bytes() == attacker for path in root.iterdir() if path.is_file())
 
 
 def test_owned_create_establishes_exact_ref() -> None:

@@ -132,7 +132,7 @@ For each disposable kind cluster created by a QA or validation run:
 2. **Cluster creation**: bootstrap Flux; retrieve the generated public key.
 3. **Registration**: register the public key as a read-only deploy key with a `kubecrate-qa-*` title.
 4. **Validation**: run the GitOps-managed operation validation.
-5. **Cleanup**: after validation, remove and verify absence of the exact captured deploy key, QA branch, and disposable cluster.
+5. **Cleanup**: after validation, remove and verify absence of the exact captured deploy key, QA branch, disposable cluster, and active deploy-key ownership/uncertainty markers. The helper atomically renames authenticated deploy-key markers to unpredictable `.retired-deploy-key-*` names and retains them as non-active, non-secret audit evidence (repository, title, fingerprint, state, and key ID only). Retired entries remain mode `0600` under the mode `0700` evidence directory and are not pathname-unlinked.
 
 For final QA, use the executable safeguarded workflow in [Exact-tree final QA](final-qa-exact-tree.md). It publishes and verifies the immutable candidate tree, selects the unique branch through a runtime-only manifest artifact, performs browser plus `/status.json` green → controlled ESO red → restored green evidence, and guarantees verified trap cleanup.
 

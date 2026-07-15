@@ -397,28 +397,27 @@ def _rename_noreplace(source: str, destination: str, directory_fd: int) -> None:
 
 
 def _consume_open_marker(marker: Path, directory_fd: int, fd: int,
-                         opened: os.stat_result, expected: dict[str, Any]) -> None:
-    """Quarantine and consume a previously authenticated open marker inode."""
-    quarantine = f".{marker.name}.consume-{os.urandom(16).hex()}"
+                         opened: os.stat_result, expected: dict[str, Any]) -> str:
+    """Atomically retire an authenticated marker as non-active audit evidence."""
+    retired = f".retired-deploy-key-{os.urandom(16).hex()}-{marker.name}"
     os.lseek(fd, 0, os.SEEK_SET)
     with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
         current = json.load(stream)
     assert current == expected, "deploy-key auxiliary marker identity mismatch"
-    _rename_noreplace(marker.name, quarantine, directory_fd)
+    _rename_noreplace(marker.name, retired, directory_fd)
     os.fsync(directory_fd)
     try:
-        _assert_entry_identity(quarantine, directory_fd, opened)
+        _assert_entry_identity(retired, directory_fd, opened)
     except AssertionError as exc:
         # Retain the moved entry as diagnostic evidence on a race.  Never
         # remove an inode merely because it occupies the expected path.
         raise AssertionError(
             "deploy-key auxiliary marker was replaced during consumption") from exc
-    _assert_entry_identity(quarantine, directory_fd, opened)
-    _durable_unlink(quarantine, directory_fd)
+    return retired
 
 
 def _consume_marker(path: Path, evidence_root: Path, expected: dict[str, Any]) -> None:
-    """Authenticate, quarantine, and durably consume one exact marker inode."""
+    """Authenticate and durably retire one exact marker inode."""
     marker, directory_fd, fd, opened = _open_marker(path, evidence_root)
     try:
         _consume_open_marker(marker, directory_fd, fd, opened, expected)
@@ -864,10 +863,9 @@ def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: 
     owned = {**identity, "state": "owned", "key_id": key_id}
     try:
         _create_json_marker_exclusive(marker, owned, evidence_root=evidence_root)
-        _assert_entry_identity(outcome.name, outcome_dir_fd, outcome_info)
-        _durable_unlink(outcome.name, outcome_dir_fd)
-        _assert_entry_identity(uncertain.name, attempt_dir_fd, attempt_info)
-        _durable_unlink(uncertain.name, attempt_dir_fd)
+        _consume_open_marker(outcome, outcome_dir_fd, outcome_fd, outcome_info,
+                             {"state": "created-unverified", **identity})
+        _consume_open_marker(uncertain, attempt_dir_fd, attempt_fd, attempt_info, attempt)
     finally:
         os.close(outcome_fd); os.close(outcome_dir_fd)
         os.close(attempt_fd); os.close(attempt_dir_fd)
@@ -924,6 +922,7 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             identity = {"repo": repo, "title": title,
                         "fingerprint": initial["fingerprint"]}
             auxiliaries: list[tuple[Path, int, int, os.stat_result, dict[str, Any]]] = []
+            retired_auxiliaries: list[tuple[str, int, os.stat_result]] = []
             try:
                 if _key_marker_exists(uncertain, evidence_root):
                     expected_attempt = {"state": "create-attempting", **identity}
@@ -946,7 +945,13 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                 # Keep every authenticated descriptor open until all auxiliaries
                 # have been inspected, then consume while owned remains linked.
                 for auxiliary in reversed(auxiliaries):
-                    _consume_open_marker(*auxiliary)
+                    retired = _consume_open_marker(*auxiliary)
+                    retired_auxiliaries.append((retired, auxiliary[1], auxiliary[3]))
+                # Recheck the retired audit entries immediately before the first
+                # remote call. A replacement fails closed while owned remains
+                # authoritative and no pathname is ever unlinked by this flow.
+                for retired, retired_dir_fd, retired_info in retired_auxiliaries:
+                    _assert_entry_identity(retired, retired_dir_fd, retired_info)
             finally:
                 for _, auxiliary_dir_fd, auxiliary_fd, _, _ in auxiliaries:
                     os.close(auxiliary_fd); os.close(auxiliary_dir_fd)
@@ -958,8 +963,7 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             assert api.get(key_id) is None, "deploy-key deletion absence not proved"
             _assert_key_absent(api.list(), key_id=key_id, title=title,
                                fingerprint=initial["fingerprint"])
-            _assert_entry_identity(marker.name, directory_fd, info)
-            _durable_unlink(marker.name, directory_fd)
+            _consume_open_marker(marker, directory_fd, fd, info, expected_owned)
 
         finally:
             os.close(fd); os.close(directory_fd)
@@ -997,10 +1001,9 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                 assert not any(item_title == title or item_fingerprint == fingerprint
                                for _, _, item_title, item_fingerprint in normalized), \
                     "rejected deploy-key identity exists; marker retained without deletion"
-                _assert_entry_identity(outcome.name, outcome_dir_fd, outcome_info)
-                _durable_unlink(outcome.name, outcome_dir_fd)
-                _assert_entry_identity(uncertain.name, directory_fd, info)
-                _durable_unlink(uncertain.name, directory_fd)
+                _consume_open_marker(outcome, outcome_dir_fd, outcome_fd, outcome_info,
+                                     outcome_initial)
+                _consume_open_marker(uncertain, directory_fd, fd, info, initial)
                 return
             matches = [(item, key_id) for item, key_id, item_title, item_fingerprint in normalized
                        if item_title == title and item_fingerprint == fingerprint]
@@ -1016,10 +1019,9 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                 assert api.get(key_id) is None, "deploy-key deletion absence not proved"
                 _assert_key_absent(api.list(), key_id=key_id, title=title,
                                    fingerprint=fingerprint)
-            _assert_entry_identity(uncertain.name, directory_fd, info)
-            _assert_entry_identity(outcome.name, outcome_dir_fd, outcome_info)
-            _durable_unlink(outcome.name, outcome_dir_fd)
-            _durable_unlink(uncertain.name, directory_fd)
+            _consume_open_marker(outcome, outcome_dir_fd, outcome_fd, outcome_info,
+                                 outcome_initial)
+            _consume_open_marker(uncertain, directory_fd, fd, info, initial)
         finally:
             if outcome_fd >= 0: os.close(outcome_fd)
             if outcome_dir_fd >= 0: os.close(outcome_dir_fd)
