@@ -2,7 +2,7 @@
 """Replace only the source branch in rendered Flux sync values for exact-tree QA."""
 
 import argparse
-import re
+import subprocess
 import sys
 from typing import Any
 
@@ -43,6 +43,26 @@ def require_exact_keys(value: dict[Any, Any], expected: set[str], path: str) -> 
         raise ValueError(f"{path} must contain exactly: {', '.join(sorted(expected))}")
 
 
+def require_qa_branch(branch: str) -> None:
+    """Require the literal QA namespace and Git's authoritative branch syntax."""
+    if not branch.startswith("kubecrate-qa/"):
+        raise ValueError("gitRepository.spec.ref.branch must use the kubecrate-qa/ prefix")
+    try:
+        result = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except FileNotFoundError as error:
+        raise ValueError("git is required to validate the QA branch") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("git branch validation timed out") from error
+    if result.returncode != 0:
+        raise ValueError("gitRepository.spec.ref.branch is not a valid Git branch")
+
+
 def load_override(path: str, expected_branch: str) -> str:
     try:
         with open(path, encoding="utf-8") as handle:
@@ -61,10 +81,7 @@ def load_override(path: str, expected_branch: str) -> str:
     branch = ref["branch"]
     if not isinstance(branch, str) or not branch:
         raise ValueError("gitRepository.spec.ref.branch must be a nonempty string")
-    if not re.fullmatch(r"kubecrate-qa/[A-Za-z0-9._/-]+", branch) or any(
-        token in branch for token in ("..", "//", "@{")
-    ) or branch.endswith(("/", ".", ".lock")):
-        raise ValueError("gitRepository.spec.ref.branch must be a valid kubecrate-qa/* branch")
+    require_qa_branch(branch)
     if branch != expected_branch:
         raise ValueError("QA values branch does not match --expected-branch")
     return branch

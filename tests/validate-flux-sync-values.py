@@ -90,13 +90,26 @@ def run_renderer(override: str, *, branch: str = "kubecrate-qa/exact-tree",
 
 def test_exact_qa_renderer_rejects_every_non_source_only_override() -> None:
     invalid = {
+        "null root": "null\n",
+        "list root": "[]\n",
+        "scalar root": "bad\n",
         "credential override": "secret:\n  create: false\n",
         "unknown top key": "other: {}\n",
         "unknown nested key": "gitRepository:\n  spec:\n    ref:\n      branch: kubecrate-qa/exact-tree\n      tag: bad\n",
+        "duplicate key": "gitRepository:\n  spec:\n    ref:\n      branch: kubecrate-qa/exact-tree\n      branch: kubecrate-qa/exact-tree\n",
+        "null repository": "gitRepository: null\n",
+        "list repository": "gitRepository: []\n",
         "scalar spec": "gitRepository:\n  spec: bad\n",
+        "null spec": "gitRepository:\n  spec: null\n",
+        "list spec": "gitRepository:\n  spec: []\n",
         "scalar ref": "gitRepository:\n  spec:\n    ref: bad\n",
+        "null ref": "gitRepository:\n  spec:\n    ref: null\n",
+        "list ref": "gitRepository:\n  spec:\n    ref: []\n",
         "missing branch": "gitRepository:\n  spec:\n    ref: {}\n",
         "empty branch": "gitRepository:\n  spec:\n    ref:\n      branch: ''\n",
+        "null branch": "gitRepository:\n  spec:\n    ref:\n      branch: null\n",
+        "list branch": "gitRepository:\n  spec:\n    ref:\n      branch: []\n",
+        "scalar branch": "gitRepository:\n  spec:\n    ref:\n      branch: 17\n",
         "protected branch": "gitRepository:\n  spec:\n    ref:\n      branch: main\n",
         "branch mismatch": "gitRepository:\n  spec:\n    ref:\n      branch: kubecrate-qa/other\n",
         "malformed YAML": "gitRepository: [\n",
@@ -105,6 +118,56 @@ def test_exact_qa_renderer_rejects_every_non_source_only_override() -> None:
         result = run_renderer(override)
         assert result.returncode != 0, label
         assert result.stdout == "", label
+
+
+def test_exact_qa_renderer_uses_git_branch_ref_format_semantics() -> None:
+    invalid_branches = [
+        "kubecrate-qa/.foo",
+        "kubecrate-qa/foo.lock/bar",
+        "kubecrate-qa/foo..bar",
+        "kubecrate-qa/foo@{bar",
+        "kubecrate-qa/foo.",
+        "kubecrate-qa/foo/",
+        "kubecrate-qa/foo//bar",
+        "kubecrate-qa/foo\\bar",
+        "kubecrate-qa/foo:bar",
+        "kubecrate-qa/foo?bar",
+        "kubecrate-qa/foo*bar",
+        "kubecrate-qa/foo[bar",
+        "kubecrate-qa/foo bar",
+        "kubecrate-qa/foo\x01bar",
+        "@",
+        "/kubecrate-qa/foo",
+        "kubecrate-qa",
+    ]
+    for branch in invalid_branches:
+        if branch.startswith("kubecrate-qa/"):
+            git_result = subprocess.run(
+                ["git", "check-ref-format", "--branch", branch],
+                check=False, text=True, capture_output=True,
+            )
+            assert git_result.returncode != 0, branch
+        override = yaml.safe_dump(
+            {"gitRepository": {"spec": {"ref": {"branch": branch}}}},
+            sort_keys=False,
+        )
+        result = run_renderer(override, branch=branch)
+        assert result.returncode != 0, branch
+        assert result.stdout == "", branch
+
+    for branch in ("kubecrate-qa/exact-tree", "kubecrate-qa/review_17/v2"):
+        subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            check=True, text=True, capture_output=True,
+        )
+        result = run_renderer(
+            yaml.safe_dump(
+                {"gitRepository": {"spec": {"ref": {"branch": branch}}}},
+                sort_keys=False,
+            ),
+            branch=branch,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 def test_exact_qa_renderer_rejects_corrupt_repository_owned_base_types() -> None:
@@ -166,12 +229,37 @@ def test_helm_1146_render_requests_ed25519() -> None:
     assert "--ssh-key-algorithm=ecdsa" not in command
 
 
+CONTRACT_CHECKS = (
+    test_repository_and_kustomize_values_request_ed25519,
+    test_exact_qa_renderer_preserves_ed25519_when_overriding_source,
+    test_exact_qa_renderer_rejects_every_non_source_only_override,
+    test_exact_qa_renderer_uses_git_branch_ref_format_semantics,
+    test_exact_qa_renderer_rejects_corrupt_repository_owned_base_types,
+)
+EXPECTED_CONTRACT_CHECKS = (
+    "test_repository_and_kustomize_values_request_ed25519",
+    "test_exact_qa_renderer_preserves_ed25519_when_overriding_source",
+    "test_exact_qa_renderer_rejects_every_non_source_only_override",
+    "test_exact_qa_renderer_uses_git_branch_ref_format_semantics",
+    "test_exact_qa_renderer_rejects_corrupt_repository_owned_base_types",
+)
+
+
+def run_all_contract_checks(checks=CONTRACT_CHECKS) -> None:
+    actual = tuple(check.__name__ for check in checks)
+    assert actual == EXPECTED_CONTRACT_CHECKS, (
+        f"contract check registry mismatch: expected {EXPECTED_CONTRACT_CHECKS}, "
+        f"got {actual}"
+    )
+    for check in checks:
+        check()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--helm-render", action="store_true")
     args = parser.parse_args()
-    test_repository_and_kustomize_values_request_ed25519()
-    test_exact_qa_renderer_preserves_ed25519_when_overriding_source()
+    run_all_contract_checks()
     if args.helm_render:
         test_helm_1146_render_requests_ed25519()
     print("Flux sync values validation passed")

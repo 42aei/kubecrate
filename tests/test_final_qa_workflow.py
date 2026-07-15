@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Static contracts for the safeguarded exact-tree final QA workflow."""
 
+import importlib.util
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "final-qa-exact-tree.sh"
@@ -57,6 +60,25 @@ def test_standard_make_validation_requires_pinned_helm_render() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
     recipe = makefile[makefile.index("validate-flux-sync-values:"):]
     assert "tests/validate-flux-sync-values.py --helm-render" in recipe
+    validator = (ROOT / "tests/validate-flux-sync-values.py").read_text(encoding="utf-8")
+    main = validator[validator.index('if __name__ == "__main__":'):]
+    assert main.index("run_all_contract_checks()") < main.index("test_helm_1146_render_requests_ed25519()")
+
+
+def test_contract_check_runner_propagates_failure() -> None:
+    validator = ROOT / "tests/validate-flux-sync-values.py"
+    spec = importlib.util.spec_from_file_location("validate_flux_sync_values", validator)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def fail() -> None:
+        raise RuntimeError("sentinel contract failure")
+
+    fail.__name__ = module.CONTRACT_CHECKS[0].__name__
+    checks = (fail, *module.CONTRACT_CHECKS[1:])
+    with pytest.raises(RuntimeError, match="sentinel contract failure"):
+        module.run_all_contract_checks(checks)
 
 
 def test_manifest_ci_installs_pinned_helm_and_runs_standard_validation() -> None:
