@@ -379,34 +379,6 @@ def _create_json_marker_exclusive(path: Path, payload: dict[str, Any], *, eviden
         os.close(directory_fd)
 
 
-def _transition_json_marker_state(path: Path, *, evidence_root: Path,
-                                  expected: dict[str, Any], new_state: str) -> None:
-    """Durably update the pinned marker inode; partial writes remain fail-closed."""
-    marker, directory_fd, fd, opened = _open_marker(path, evidence_root, writable=True)
-    blocked = {signal.SIGINT, signal.SIGTERM}
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
-    try:
-        with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
-            current = json.load(stream)
-        assert current == expected, "deploy-key transition marker identity mismatch"
-        _assert_entry_identity(marker.name, directory_fd, opened)
-        replacement = {**expected, "state": new_state}
-        encoded = (json.dumps(replacement, sort_keys=True) + "\n").encode()
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.ftruncate(fd, 0)
-        written = 0
-        while written < len(encoded):
-            written += os.write(fd, encoded[written:])
-        os.fsync(fd)
-        _assert_entry_identity(marker.name, directory_fd, opened)
-        os.fsync(directory_fd)
-        _assert_entry_identity(marker.name, directory_fd, opened)
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-        os.close(fd)
-        os.close(directory_fd)
-
-
 def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
                              *, evidence_root: Path) -> None:
     _create_json_marker_exclusive(
@@ -681,6 +653,8 @@ def _public_key_fingerprint(key: str) -> str:
         blob = base64.b64decode(fields[1], validate=True)
     except ValueError as exc:
         raise AssertionError("public key blob is malformed base64") from exc
+    assert fields[1] == base64.b64encode(blob).decode("ascii"), \
+        "public key blob must use canonical base64"
 
     def ssh_string(offset: int, label: str) -> tuple[bytes, int]:
         assert len(blob) - offset >= 4, f"public key blob {label} length is truncated"
@@ -779,7 +753,10 @@ def _read_private_file(evidence_root: Path, name: str) -> str:
 
 def write_public_key(evidence_root: Path, encoded: str) -> None:
     try:
-        raw = base64.b64decode(encoded, validate=True).decode("utf-8")
+        decoded = base64.b64decode(encoded, validate=True)
+        assert encoded == base64.b64encode(decoded).decode("ascii"), \
+            "identity.pub must use canonical base64"
+        raw = decoded.decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
         raise AssertionError("identity.pub is not valid base64 UTF-8") from exc
     _public_key_fingerprint(raw)
@@ -809,34 +786,44 @@ def write_public_key(evidence_root: Path, encoded: str) -> None:
 def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: str,
                       marker: Path, evidence_root: Path) -> int:
     uncertain = marker.with_suffix(marker.suffix + ".uncertain")
+    outcome = uncertain.with_suffix(uncertain.suffix + ".outcome")
     _assert_fresh_marker_destinations(marker, uncertain, evidence_root)
+    _assert_fresh_marker_destinations(marker, outcome, evidence_root)
     fingerprint = _public_key_fingerprint(public_key)
     before = _validate_key_list(api.list())
     assert not any(item_title == title or item_fingerprint == fingerprint
                    for _, _, item_title, item_fingerprint in before), \
         "deploy-key title or fingerprint already exists"
-    pending = {"state": "created-unverified", "repo": repo, "title": title, "fingerprint": fingerprint}
-    _create_json_marker_exclusive(uncertain, pending, evidence_root=evidence_root)
+    identity = {"repo": repo, "title": title, "fingerprint": fingerprint}
+    attempt = {"state": "create-attempting", **identity}
+    _create_json_marker_exclusive(uncertain, attempt, evidence_root=evidence_root)
     try:
         created = api.create(title, public_key.strip())
     except APIError as exc:
         if exc.status == 422:
-            _transition_json_marker_state(
-                uncertain, evidence_root=evidence_root, expected=pending,
-                new_state="create-rejected")
+            _create_json_marker_exclusive(
+                outcome, {"state": "create-rejected", **identity}, evidence_root=evidence_root)
         raise
+    _create_json_marker_exclusive(
+        outcome, {"state": "created-unverified", **identity}, evidence_root=evidence_root)
     key_id = _assert_deploy_key(created, title, fingerprint)
     _assert_deploy_key(api.get(key_id), title, fingerprint, key_id)
     _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
                              fingerprint=fingerprint)
-    owned = {**pending, "state": "owned", "key_id": key_id}
-    _create_json_marker_exclusive(marker, owned, evidence_root=evidence_root)
-    pending_path, directory_fd, fd, info = _open_marker(uncertain, evidence_root)
+    _, attempt_dir_fd, attempt_fd, attempt_info = _load_key_marker(
+        uncertain, evidence_root, "create-attempting", repo, title, fingerprint)
+    _, outcome_dir_fd, outcome_fd, outcome_info = _load_key_marker(
+        outcome, evidence_root, "created-unverified", repo, title, fingerprint)
+    owned = {**identity, "state": "owned", "key_id": key_id}
     try:
-        os.close(fd); _assert_entry_identity(pending_path.name, directory_fd, info)
-        _durable_unlink(pending_path.name, directory_fd)
+        _create_json_marker_exclusive(marker, owned, evidence_root=evidence_root)
+        _assert_entry_identity(outcome.name, outcome_dir_fd, outcome_info)
+        _durable_unlink(outcome.name, outcome_dir_fd)
+        _assert_entry_identity(uncertain.name, attempt_dir_fd, attempt_info)
+        _durable_unlink(uncertain.name, attempt_dir_fd)
     finally:
-        os.close(directory_fd)
+        os.close(outcome_fd); os.close(outcome_dir_fd)
+        os.close(attempt_fd); os.close(attempt_dir_fd)
     return key_id
 
 
@@ -872,6 +859,7 @@ def _key_marker_exists(path: Path, evidence_root: Path) -> bool:
 def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                                marker: Path, evidence_root: Path) -> None:
     uncertain = marker.with_suffix(marker.suffix + ".uncertain")
+    outcome = uncertain.with_suffix(uncertain.suffix + ".outcome")
     if _key_marker_exists(marker, evidence_root):
         marker, directory_fd, fd, info = _open_marker(marker, evidence_root)
         with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
@@ -883,10 +871,8 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
         directory_fd, fd, info = directory_fd2, fd2, info2
         try:
             key_id = obj.get("key_id"); assert type(key_id) is int and key_id > 0
-            pending_open = None
-            if _key_marker_exists(uncertain, evidence_root):
-                pending_open = _load_key_marker(
-                    uncertain, evidence_root, "created-unverified", repo, title, initial["fingerprint"])
+            assert not _key_marker_exists(uncertain, evidence_root), "owned key retains attempt marker"
+            assert not _key_marker_exists(outcome, evidence_root), "owned key retains outcome marker"
             _assert_deploy_key(api.get(key_id), title, initial["fingerprint"], key_id)
             _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
                                      fingerprint=initial["fingerprint"])
@@ -896,14 +882,7 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                                fingerprint=initial["fingerprint"])
             _assert_entry_identity(marker.name, directory_fd, info)
             _durable_unlink(marker.name, directory_fd)
-            if pending_open is not None:
-                pending_path, pending_dir_fd, pending_fd, pending_info = (
-                    uncertain, pending_open[1], pending_open[2], pending_open[3])
-                try:
-                    _assert_entry_identity(pending_path.name, pending_dir_fd, pending_info)
-                    _durable_unlink(pending_path.name, pending_dir_fd)
-                finally:
-                    os.close(pending_fd); os.close(pending_dir_fd)
+
         finally:
             os.close(fd); os.close(directory_fd)
         return
@@ -913,18 +892,35 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             initial = json.load(stream)
         assert isinstance(initial, dict) and isinstance(initial.get("fingerprint"), str)
         state = initial.get("state")
-        assert state in {"created-unverified", "create-rejected"}, "deploy-key marker state mismatch"
+        assert state == "create-attempting", "deploy-key marker state mismatch"
         _, directory_fd2, fd2, info2 = _load_key_marker(
             uncertain, evidence_root, state, repo, title, initial["fingerprint"])
         fingerprint = initial["fingerprint"]
         os.close(fd); os.close(directory_fd)
         directory_fd, fd, info = directory_fd2, fd2, info2
+        outcome_dir_fd = outcome_fd = -1
         try:
+            assert _key_marker_exists(outcome, evidence_root), \
+                "deploy-key attempt has no durable outcome; retained without deletion"
+            outcome_path, outcome_dir_fd, outcome_fd, outcome_info = _open_marker(
+                outcome, evidence_root)
+            with os.fdopen(os.dup(outcome_fd), encoding="utf-8") as stream:
+                outcome_initial = json.load(stream)
+            outcome_state = outcome_initial.get("state") if isinstance(outcome_initial, dict) else None
+            assert outcome_state in {"created-unverified", "create-rejected"}, \
+                "deploy-key outcome marker state mismatch"
+            assert outcome_initial.get("repo") == repo and outcome_initial.get("title") == title, \
+                "deploy-key outcome marker identity mismatch"
+            assert outcome_initial.get("fingerprint") == fingerprint, \
+                "deploy-key outcome marker fingerprint mismatch"
+            _assert_entry_identity(outcome_path.name, outcome_dir_fd, outcome_info)
             normalized = _validate_key_list(api.list())
-            if state == "create-rejected":
+            if outcome_state == "create-rejected":
                 assert not any(item_title == title or item_fingerprint == fingerprint
                                for _, _, item_title, item_fingerprint in normalized), \
                     "rejected deploy-key identity exists; marker retained without deletion"
+                _assert_entry_identity(outcome.name, outcome_dir_fd, outcome_info)
+                _durable_unlink(outcome.name, outcome_dir_fd)
                 _assert_entry_identity(uncertain.name, directory_fd, info)
                 _durable_unlink(uncertain.name, directory_fd)
                 return
@@ -943,8 +939,12 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
                 _assert_key_absent(api.list(), key_id=key_id, title=title,
                                    fingerprint=fingerprint)
             _assert_entry_identity(uncertain.name, directory_fd, info)
+            _assert_entry_identity(outcome.name, outcome_dir_fd, outcome_info)
+            _durable_unlink(outcome.name, outcome_dir_fd)
             _durable_unlink(uncertain.name, directory_fd)
         finally:
+            if outcome_fd >= 0: os.close(outcome_fd)
+            if outcome_dir_fd >= 0: os.close(outcome_dir_fd)
             os.close(fd); os.close(directory_fd)
 
 
