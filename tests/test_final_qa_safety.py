@@ -2059,6 +2059,29 @@ def test_actual_shell_ref_marker_survives_helper_signal_and_is_consumed(tmp_path
     assert "-X DELETE" in (tmp_path / "gh.log").read_text()
 
 
+def test_public_key_extractor_selects_only_literal_dotted_secret_key() -> None:
+    public_encoded = base64.b64encode(public_key().encode()).decode()
+    private_encoded = base64.b64encode(b"PRIVATE-SENTINEL").decode()
+    secret = json.dumps({"data": {"identity": private_encoded, "identity.pub": public_encoded}})
+
+    result = subprocess.run(
+        ["python3", HELPER_PATH, "extract-public-key"], input=secret, text=True, capture_output=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == public_encoded
+    assert private_encoded not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("secret", ["{}", '{"data": {}}', '{"data": {"identity.pub": null}}', "not-json"])
+def test_public_key_extractor_fails_closed_on_missing_or_malformed_data(secret: str) -> None:
+    result = subprocess.run(
+        ["python3", HELPER_PATH, "extract-public-key"], input=secret, text=True, capture_output=True
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
 def test_production_runner_uses_exact_sync_names_and_cleans_up_after_reconcile_failure(tmp_path: Path) -> None:
     repo = tmp_path / "sync-failure"
     for relative in ("scripts", "clusters/kind-dev-misc-local/platform-services/flux", "kind"):
@@ -2076,6 +2099,12 @@ def test_production_runner_uses_exact_sync_names_and_cleans_up_after_reconcile_f
     ref_json = ref_obj("refs/heads/kubecrate-qa/test", sha)
     key = public_key(); obj = deploy_key(key=key); encoded = base64.b64encode(key.encode()).decode()
     private_encoded = base64.b64encode(b"-----BEGIN OPENSSH PRIVATE KEY-----").decode()
+    secret_json = json.dumps({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "flux-system-sync", "namespace": "flux-system"},
+        "data": {"identity": private_encoded, "identity.pub": encoded},
+    })
     preflight = deploy_key(9, "kubecrate-deploy-key-preflight", key)
     responses = [(404, '{"message":"Not Found"}'), (201, ref_json), (200, ref_json),
         (200, ""), (200, "[]"), (201, json.dumps(preflight)), (200, json.dumps(preflight)), (204, ""),
@@ -2090,11 +2119,7 @@ def test_production_runner_uses_exact_sync_names_and_cleans_up_after_reconcile_f
 echo "{name} $*" >>"$CALL_LOG"
 if [[ "{name}" == kubectl && "$*" == *"config current-context"* ]]; then echo kind-kubecrate-qa-test
 elif [[ "{name}" == kubectl && "$*" == *"get secret flux-system-sync"* ]]; then
-  requested_public=false
-  for arg in "$@"; do
-    [[ "$arg" == 'jsonpath={{.data.identity\\.pub}}' ]] && requested_public=true
-  done
-  if $requested_public; then echo "$PUBLIC_KEY_B64"; else echo "$PRIVATE_KEY_B64"; fi
+  printf '%s' "$SECRET_JSON"
 elif [[ "{name}" == kubectl && "$*" == *"apply -f -"* ]]; then cat >/dev/null
 elif [[ "{name}" == flux && "$*" == *"reconcile kustomization flux-system-sync"* ]]; then test ! -e "$KUBECRATE_QA_EVIDENCE/private"; echo sync-failure-private-absent >>"$CALL_LOG"; exit 23
 elif [[ "{name}" == kind && "$*" == "get clusters" ]]; then test -f "$CLUSTER_CREATED_FILE" && test ! -f "$CLUSTER_DELETED" && echo kubecrate-qa-test || :
@@ -2108,8 +2133,7 @@ exit 0
     git_fake = bindir / "git"
     git_fake.write_text('#!/usr/bin/env bash\necho "git $*" >>"$CALL_LOG"\nexec /usr/bin/git "$@"\n'); git_fake.chmod(0o755)
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"),
-           "FAKE_GH_LOG": str(log), "CALL_LOG": str(log), "PUBLIC_KEY_B64": encoded,
-           "PRIVATE_KEY_B64": private_encoded,
+           "FAKE_GH_LOG": str(log), "CALL_LOG": str(log), "SECRET_JSON": secret_json,
            "PUBLIC_KEY": key, "CLUSTER_DELETED": str(deleted), "CLUSTER_CREATED_FILE": str(tmp_path / "cluster-created"),
            "KUBECRATE_QA_CANDIDATE": sha,
            "KUBECRATE_QA_EVIDENCE": str(evidence), "KUBECRATE_QA_RUN_ID": "run",
@@ -2131,8 +2155,7 @@ exit 0
     assert calls.index("kubectl --context kind-kubecrate-qa-test apply -f -") < key_post
     assert key_post < key_read < key_list < sync_failure < key_cleanup_get < key_delete < key_404 < ref_delete < cluster_delete
     assert "kubectl --context kind-kubecrate-qa-test get secret flux-system-sync -n flux-system" in calls
-    assert "jsonpath={.data.identity\\.pub}" in calls
-    assert "jsonpath={.data.identity\\\\.pub}" not in calls
+    assert "get secret flux-system-sync -n flux-system -o json" in calls
     assert "flux --context kind-kubecrate-qa-test reconcile source git flux-system-sync -n flux-system" in calls
     assert "flux --context kind-kubecrate-qa-test reconcile kustomization flux-system-sync -n flux-system" in calls
     assert "get secret flux-system -n flux-system" not in calls

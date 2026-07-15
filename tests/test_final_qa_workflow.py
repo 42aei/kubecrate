@@ -163,8 +163,9 @@ def test_identity_wait_is_bounded_private_and_context_guarded() -> None:
     assert 'KUBECRATE_QA_IDENTITY_TIMEOUT' in wait
     assert 'KUBECRATE_QA_IDENTITY_POLL_INTERVAL' in wait
     assert 'assert_context' in wait
-    assert "jsonpath='{.data.identity\\.pub}'" in wait
-    assert "jsonpath='{.data.identity\\\\.pub}'" not in wait
+    assert '-o json' in wait
+    assert 'extract-public-key' in wait
+    assert 'jsonpath=' not in wait
     assert "identity public key was not generated before timeout" in wait
     assert 'write-public-key' in text
     assert '>"${EVIDENCE}/private/identity.pub"' not in text

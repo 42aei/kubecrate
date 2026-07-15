@@ -998,6 +998,16 @@ def write_public_key(evidence_root: Path, encoded: str) -> None:
         os.close(root_fd)
 
 
+def extract_public_key(secret_json: str) -> str:
+    secret = json.loads(secret_json)
+    assert isinstance(secret, dict), "Secret response must be an object"
+    data = secret.get("data")
+    assert isinstance(data, dict), "Secret data must be an object"
+    encoded = data.get("identity.pub")
+    assert isinstance(encoded, str) and encoded, "Secret identity.pub must be a non-empty string"
+    return encoded
+
+
 def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: str,
                       marker: Path, evidence_root: Path) -> int:
     uncertain = marker.with_suffix(marker.suffix + ".uncertain")
@@ -1457,6 +1467,7 @@ def main() -> int:
     p.add_argument("--evidence-root", required=True, type=Path)
     p = sub.add_parser("write-public-key")
     p.add_argument("--evidence-root", required=True, type=Path)
+    sub.add_parser("extract-public-key")
     p = sub.add_parser("create-deploy-key")
     p.add_argument("--repo", required=True)
     p.add_argument("--title", required=True)
@@ -1489,6 +1500,8 @@ def main() -> int:
         cleanup_private(args.evidence_root)
     elif args.command == "write-public-key":
         write_public_key(args.evidence_root, sys.stdin.read().strip())
+    elif args.command == "extract-public-key":
+        print(extract_public_key(sys.stdin.read()), end="")
     elif args.command == "create-deploy-key":
         public_key = _read_private_file(args.evidence_root, "identity.pub")
         key_id = create_deploy_key(

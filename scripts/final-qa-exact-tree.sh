@@ -39,8 +39,8 @@ wait_for_flux_identity() {
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     assert_context
-    encoded="$(kubectl --context "${CONTEXT}" get secret "${SYNC_NAME}" -n flux-system -o jsonpath='{.data.identity\.pub}' \
-      2>/dev/null || true)"
+    encoded="$(kubectl --context "${CONTEXT}" get secret "${SYNC_NAME}" -n flux-system -o json 2>/dev/null | \
+      python3 scripts/final_qa_helpers.py extract-public-key 2>/dev/null || true)"
     if test -n "${encoded}"; then
       printf '%s' "${encoded}" | python3 scripts/final_qa_helpers.py write-public-key \
         --evidence-root "${EVIDENCE}"
