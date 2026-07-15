@@ -65,7 +65,7 @@ The `flux get source git flux-system-sync` command will show the GitRepository a
    - Find the key and toggle it back on via the UI
    - Alternatively, delete the disabled key and re-register it: the public key
      is still available in the cluster (`kubectl -n flux-system get secret flux-system-sync
-     -o jsonpath='{.data.identity\\.pub}' | base64 -d`)
+     -o jsonpath='{.data.identity\.pub}' | base64 -d`)
 
 ### Re-enabling after org policy change
 

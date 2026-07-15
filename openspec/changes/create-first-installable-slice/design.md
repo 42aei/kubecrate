@@ -172,7 +172,7 @@ The first slice uses the conventional Flux bootstrap object names in namespace `
 
 Bootstrap applies the initial Git source and reconciliation objects so those names are stable across bootstrap installation and GitOps-managed operation. `flux2-sync` runs in SSH mode against this repository and the active implementation branch. The generated private key remains in `Secret/flux-system-sync` in namespace `flux-system`.
 
-The public-key retrieval step is concrete for this slice: the operator retrieves the generated deploy key from `Secret/flux-system-sync` with an operator-visible command equivalent to `kubectl -n flux-system get secret flux-system-sync -o jsonpath='{.data.identity\\.pub}' | base64 -d`. Bootstrap output or companion docs may wrap that command, but the source of truth is the generated `identity.pub` field in `Secret/flux-system-sync`.
+The public-key retrieval step is concrete for this slice: the operator retrieves the generated deploy key from `Secret/flux-system-sync` with an operator-visible command equivalent to `kubectl -n flux-system get secret flux-system-sync -o jsonpath='{.data.identity\.pub}' | base64 -d`. Bootstrap output or companion docs may wrap that command, but the source of truth is the generated `identity.pub` field in `Secret/flux-system-sync`.
 
 Registration and reconciliation evidence for the tracer bullet is:
 
