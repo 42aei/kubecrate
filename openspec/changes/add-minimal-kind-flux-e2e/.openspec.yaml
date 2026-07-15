@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-15
+goal: Provide a small repeatable command that proves kind creation, Flux
+  bootstrap, ESO projection, CrateCheck green-red-green, and cluster cleanup
+  without temporary refs or deploy-key lifecycle machinery.
