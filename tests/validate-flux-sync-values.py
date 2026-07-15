@@ -48,9 +48,52 @@ def render_entrypoint() -> str:
     ).stdout
 
 
+def validate_child_kustomization_sources(rendered: str) -> None:
+    expected_names = {
+        "external-secrets-operator",
+        "external-secrets-operator-smoke",
+    }
+    children = {
+        document.get("metadata", {}).get("name"): document
+        for document in yaml.safe_load_all(rendered)
+        if isinstance(document, dict)
+        and document.get("apiVersion") == "kustomize.toolkit.fluxcd.io/v1"
+        and document.get("kind") == "Kustomization"
+    }
+    assert set(children) == expected_names
+    for name, child in children.items():
+        metadata = child.get("metadata", {})
+        source_ref = child.get("spec", {}).get("sourceRef", {})
+        assert metadata.get("namespace") == SYNC_NAMESPACE, name
+        assert source_ref.get("kind") == "GitRepository", name
+        assert source_ref.get("name") == SYNC_NAME, name
+        assert source_ref.get("namespace", SYNC_NAMESPACE) == SYNC_NAMESPACE, name
+
+
 def test_repository_and_kustomize_values_request_ed25519() -> None:
     load_values(VALUES.read_text(encoding="utf-8"))
     rendered_configmap_values(render_entrypoint())
+
+
+def test_rendered_child_kustomizations_use_sync_git_repository() -> None:
+    validate_child_kustomization_sources(render_entrypoint())
+
+
+def test_rendered_child_kustomization_rejects_obsolete_source_name() -> None:
+    documents = list(yaml.safe_load_all(render_entrypoint()))
+    child = next(
+        document for document in documents
+        if isinstance(document, dict)
+        and document.get("kind") == "Kustomization"
+        and document.get("metadata", {}).get("name") == "external-secrets-operator"
+    )
+    child["spec"]["sourceRef"]["name"] = "flux-system"
+    try:
+        validate_child_kustomization_sources(yaml.safe_dump_all(documents))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("obsolete GitRepository source name was accepted")
 
 
 def test_exact_qa_renderer_preserves_ed25519_when_overriding_source() -> None:
@@ -248,6 +291,8 @@ def test_helm_1146_render_matches_generated_sync_resource_contract() -> None:
 
 CONTRACT_CHECKS = (
     test_repository_and_kustomize_values_request_ed25519,
+    test_rendered_child_kustomizations_use_sync_git_repository,
+    test_rendered_child_kustomization_rejects_obsolete_source_name,
     test_exact_qa_renderer_preserves_ed25519_when_overriding_source,
     test_exact_qa_renderer_rejects_every_non_source_only_override,
     test_exact_qa_renderer_uses_git_branch_ref_format_semantics,
@@ -255,6 +300,8 @@ CONTRACT_CHECKS = (
 )
 EXPECTED_CONTRACT_CHECKS = (
     "test_repository_and_kustomize_values_request_ed25519",
+    "test_rendered_child_kustomizations_use_sync_git_repository",
+    "test_rendered_child_kustomization_rejects_obsolete_source_name",
     "test_exact_qa_renderer_preserves_ed25519_when_overriding_source",
     "test_exact_qa_renderer_rejects_every_non_source_only_override",
     "test_exact_qa_renderer_uses_git_branch_ref_format_semantics",
