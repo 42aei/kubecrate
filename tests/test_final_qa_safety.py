@@ -146,8 +146,8 @@ class FakeKeys:
         self.readback = readback
         self.calls = []
 
-    def list(self, guard=None):
-        if guard: guard()
+    def list(self, *, guard):
+        guard()
         self.calls.append(("list",))
         if self.listed and isinstance(self.listed[0], list):
             return self.listed.pop(0)
@@ -158,13 +158,13 @@ class FakeKeys:
         if isinstance(self.created, BaseException): raise self.created
         return self.created
 
-    def get(self, key_id, guard=None):
-        if guard: guard()
+    def get(self, key_id, *, guard):
+        guard()
         self.calls.append(("get", key_id))
         return self.readback
 
-    def delete(self, key_id, guard=None):
-        if guard: guard()
+    def delete(self, key_id, *, guard):
+        guard()
         self.calls.append(("delete", key_id))
         self.readback = None
 
@@ -278,11 +278,11 @@ def test_github_deploy_key_list_paginates_until_short_page_and_fails_at_boundary
     def request(method, endpoint, fields=None):
         calls.append(endpoint); return 200, pages.pop(0)
     monkeypatch.setattr(api, "_request", request)
-    assert len(api.list()) == 101
+    assert len(api.list(guard=lambda: None)) == 101
     assert calls == ["repos/o/r/keys?per_page=100&page=1", "repos/o/r/keys?per_page=100&page=2"]
 
     calls.clear(); pages[:] = [[deploy_key(i + 1, f"key-{i}", public_key((i % 250) + 1)) for i in range(100)], "bad"]
-    with pytest.raises(helpers.APIError): api.list()
+    with pytest.raises(helpers.APIError): api.list(guard=lambda: None)
     assert calls[-1].endswith("page=2")
 
 
@@ -300,10 +300,10 @@ def test_owned_payload_mutation_at_delete_boundary_blocks_delete_and_retains_act
     _write_owned_key_evidence(root, marker, key)
 
     class MutatingKeys(FakeKeys):
-        def delete(self, key_id, guard=None):
+        def delete(self, key_id, *, guard):
             marker.write_text(json.dumps({"state": "owned", "repo": "o/r", "title": obj["title"],
                 "fingerprint": helpers._public_key_fingerprint(key), "key_id": 8}) + "\n")
-            if guard: guard()
+            guard()
             pytest.fail("DELETE crossed a failed evidence guard")
 
     api = MutatingKeys(listed=[[obj]], readback=obj)
@@ -346,10 +346,10 @@ def test_post_delete_evidence_mutation_stops_all_later_api_and_retains_active(tm
     _write_owned_key_evidence(root, marker, key)
 
     class PostDeleteMutation(FakeKeys):
-        def get(self, key_id, guard=None):
+        def get(self, key_id, *, guard):
             if self.readback is None:
                 marker.chmod(0o640)
-            if guard: guard()
+            guard()
             self.calls.append(("get", key_id))
             return self.readback
 
@@ -369,17 +369,17 @@ def test_github_deploy_key_list_complete_pagination_edges(monkeypatch) -> None:
     responses = [(200, full), (500, {"message": "boom"})]
     monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
     with pytest.raises(helpers.APIError):
-        api.list()
+        api.list(guard=lambda: None)
 
     responses = [(200, full), (200, [])]
     monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
-    assert len(api.list()) == 100 and not responses
+    assert len(api.list(guard=lambda: None)) == 100 and not responses
 
     api.MAX_LIST_PAGES = 2
     responses = [(200, full), (200, full)]
     monkeypatch.setattr(api, "_request", lambda *_args: responses.pop(0))
     with pytest.raises(helpers.APIError, match="safety bound"):
-        api.list()
+        api.list(guard=lambda: None)
 
 
 def test_duplicate_identity_split_across_pages_blocks_cleanup_and_retains_marker(tmp_path: Path, monkeypatch) -> None:
@@ -633,6 +633,169 @@ def _write_owned_key_evidence(root: Path, marker: Path, key: str, auxiliaries=()
         path = marker.with_suffix(".json.uncertain")
         if which == "outcome": path = path.with_suffix(".uncertain.outcome")
         helpers._create_json_marker_exclusive(path, {"state": state, **identity}, evidence_root=root)
+
+
+def _write_uncertain_key_evidence(root: Path, marker: Path, key: str, state: str) -> tuple[Path, Path]:
+    fingerprint = helpers._public_key_fingerprint(key)
+    attempt = marker.with_suffix(".json.uncertain")
+    outcome = attempt.with_suffix(".uncertain.outcome")
+    helpers._create_json_marker_exclusive(attempt, {
+        "state": "create-attempting", "repo": "o/r", "title": "kubecrate-qa-run",
+        "fingerprint": fingerprint}, evidence_root=root)
+    helpers._create_json_marker_exclusive(outcome, {
+        "state": state, "repo": "o/r", "title": "kubecrate-qa-run",
+        "fingerprint": fingerprint}, evidence_root=root)
+    return attempt, outcome
+
+
+def _mutate_evidence(path: Path, root: Path, mutation: str) -> bytes | None:
+    if mutation == "payload":
+        payload = json.loads(path.read_text())
+        payload["repo"] = "changed/repo"
+        path.write_text(json.dumps(payload) + "\n")
+    elif mutation == "replace":
+        replacement = root / f"foreign-{os.urandom(4).hex()}"
+        foreign = b'{"foreign":"must survive"}\n'
+        replacement.write_bytes(foreign); replacement.chmod(0o600)
+        replacement.replace(path)
+        return foreign
+    elif mutation == "chmod":
+        path.chmod(0o640)
+    elif mutation == "hardlink":
+        os.link(path, root / f"extra-{os.urandom(4).hex()}")
+    else:
+        raise AssertionError(f"unknown mutation {mutation}")
+    return None
+
+
+class BoundaryKeys(FakeKeys):
+    """Two-page fake whose guard is the immediate request boundary."""
+    def __init__(self, obj, boundary: str, mutate):
+        super().__init__(readback=obj)
+        self.obj = obj
+        self.boundary = boundary
+        self.mutate = mutate
+        self.list_count = 0
+
+    def _request(self, name, guard):
+        if name == self.boundary:
+            self.mutate()
+        guard()
+        self.calls.append((name,))
+
+    def get(self, key_id, *, guard):
+        name = "pre-get" if self.readback is not None else "post-get"
+        self._request(name, guard)
+        return self.readback
+
+    def list(self, *, guard):
+        self.list_count += 1
+        phase = "pre-list" if self.list_count == 1 else "post-list"
+        self._request(f"{phase}-page1", guard)
+        self._request(f"{phase}-page2", guard)
+        return [self.obj] if self.readback is not None else []
+
+    def delete(self, key_id, *, guard):
+        self._request("delete", guard)
+        self.readback = None
+
+
+def test_deploy_key_api_guard_is_mandatory_before_any_request(monkeypatch) -> None:
+    production = helpers.GitHubDeployKeysAPI("o/r")
+    requests = []
+    monkeypatch.setattr(production, "_request", lambda *args: requests.append(args))
+    fake = FakeKeys()
+    for api in (production, fake):
+        with pytest.raises(TypeError): api.list()
+        with pytest.raises(TypeError): api.get(7)
+        with pytest.raises(TypeError): api.delete(7)
+    assert requests == [] and fake.calls == []
+
+
+@pytest.mark.parametrize("boundary", [
+    "pre-get", "pre-list-page1", "pre-list-page2", "delete", "post-get",
+    "post-list-page1", "post-list-page2", "final-retirement",
+])
+@pytest.mark.parametrize("mutation", ["payload", "replace", "chmod", "hardlink"])
+def test_owned_cleanup_evidence_mutation_matrix_blocks_current_and_later_boundary(
+    tmp_path: Path, monkeypatch, boundary: str, mutation: str
+) -> None:
+    root = tmp_path / f"{boundary}-{mutation}"; marker = root / "owned.json"
+    key = public_key(); obj = deploy_key(key=key)
+    _write_owned_key_evidence(root, marker, key)
+    foreign = []
+    mutate = lambda: foreign.append(_mutate_evidence(marker, root, mutation))
+    api = BoundaryKeys(obj, boundary, mutate)
+    if boundary == "final-retirement":
+        real_verify = helpers._verify_all; count = 0
+        def verify(evidence):
+            nonlocal count
+            count += 1
+            if count == 8:
+                mutate()
+            return real_verify(evidence)
+        monkeypatch.setattr(helpers, "_verify_all", verify)
+    with pytest.raises(AssertionError):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
+    expected = ["pre-get", "pre-list-page1", "pre-list-page2", "delete", "post-get",
+                "post-list-page1", "post-list-page2"]
+    stop = len(expected) if boundary == "final-retirement" else expected.index(boundary)
+    assert [call[0] for call in api.calls] == expected[:stop]
+    if expected.index("delete") >= stop:
+        assert api.readback is obj
+    else:
+        assert api.readback is None
+    assert marker.exists()
+    if mutation == "replace": assert marker.read_bytes() == foreign[0]
+
+
+@pytest.mark.parametrize("boundary", [
+    "pre-list-page1", "pre-list-page2", "delete", "post-get",
+    "post-list-page1", "post-list-page2",
+])
+@pytest.mark.parametrize("mutation", ["payload", "replace", "chmod", "hardlink"])
+def test_created_unverified_cleanup_mutation_matrix_blocks_current_and_later_boundary(
+    tmp_path: Path, boundary: str, mutation: str
+) -> None:
+    root = tmp_path / f"{boundary}-{mutation}"; marker = root / "owned.json"
+    key = public_key(); obj = deploy_key(key=key)
+    attempt, outcome = _write_uncertain_key_evidence(root, marker, key, "created-unverified")
+    foreign = []
+    api = BoundaryKeys(obj, boundary,
+        lambda: foreign.append(_mutate_evidence(outcome, root, mutation)))
+    with pytest.raises(AssertionError):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
+    expected = ["pre-list-page1", "pre-list-page2", "pre-get", "delete", "post-get",
+                "post-list-page1", "post-list-page2"]
+    stop = expected.index(boundary)
+    assert [call[0] for call in api.calls] == expected[:stop]
+    assert attempt.exists() and outcome.exists()
+    assert api.readback is (obj if stop <= expected.index("delete") else None)
+    if mutation == "replace": assert outcome.read_bytes() == foreign[0]
+
+
+@pytest.mark.parametrize("boundary", ["pre-list-page1", "pre-list-page2"])
+@pytest.mark.parametrize("mutation", ["payload", "replace", "chmod", "hardlink"])
+def test_create_rejected_cleanup_mutation_matrix_never_deletes_and_retains_markers(
+    tmp_path: Path, boundary: str, mutation: str
+) -> None:
+    root = tmp_path / f"{boundary}-{mutation}"; marker = root / "owned.json"
+    key = public_key(); obj = deploy_key(key=key)
+    attempt, outcome = _write_uncertain_key_evidence(root, marker, key, "create-rejected")
+    foreign = []
+    api = BoundaryKeys(obj, boundary,
+        lambda: foreign.append(_mutate_evidence(outcome, root, mutation)))
+    api.readback = None
+    with pytest.raises(AssertionError):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
+    expected = ["pre-list-page1", "pre-list-page2"]
+    assert [call[0] for call in api.calls] == expected[:expected.index(boundary)]
+    assert attempt.exists() and outcome.exists()
+    assert not any(call[0] == "delete" for call in api.calls)
+    if mutation == "replace": assert outcome.read_bytes() == foreign[0]
 
 
 @pytest.mark.parametrize("auxiliaries", [

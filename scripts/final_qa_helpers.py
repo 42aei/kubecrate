@@ -56,10 +56,10 @@ class APIError(RuntimeError):
 
 
 class DeployKeysAPI(Protocol):
-    def list(self, guard: Callable[[], None] | None = None) -> list[dict[str, Any]]: ...
-    def get(self, key_id: int, guard: Callable[[], None] | None = None) -> dict[str, Any] | None: ...
+    def list(self, *, guard: Callable[[], None]) -> list[dict[str, Any]]: ...
+    def get(self, key_id: int, *, guard: Callable[[], None]) -> dict[str, Any] | None: ...
     def create(self, title: str, key: str) -> dict[str, Any] | None: ...
-    def delete(self, key_id: int, guard: Callable[[], None] | None = None) -> None: ...
+    def delete(self, key_id: int, *, guard: Callable[[], None]) -> None: ...
 
 
 class RefsAPI(Protocol):
@@ -733,11 +733,10 @@ class GitHubDeployKeysAPI:
     def _request(self, method: str, endpoint: str, fields: dict[str, Any] | None = None) -> tuple[int, Any]:
         return self._refs._request(method, endpoint, fields)
 
-    def list(self, guard: Callable[[], None] | None = None) -> list[dict[str, Any]]:
+    def list(self, *, guard: Callable[[], None]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for page in range(1, self.MAX_LIST_PAGES + 1):
-            if guard is not None:
-                guard()
+            guard()
             status, body = self._request(
                 "GET", f"repos/{self.repo}/keys?per_page=100&page={page}")
             if status != 200 or not isinstance(body, list) or not all(
@@ -750,9 +749,8 @@ class GitHubDeployKeysAPI:
                 return result
         raise APIError(0, "deploy-key pagination exceeded safety bound")
 
-    def get(self, key_id: int, guard: Callable[[], None] | None = None) -> dict[str, Any] | None:
-        if guard is not None:
-            guard()
+    def get(self, key_id: int, *, guard: Callable[[], None]) -> dict[str, Any] | None:
+        guard()
         status, body = self._request("GET", f"repos/{self.repo}/keys/{key_id}")
         if status == 404:
             if not isinstance(body, dict) or body.get("message") != "Not Found":
@@ -773,9 +771,8 @@ class GitHubDeployKeysAPI:
             raise APIError(status, "deploy-key create response must be an object")
         return body
 
-    def delete(self, key_id: int, guard: Callable[[], None] | None = None) -> None:
-        if guard is not None:
-            guard()
+    def delete(self, key_id: int, *, guard: Callable[[], None]) -> None:
+        guard()
         status, _ = self._request("DELETE", f"repos/{self.repo}/keys/{key_id}")
         if status != 204:
             raise APIError(status, "unexpected deploy-key delete response")
@@ -931,7 +928,13 @@ def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: 
     _assert_fresh_marker_destinations(marker, uncertain, evidence_root)
     _assert_fresh_marker_destinations(marker, outcome, evidence_root)
     fingerprint = _public_key_fingerprint(public_key)
-    before = _validate_key_list(api.list())
+    # Creation has no ownership evidence to authenticate yet.  Keep this
+    # explicit at every read so cleanup-capable API methods can never silently
+    # omit their guard contract.
+    def _creation_guard() -> None:
+        return None
+
+    before = _validate_key_list(api.list(guard=_creation_guard))
     assert not any(item_title == title or item_fingerprint == fingerprint
                    for _, _, item_title, item_fingerprint in before), \
         "deploy-key title or fingerprint already exists"
@@ -948,8 +951,8 @@ def create_deploy_key(api: DeployKeysAPI, title: str, public_key: str, *, repo: 
     _create_json_marker_exclusive(
         outcome, {"state": "created-unverified", **identity}, evidence_root=evidence_root)
     key_id = _assert_deploy_key(created, title, fingerprint)
-    _assert_deploy_key(api.get(key_id), title, fingerprint, key_id)
-    _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
+    _assert_deploy_key(api.get(key_id, guard=_creation_guard), title, fingerprint, key_id)
+    _assert_unique_exact_key(api.list(guard=_creation_guard), key_id=key_id, title=title,
                              fingerprint=fingerprint)
     _, attempt_dir_fd, attempt_fd, attempt_info = _load_key_marker(
         uncertain, evidence_root, "create-attempting", repo, title, fingerprint)
