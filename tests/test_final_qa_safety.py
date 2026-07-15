@@ -139,6 +139,21 @@ def test_unknown_lookup_fails_closed_before_create() -> None:
     assert not any(c[0] == "create" for c in api.calls)
 
 
+@pytest.mark.parametrize("bounds", [(-1, .5), (1, 0), (1, -.5)])
+def test_invalid_ref_readback_bounds_fail_before_remote_or_marker_mutation(
+    tmp_path: Path, bounds: tuple[float, float]
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"
+    api = FakeRefs([None])
+    with pytest.raises(AssertionError, match="invalid ref readback bounds"):
+        helpers.create_owned_ref(
+            api, "refs/heads/qa", "a" * 40, repo="o/r", marker=marker,
+            evidence_root=root, readback_timeout=bounds[0], readback_interval=bounds[1])
+    assert api.calls == []
+    assert not root.exists()
+    assert not marker.exists() and not marker.with_suffix(".json.uncertain").exists()
+
+
 class FakeKeys:
     def __init__(self, listed=None, created=None, readback=None):
         self.listed = list(listed or [])
@@ -962,6 +977,76 @@ def test_owned_create_establishes_exact_ref() -> None:
     assert not any(c[0] == "delete" for c in api.calls)
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_owned_create_retries_retryable_authoritative_readback_until_exact() -> None:
+    sha = "a" * 40; ref = "refs/heads/qa"
+    exact = {"ref": ref, "object": {"type": "commit", "sha": sha}}
+    clock = FakeClock()
+    api = FakeRefs([
+        None, None, helpers.APIError(200, "ref response must be an object"), {}, exact,
+    ], create=helpers.APIError(201, "ref response must be an object"))
+
+    helpers.create_owned_ref(
+        api, ref, sha, readback_timeout=2, readback_interval=.5,
+        sleep=clock.sleep, monotonic=clock.monotonic)
+
+    assert [call[0] for call in api.calls] == ["get", "create", "get", "get", "get", "get"]
+    assert clock.sleeps == [.5, .5, .5]
+
+
+@pytest.mark.parametrize("mismatch", [
+    {"ref": "refs/heads/other", "object": {"type": "commit", "sha": "a" * 40}},
+    {"ref": "refs/heads/qa", "object": {"type": "tag", "sha": "a" * 40}},
+    {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": "b" * 40}},
+])
+def test_owned_create_exact_authoritative_conflict_is_terminal(mismatch: dict) -> None:
+    clock = FakeClock(); api = FakeRefs([None, mismatch], create=None)
+    with pytest.raises(helpers.AuthoritativeRefConflict, match="ownership conflict"):
+        helpers.create_owned_ref(
+            api, "refs/heads/qa", "a" * 40, readback_timeout=2,
+            readback_interval=.5, sleep=clock.sleep, monotonic=clock.monotonic)
+    assert [call[0] for call in api.calls] == ["get", "create", "get"]
+    assert clock.sleeps == []
+
+
+def test_owned_create_readback_exhaustion_is_clear_and_retains_uncertainty(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"; tmp_path.chmod(0o700)
+    marker = root / "owned.json"; clock = FakeClock()
+    api = FakeRefs([None, None, helpers.APIError(500, "secret response body"), {}], create=None)
+    with pytest.raises(helpers.AuthoritativeRefReadbackError) as caught:
+        helpers.create_owned_ref(
+            api, "refs/heads/qa", "a" * 40, repo="o/r", marker=marker,
+            evidence_root=root, readback_timeout=1, readback_interval=.5,
+            sleep=clock.sleep, monotonic=clock.monotonic)
+    message = str(caught.value)
+    assert "authoritative ref readback did not converge" in message
+    assert "attempts=3" in message and "malformed" in message
+    assert "secret response body" not in message
+    assert not marker.exists() and marker.with_suffix(".json.uncertain").exists()
+
+
+def test_owned_create_zero_timeout_still_makes_one_readback_without_sleeping() -> None:
+    clock = FakeClock(); api = FakeRefs([None, None], create=None)
+    with pytest.raises(helpers.AuthoritativeRefReadbackError, match="attempts=1"):
+        helpers.create_owned_ref(
+            api, "refs/heads/qa", "a" * 40, readback_timeout=0,
+            readback_interval=.5, sleep=clock.sleep, monotonic=clock.monotonic)
+    assert [call[0] for call in api.calls] == ["get", "create", "get"]
+    assert clock.sleeps == []
+
+
 def test_restoration_uses_explicit_context_and_checks_before_teardown() -> None:
     calls = []
     context = "kind-qa"
@@ -1037,6 +1122,62 @@ def run_helper(tmp_path: Path, responses: list, *args: str) -> subprocess.Comple
     bindir = fake_gh(tmp_path, responses, log)
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_GH_QUEUE": str(tmp_path / "responses.json"), "FAKE_GH_LOG": str(log)}
     return subprocess.run(["python3", HELPER_PATH, *args], env=env, text=True, capture_output=True)
+
+
+def test_actual_create_ref_cli_retries_malformed_post_and_gets_to_exact(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    ref = "refs/heads/qa"; sha = "a" * 40; root = tmp_path / "evidence"; owned = root / "owned.json"
+    result = run_helper(tmp_path, [
+        (404, '{"message":"Not Found"}'), (201, "[]"),
+        (404, '{"message":"Not Found"}'), (200, ""), (200, "not-json"),
+        (200, ref_obj(ref, sha)),
+    ], "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha,
+       "--evidence-root", str(root), "--marker", str(owned),
+       "--readback-timeout", "1", "--readback-interval", ".01")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "" and "not-json" not in result.stderr
+    assert json.loads(owned.read_text())["state"] == "owned"
+    assert not owned.with_suffix(".json.uncertain").exists()
+    calls = (tmp_path / "gh.log").read_text().splitlines()
+    assert sum("-X GET" in call for call in calls) == 5
+    assert sum("-X POST" in call for call in calls) == 1
+
+
+def test_actual_create_ref_cli_exhaustion_is_clear_and_keeps_uncertainty(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    ref = "refs/heads/qa"; sha = "a" * 40; root = tmp_path / "evidence"; owned = root / "owned.json"
+    responses = [(404, '{"message":"Not Found"}'), (201, "private-post-body")]
+    responses.extend((500, '{"message":"private-server-body"}') for _ in range(20))
+    result = run_helper(tmp_path, responses, "create-ref", "--repo", "o/r", "--ref", ref, "--sha", sha,
+       "--evidence-root", str(root), "--marker", str(owned),
+       "--readback-timeout", ".025", "--readback-interval", ".01")
+
+    assert result.returncode != 0
+    assert "authoritative ref readback did not converge" in result.stderr
+    assert "private-post-body" not in result.stderr and "private-get-body" not in result.stderr
+    assert not owned.exists() and owned.with_suffix(".json.uncertain").exists()
+    calls = (tmp_path / "gh.log").read_text().splitlines()
+    assert sum("-X GET" in call for call in calls) >= 2
+    assert sum("-X POST" in call for call in calls) == 1
+
+
+def test_actual_create_ref_cli_conflict_and_422_do_not_poll(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    ref = "refs/heads/qa"; sha = "a" * 40
+    for name, responses, expected_gets in (
+        ("conflict", [(404, '{"message":"Not Found"}'), (201, ""),
+                      (200, ref_obj(ref, "b" * 40))], 2),
+        ("rejected", [(404, '{"message":"Not Found"}'), (422, '{"message":"exists"}')], 1),
+    ):
+        case = tmp_path / name; case.mkdir(mode=0o700)
+        root = case / "evidence"; owned = root / "owned.json"
+        result = run_helper(case, responses, "create-ref", "--repo", "o/r", "--ref", ref,
+            "--sha", sha, "--evidence-root", str(root), "--marker", str(owned),
+            "--readback-timeout", "1", "--readback-interval", ".01")
+        assert result.returncode != 0 and not owned.exists()
+        calls = (case / "gh.log").read_text().splitlines()
+        assert sum("-X GET" in call for call in calls) == expected_gets
 
 
 def blocking_fake_gh(tmp_path: Path, phase: str, ref: str, sha: str) -> tuple[Path, Path, Path]:
@@ -1464,7 +1605,10 @@ def test_exclusive_publication_never_calls_pathname_unlink(monkeypatch, tmp_path
 ])
 def test_helper_cli_does_not_claim_ownership_for_422_unknown_or_malformed(tmp_path: Path, responses) -> None:
     root = tmp_path / "evidence"; marker = root / "owned.json"
-    result = run_helper(tmp_path, responses, "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40, "--evidence-root", str(root), "--marker", str(marker))
+    result = run_helper(
+        tmp_path, responses, "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa",
+        "--sha", "a" * 40, "--evidence-root", str(root), "--marker", str(marker),
+        "--readback-timeout", "0", "--readback-interval", ".01")
     assert result.returncode != 0
     assert not marker.exists()
     # Every attempted POST is durably uncertain unless exact POST evidence and
@@ -1547,6 +1691,7 @@ def test_helper_cli_expected_success_post_anomaly_with_unproved_readback_retains
         [(404, '{"message":"Not Found"}'), (201, post_body), readback],
         "create-ref", "--repo", "o/r", "--ref", "refs/heads/qa", "--sha", "a" * 40,
         "--evidence-root", str(root), "--marker", str(marker),
+        "--readback-timeout", "0", "--readback-interval", ".01",
     )
     assert result.returncode != 0 and not marker.exists() and uncertain.exists()
     assert "-X DELETE" not in (tmp_path / "gh.log").read_text()

@@ -16,6 +16,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 
 from collections import Counter
 from pathlib import Path
@@ -53,6 +54,18 @@ class APIError(RuntimeError):
     def __init__(self, status: int, message: str):
         super().__init__(f"GitHub API HTTP {status}: {message}")
         self.status = status
+
+
+class AuthoritativeRefReadbackError(RuntimeError):
+    """A successful create could not be authoritatively confirmed in time."""
+
+
+class AuthoritativeRefConflict(RuntimeError):
+    """The authoritative ref exists, but does not have the requested identity."""
+
+
+REF_READBACK_TIMEOUT = 20.0
+REF_READBACK_INTERVAL = 0.5
 
 
 class DeployKeysAPI(Protocol):
@@ -542,14 +555,38 @@ def _assert_fresh_marker_destinations(marker: Path, uncertain: Path, evidence_ro
         os.close(directory_fd)
 
 
+def _authoritative_ref_result(obj: Any, ref: str, sha: str) -> str:
+    """Classify a post-create GET without including its response in diagnostics."""
+    if obj is None:
+        return "absent"
+    if not isinstance(obj, dict):
+        return "malformed"
+    target = obj.get("object")
+    if not isinstance(obj.get("ref"), str) or not isinstance(target, dict):
+        return "malformed"
+    if not isinstance(target.get("type"), str) or not isinstance(target.get("sha"), str):
+        return "malformed"
+    if obj["ref"] != ref or target["type"] != "commit" or target["sha"] != sha:
+        return "conflict"
+    return "exact"
+
+
 def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker: Path | None = None,
-                     evidence_root: Path | None = None) -> None:
+                     evidence_root: Path | None = None,
+                     readback_timeout: float = REF_READBACK_TIMEOUT,
+                     readback_interval: float = REF_READBACK_INTERVAL,
+                     sleep: Callable[[float], None] = time.sleep,
+                     monotonic: Callable[[], float] = time.monotonic) -> None:
     assert ref.startswith("refs/heads/"), "only an exact heads ref is allowed"
+    assert readback_timeout >= 0 and readback_interval > 0, "invalid ref readback bounds"
     uncertain = marker.with_suffix(marker.suffix + ".uncertain") if marker else None
     if uncertain:
         assert marker is not None and evidence_root is not None
         _assert_fresh_marker_destinations(marker, uncertain, evidence_root)
-    assert api.get(ref) is None, "QA ref already exists"
+    try:
+        assert api.get(ref) is None, "pre-create ref lookup found that QA ref already exists"
+    except APIError as exc:
+        raise APIError(exc.status, "pre-create ref lookup failed") from exc
     if uncertain:
         assert evidence_root is not None
         # Persist the attempt before POST so termination during or immediately
@@ -566,7 +603,7 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
         # parsed/validated. It still requires authoritative readback. Nonzero
         # outcomes (including a racing 422) retain uncertainty and fail closed.
         if exc.status != 201:
-            raise
+            raise APIError(exc.status, "post-create ref request failed") from exc
         post_error = exc
     if post_error is None and created is not None:
         try:
@@ -574,13 +611,40 @@ def create_owned_ref(api: RefsAPI, ref: str, sha: str, *, repo: str = "", marker
         except AssertionError as exc:
             post_error = exc
 
-    try:
-        _assert_ref(api.get(ref), ref, sha)
-    except BaseException as readback_error:
-        if post_error is not None:
-            post_error.add_note(f"authoritative GET also failed: {readback_error}")
-            raise post_error from readback_error
-        raise
+    deadline = monotonic() + readback_timeout
+    attempts = 0
+    last_category = "unknown"
+    last_error: BaseException | None = None
+    while True:
+        attempts += 1
+        try:
+            result = _authoritative_ref_result(api.get(ref), ref, sha)
+            if result == "exact":
+                break
+            if result == "conflict":
+                raise AuthoritativeRefConflict(
+                    "post-create authoritative ref ownership conflict")
+            last_category = result
+            last_error = None
+        except AuthoritativeRefConflict:
+            raise
+        except APIError as exc:
+            if exc.status not in {0, 200, 404} and exc.status < 500:
+                raise APIError(
+                    exc.status, "post-create authoritative ref readback failed") from exc
+            last_category = f"api-{exc.status}"
+            last_error = exc
+
+        now = monotonic()
+        if now >= deadline:
+            error = AuthoritativeRefReadbackError(
+                "post-create authoritative ref readback did not converge "
+                f"(attempts={attempts}, last={last_category})")
+            if post_error is not None:
+                error.add_note(
+                    f"provisional POST diagnostic: {type(post_error).__name__}")
+            raise error from last_error
+        sleep(min(readback_interval, deadline - now))
 
     # A return-code-successful POST only proves that GitHub accepted the
     # request. Its body is diagnostic: gh may emit no body, non-object JSON,
@@ -1358,6 +1422,10 @@ def main() -> int:
     p.add_argument("--sha", required=True)
     p.add_argument("--marker", required=True, type=Path)
     p.add_argument("--evidence-root", required=True, type=Path)
+    p.add_argument("--readback-timeout", type=float, default=REF_READBACK_TIMEOUT,
+                   help=argparse.SUPPRESS)
+    p.add_argument("--readback-interval", type=float, default=REF_READBACK_INTERVAL,
+                   help=argparse.SUPPRESS)
     p = sub.add_parser("cleanup-ref-markers")
     p.add_argument("--owned-marker", required=True, type=Path)
     p.add_argument("--uncertain-marker", required=True, type=Path)
@@ -1391,7 +1459,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "create-ref":
         create_owned_ref(GitHubRefsAPI(args.repo), args.ref, args.sha, repo=args.repo, marker=args.marker,
-                         evidence_root=args.evidence_root)
+                         evidence_root=args.evidence_root, readback_timeout=args.readback_timeout,
+                         readback_interval=args.readback_interval)
     elif args.command == "cleanup-ref-markers":
         owned_state, uncertain_state = cleanup_ref_markers(
             args.owned_marker, args.uncertain_marker, evidence_root=args.evidence_root,
@@ -1427,6 +1496,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (AssertionError, APIError, json.JSONDecodeError, OSError) as exc:
+    except (AssertionError, APIError, AuthoritativeRefReadbackError,
+            AuthoritativeRefConflict, json.JSONDecodeError, OSError) as exc:
         print(f"final-qa-helper: ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1)
