@@ -7,6 +7,7 @@ on:
       - '**/*.yml'
       - 'scripts/validate-kubernetes-manifests.py'
       - 'tests/validate-cratecheck.py'
+      - 'tests/validate-flux-sync-values.py'
       - 'requirements-dev.txt'
       - 'Makefile'
       - '.github/workflows/kubernetes-manifest-linting.yaml'
@@ -18,6 +19,7 @@ on:
       - '**/*.yml'
       - 'scripts/validate-kubernetes-manifests.py'
       - 'tests/validate-cratecheck.py'
+      - 'tests/validate-flux-sync-values.py'
       - 'requirements-dev.txt'
       - 'Makefile'
       - '.github/workflows/kubernetes-manifest-linting.yaml'
@@ -105,6 +107,9 @@ jobs:
 
       - name: Render Kustomize roots and validate output
         run: python scripts/validate-kubernetes-manifests.py --check kustomize
+
+      - name: Validate Flux sync credential generation values
+        run: python tests/validate-flux-sync-values.py
 
   cratecheck-cel-validation:
     name: CrateCheck CEL validation

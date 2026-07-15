@@ -88,8 +88,6 @@ python3 scripts/final_qa_helpers.py create-ref --repo "${REPO}" \
 BRANCH_CREATED=true
 
 cat >"${QA_VALUES}" <<EOF
-secret:
-  create: true
 gitRepository:
   spec:
     url: ssh://git@github.com/${REPO}.git

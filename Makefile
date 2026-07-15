@@ -21,7 +21,7 @@ MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 FLUX_SYNC_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync.yaml
 
-.PHONY: final-qa-exact-tree kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-preflight kind-unique-smoke validate-cratecheck
+.PHONY: final-qa-exact-tree kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-preflight kind-unique-smoke validate-cratecheck validate-flux-sync-values
 
 final-qa-exact-tree:
 > scripts/final-qa-exact-tree.sh
@@ -119,3 +119,8 @@ validate-cratecheck:
 > test -x "$(VENV_PYTHON)" || python3 -m venv "$(VENV_DIR)"
 > $(VENV_PYTHON) -m pip install --upgrade --quiet -r requirements-dev.txt
 > $(VENV_PYTHON) tests/validate-cratecheck.py
+
+validate-flux-sync-values:
+> test -x "$(VENV_PYTHON)" || python3 -m venv "$(VENV_DIR)"
+> $(VENV_PYTHON) -m pip install --upgrade --quiet -r requirements-dev.txt
+> $(VENV_PYTHON) tests/validate-flux-sync-values.py

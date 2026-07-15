@@ -5,6 +5,7 @@ This document covers durable operator knowledge for the Flux `flux2-sync` SSH de
 ## Deploy-key contract (summary)
 
 - The `flux2-sync` chart creates `Secret/flux-system` with an SSH key pair.
+- Kubecrate explicitly configures chart version `1.14.6` to generate an Ed25519 key; do not rely on the chart's ECDSA default.
 - The operator retrieves the generated public key from `identity.pub` and registers it with the Git provider as a **read-only** deploy key.
 - The generated private key stays in-cluster and must not be committed, printed, or copied.
 

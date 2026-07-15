@@ -1,5 +1,7 @@
 secret:
   create: true
+  generate:
+    sshKeyAlgorithm: ed25519
 gitRepository:
   spec:
     url: ssh://git@github.com/42aei/kubecrate.git
