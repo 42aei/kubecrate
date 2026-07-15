@@ -210,6 +210,13 @@ _LINKAT.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p
                     ctypes.c_int)
 _LINKAT.restype = ctypes.c_int
 
+_RENAME_NOREPLACE = 1
+_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+if _RENAMEAT2 is not None:
+    _RENAMEAT2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                           ctypes.c_char_p, ctypes.c_uint)
+    _RENAMEAT2.restype = ctypes.c_int
+
 _PROC_SUPER_MAGIC = 0x9FA0
 
 
@@ -377,6 +384,46 @@ def _create_json_marker_exclusive(path: Path, payload: dict[str, Any], *, eviden
         if fd >= 0:
             os.close(fd)
         os.close(directory_fd)
+
+
+def _rename_noreplace(source: str, destination: str, directory_fd: int) -> None:
+    """Atomically move a directory entry without replacing another entry."""
+    if _RENAMEAT2 is None:
+        raise RuntimeError("renameat2 unavailable for safe marker consumption")
+    if _RENAMEAT2(directory_fd, os.fsencode(source), directory_fd,
+                  os.fsencode(destination), _RENAME_NOREPLACE) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), source, destination)
+
+
+def _consume_open_marker(marker: Path, directory_fd: int, fd: int,
+                         opened: os.stat_result, expected: dict[str, Any]) -> None:
+    """Quarantine and consume a previously authenticated open marker inode."""
+    quarantine = f".{marker.name}.consume-{os.urandom(16).hex()}"
+    os.lseek(fd, 0, os.SEEK_SET)
+    with os.fdopen(os.dup(fd), encoding="utf-8") as stream:
+        current = json.load(stream)
+    assert current == expected, "deploy-key auxiliary marker identity mismatch"
+    _rename_noreplace(marker.name, quarantine, directory_fd)
+    os.fsync(directory_fd)
+    try:
+        _assert_entry_identity(quarantine, directory_fd, opened)
+    except AssertionError as exc:
+        # Retain the moved entry as diagnostic evidence on a race.  Never
+        # remove an inode merely because it occupies the expected path.
+        raise AssertionError(
+            "deploy-key auxiliary marker was replaced during consumption") from exc
+    _assert_entry_identity(quarantine, directory_fd, opened)
+    _durable_unlink(quarantine, directory_fd)
+
+
+def _consume_marker(path: Path, evidence_root: Path, expected: dict[str, Any]) -> None:
+    """Authenticate, quarantine, and durably consume one exact marker inode."""
+    marker, directory_fd, fd, opened = _open_marker(path, evidence_root)
+    try:
+        _consume_open_marker(marker, directory_fd, fd, opened, expected)
+    finally:
+        os.close(fd); os.close(directory_fd)
 
 
 def _create_marker_exclusive(path: Path, repo: str, ref: str, sha: str, state: str,
@@ -871,8 +918,39 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
         directory_fd, fd, info = directory_fd2, fd2, info2
         try:
             key_id = obj.get("key_id"); assert type(key_id) is int and key_id > 0
-            assert not _key_marker_exists(uncertain, evidence_root), "owned key retains attempt marker"
-            assert not _key_marker_exists(outcome, evidence_root), "owned key retains outcome marker"
+            expected_owned = {"state": "owned", "repo": repo, "title": title,
+                              "fingerprint": initial["fingerprint"], "key_id": key_id}
+            assert obj == expected_owned, "deploy-key owned marker has unexpected fields"
+            identity = {"repo": repo, "title": title,
+                        "fingerprint": initial["fingerprint"]}
+            auxiliaries: list[tuple[Path, int, int, os.stat_result, dict[str, Any]]] = []
+            try:
+                if _key_marker_exists(uncertain, evidence_root):
+                    expected_attempt = {"state": "create-attempting", **identity}
+                    attempt_obj, attempt_dir_fd, attempt_fd, attempt_info = _load_key_marker(
+                        uncertain, evidence_root, "create-attempting", repo, title,
+                        initial["fingerprint"])
+                    auxiliaries.append((uncertain, attempt_dir_fd, attempt_fd,
+                                        attempt_info, expected_attempt))
+                    assert attempt_obj == expected_attempt, \
+                        "deploy-key attempt marker has unexpected fields"
+                if _key_marker_exists(outcome, evidence_root):
+                    expected_outcome = {"state": "created-unverified", **identity}
+                    outcome_obj, outcome_dir_fd, outcome_fd, outcome_info = _load_key_marker(
+                        outcome, evidence_root, "created-unverified", repo, title,
+                        initial["fingerprint"])
+                    auxiliaries.append((outcome, outcome_dir_fd, outcome_fd,
+                                        outcome_info, expected_outcome))
+                    assert outcome_obj == expected_outcome, \
+                        "deploy-key outcome marker has unexpected fields"
+                # Keep every authenticated descriptor open until all auxiliaries
+                # have been inspected, then consume while owned remains linked.
+                for auxiliary in reversed(auxiliaries):
+                    _consume_open_marker(*auxiliary)
+            finally:
+                for _, auxiliary_dir_fd, auxiliary_fd, _, _ in auxiliaries:
+                    os.close(auxiliary_fd); os.close(auxiliary_dir_fd)
+            _assert_entry_identity(marker.name, directory_fd, info)
             _assert_deploy_key(api.get(key_id), title, initial["fingerprint"], key_id)
             _assert_unique_exact_key(api.list(), key_id=key_id, title=title,
                                      fingerprint=initial["fingerprint"])
@@ -946,6 +1024,10 @@ def cleanup_deploy_key_markers(api: DeployKeysAPI, *, repo: str, title: str,
             if outcome_fd >= 0: os.close(outcome_fd)
             if outcome_dir_fd >= 0: os.close(outcome_dir_fd)
             os.close(fd); os.close(directory_fd)
+        return
+    if _key_marker_exists(outcome, evidence_root):
+        raise AssertionError(
+            "deploy-key orphan outcome retained without API access or deletion")
 
 
 class GitHubRefsAPI:

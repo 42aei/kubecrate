@@ -544,6 +544,133 @@ def test_interrupt_after_deploy_key_create_recovers_unique_exact_key(tmp_path: P
     assert ("delete", 7) in api.calls and not marker.with_suffix(".json.uncertain").exists()
 
 
+def _write_owned_key_evidence(root: Path, marker: Path, key: str, auxiliaries=()) -> None:
+    fingerprint = helpers._public_key_fingerprint(key)
+    helpers._create_json_marker_exclusive(marker, {
+        "state": "owned", "repo": "o/r", "title": "kubecrate-qa-run",
+        "fingerprint": fingerprint, "key_id": 7}, evidence_root=root)
+    identity = {"repo": "o/r", "title": "kubecrate-qa-run", "fingerprint": fingerprint}
+    for which, state in auxiliaries:
+        path = marker.with_suffix(".json.uncertain")
+        if which == "outcome": path = path.with_suffix(".uncertain.outcome")
+        helpers._create_json_marker_exclusive(path, {"state": state, **identity}, evidence_root=root)
+
+
+@pytest.mark.parametrize("auxiliaries", [
+    (("attempt", "create-attempting"), ("outcome", "created-unverified")),
+    (("attempt", "create-attempting"),),
+    (("outcome", "created-unverified"),),
+])
+def test_owned_key_consumes_matching_stale_auxiliaries_before_delete_without_evidence_gap(
+    tmp_path: Path, monkeypatch, auxiliaries
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key(); obj = deploy_key(key=key)
+    _write_owned_key_evidence(root, marker, key, auxiliaries)
+    observed = []
+    real_consume = helpers._consume_open_marker
+    def consume(path, directory_fd, fd, opened, expected):
+        assert marker.exists(), "owned evidence gap while consuming auxiliary"
+        observed.append(path.name)
+        return real_consume(path, directory_fd, fd, opened, expected)
+    monkeypatch.setattr(helpers, "_consume_open_marker", consume)
+    api = FakeKeys(listed=[[obj], []], readback=obj)
+    helpers.cleanup_deploy_key_markers(
+        api, repo="o/r", title=obj["title"], marker=marker, evidence_root=root)
+    assert ("delete", 7) in api.calls
+    assert len(observed) == len(auxiliaries)
+    assert not marker.exists() and not marker.with_suffix(".json.uncertain").exists()
+    assert not marker.with_suffix(".json.uncertain.outcome").exists()
+
+
+@pytest.mark.parametrize("which,payload", [
+    ("attempt", {"state": "create-attempting", "repo": "foreign/r", "title": "kubecrate-qa-run"}),
+    ("attempt", "{not-json"),
+    ("outcome", {"state": "created-unverified", "repo": "o/r", "title": "wrong"}),
+    ("outcome", {"state": "create-rejected", "repo": "o/r", "title": "kubecrate-qa-run"}),
+])
+def test_owned_key_unsafe_auxiliary_fails_closed_before_api_and_retains_owned(
+    tmp_path: Path, which, payload
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; key = public_key()
+    _write_owned_key_evidence(root, marker, key)
+    path = marker.with_suffix(".json.uncertain")
+    if which == "outcome": path = path.with_suffix(".uncertain.outcome")
+    if isinstance(payload, dict):
+        payload = {**payload, "fingerprint": helpers._public_key_fingerprint(key)}
+        helpers._create_json_marker_exclusive(path, payload, evidence_root=root)
+    else:
+        path.write_text(payload); path.chmod(0o600)
+    api = FakeKeys(listed=[[deploy_key(key=key)]], readback=deploy_key(key=key))
+    with pytest.raises((AssertionError, json.JSONDecodeError)):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
+    assert marker.exists() and path.exists() and api.calls == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"state": "created-unverified", "repo": "o/r", "title": "kubecrate-qa-run"},
+    "{not-json",
+])
+def test_orphan_outcome_fails_closed_without_any_api_call(tmp_path: Path, payload) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; outcome = marker.with_suffix(".json.uncertain.outcome")
+    root.mkdir(mode=0o700)
+    if isinstance(payload, dict):
+        helpers._create_json_marker_exclusive(outcome, {
+            **payload, "fingerprint": helpers._public_key_fingerprint(public_key())}, evidence_root=root)
+    else:
+        outcome.write_text(payload); outcome.chmod(0o600)
+    api = FakeKeys()
+    with pytest.raises(AssertionError, match="orphan outcome"):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
+    assert outcome.exists() and api.calls == []
+
+
+def test_actual_cli_owned_stale_auxiliaries_cleanup_and_orphan_outcome_no_api(tmp_path: Path) -> None:
+    key = public_key(); obj = deploy_key(key=key)
+    owned_root = tmp_path / "owned-evidence"; marker = owned_root / "owned.json"
+    _write_owned_key_evidence(owned_root, marker, key, (
+        ("attempt", "create-attempting"), ("outcome", "created-unverified")))
+    cleaned = run_helper(tmp_path, [
+        (200, json.dumps(obj)), (200, json.dumps([obj])), (204, ""),
+        (404, '{"message":"Not Found"}'), (200, "[]")],
+        "cleanup-deploy-key-markers", "--repo", "o/r", "--title", obj["title"],
+        "--evidence-root", str(owned_root), "--marker", str(marker))
+    assert cleaned.returncode == 0, cleaned.stderr
+    assert not marker.exists() and not marker.with_suffix(".json.uncertain").exists()
+    assert not marker.with_suffix(".json.uncertain.outcome").exists()
+
+    orphan_root = tmp_path / "orphan-evidence"; orphan = orphan_root / "owned.json.uncertain.outcome"
+    helpers._create_json_marker_exclusive(orphan, {
+        "state": "created-unverified", "repo": "o/r", "title": obj["title"],
+        "fingerprint": helpers._public_key_fingerprint(key)}, evidence_root=orphan_root)
+    before = (tmp_path / "gh.log").read_text()
+    refused = run_helper(tmp_path, [], "cleanup-deploy-key-markers", "--repo", "o/r",
+        "--title", obj["title"], "--evidence-root", str(orphan_root),
+        "--marker", str(orphan_root / "owned.json"))
+    assert refused.returncode != 0 and orphan.exists()
+    assert (tmp_path / "gh.log").read_text() == before
+
+
+def test_owned_auxiliary_replacement_during_consumption_never_deletes_foreign_or_key(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "evidence"; marker = root / "owned.json"; attempt = marker.with_suffix(".json.uncertain")
+    key = public_key(); _write_owned_key_evidence(root, marker, key, (("attempt", "create-attempting"),))
+    foreign = b"foreign replacement\n"; real_rename = helpers._rename_noreplace
+    def replace_then_rename(source, destination, directory_fd):
+        replacement = root / "replacement"
+        replacement.write_bytes(foreign); replacement.chmod(0o600); replacement.replace(attempt)
+        return real_rename(source, destination, directory_fd)
+    monkeypatch.setattr(helpers, "_rename_noreplace", replace_then_rename)
+    api = FakeKeys(listed=[[deploy_key(key=key)]], readback=deploy_key(key=key))
+    with pytest.raises(AssertionError, match="replaced"):
+        helpers.cleanup_deploy_key_markers(
+            api, repo="o/r", title="kubecrate-qa-run", marker=marker, evidence_root=root)
+    assert marker.exists() and not any(call[0] == "delete" for call in api.calls)
+    assert any(path.read_bytes() == foreign for path in root.iterdir() if path.is_file())
+
+
 def test_owned_create_establishes_exact_ref() -> None:
     sha = "a" * 40
     obj = {"ref": "refs/heads/qa", "object": {"type": "commit", "sha": sha}}
