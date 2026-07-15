@@ -95,6 +95,11 @@ jobs:
         with:
           version: latest
 
+      - name: Set up pinned Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.16.4
+
       - name: Set up kubeconform
         env:
           KUBECONFORM_VERSION: v0.6.7
@@ -109,7 +114,7 @@ jobs:
         run: python scripts/validate-kubernetes-manifests.py --check kustomize
 
       - name: Validate Flux sync credential generation values
-        run: python tests/validate-flux-sync-values.py
+        run: make validate-flux-sync-values
 
   cratecheck-cel-validation:
     name: CrateCheck CEL validation

@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "final-qa-exact-tree.sh"
 LIFECYCLE = ROOT / "scripts" / "final-qa-lifecycle.sh"
 MAKEFILE = ROOT / "Makefile"
+MANIFEST_WORKFLOW = ROOT / ".github/workflows/kubernetes-manifest-linting.yaml"
 
 
 def source() -> str:
@@ -43,6 +44,26 @@ def test_runtime_overlay_avoids_candidate_tree_mutation() -> None:
     assert "git diff --quiet" in text
     assert "sed -i" not in text
     assert "git checkout" not in text
+    qa_values_start = text.index('cat >"${QA_VALUES}"')
+    qa_values = text[qa_values_start:text.index("\nEOF", qa_values_start)]
+    assert "branch: ${QA_BRANCH}" in qa_values
+    assert "url:" not in qa_values
+    assert "secret:" not in qa_values
+    assert "kustomization:" not in qa_values
+    assert '--expected-branch "${QA_BRANCH}"' in text
+
+
+def test_standard_make_validation_requires_pinned_helm_render() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    recipe = makefile[makefile.index("validate-flux-sync-values:"):]
+    assert "tests/validate-flux-sync-values.py --helm-render" in recipe
+
+
+def test_manifest_ci_installs_pinned_helm_and_runs_standard_validation() -> None:
+    workflow = MANIFEST_WORKFLOW.read_text(encoding="utf-8")
+    assert "azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112" in workflow
+    assert "version: v3.16.4" in workflow
+    assert "run: make validate-flux-sync-values" in workflow
 
 
 def test_guardrails_reject_shared_names_and_protected_branches() -> None:

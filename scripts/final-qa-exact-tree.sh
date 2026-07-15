@@ -90,17 +90,8 @@ BRANCH_CREATED=true
 cat >"${QA_VALUES}" <<EOF
 gitRepository:
   spec:
-    url: ssh://git@github.com/${REPO}.git
-    interval: 1m
     ref:
       branch: ${QA_BRANCH}
-kustomization:
-  spec:
-    interval: 1m
-    path: ./clusters/kind-dev-misc-local/entrypoint
-    prune: true
-    timeout: 5m
-    wait: false
 EOF
 git diff --quiet && git diff --cached --quiet || fail "QA artifact mutated reviewed candidate tree"
 
@@ -119,7 +110,7 @@ helm upgrade --install flux-system oci://ghcr.io/fluxcd-community/charts/flux2 \
 # It is applied to the disposable cluster and never committed to the exact tree.
 assert_context
 kustomize build clusters/kind-dev-misc-local/entrypoint | \
-  python3 scripts/render-final-qa-flux-source.py --values "${QA_VALUES}" | \
+  python3 scripts/render-final-qa-flux-source.py --values "${QA_VALUES}" --expected-branch "${QA_BRANCH}" | \
   kubectl --context "${CONTEXT}" apply -f -
 assert_context
 wait_for_flux_identity

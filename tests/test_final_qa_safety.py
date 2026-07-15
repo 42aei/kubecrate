@@ -1927,7 +1927,7 @@ elif [[ "{name}" == kubectl && "$*" == *"wait --for=condition=Ready helmrelease/
 elif [[ "{name}" == kind && "$*" == "get clusters" ]]; then test -f "$CLUSTER_CREATED_FILE" && test ! -f "$CLUSTER_DELETED" && echo kubecrate-qa-test || :
 elif [[ "{name}" == kind && "$*" == *"create cluster"* ]]; then touch "$CLUSTER_CREATED_FILE"
 elif [[ "{name}" == kind && "$*" == *"delete cluster"* ]]; then touch "$CLUSTER_DELETED"
-elif [[ "{name}" == kustomize ]]; then printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: flux-sync-values' '  namespace: flux-system' 'data:' '  values.yaml: |' '    secret:' '      create: true' '      generate:' '        sshKeyAlgorithm: ed25519'
+elif [[ "{name}" == kustomize ]]; then printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: flux-sync-values' '  namespace: flux-system' 'data:' '  values.yaml: |' '    secret:' '      create: true' '      generate:' '        sshKeyAlgorithm: ed25519' '    gitRepository:' '      spec:' '        url: ssh://git@github.com/42aei/kubecrate.git' '        ref:' '          branch: source-branch' '    kustomization:' '      spec:' '        path: ./clusters/kind-dev-misc-local/entrypoint'
 elif [[ "{name}" == ssh-keygen ]]; then for ((i=1;i<=$#;i++)); do [[ "${{!i}}" == -f ]] && {{ j=$((i+1)); outfile="${{!j}}"; printf '%s\n' "$PUBLIC_KEY" >"${{outfile}}.pub"; }}; done; exit 0
 fi
 exit 0

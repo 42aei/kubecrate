@@ -123,4 +123,4 @@ validate-cratecheck:
 validate-flux-sync-values:
 > test -x "$(VENV_PYTHON)" || python3 -m venv "$(VENV_DIR)"
 > $(VENV_PYTHON) -m pip install --upgrade --quiet -r requirements-dev.txt
-> $(VENV_PYTHON) tests/validate-flux-sync-values.py
+> $(VENV_PYTHON) tests/validate-flux-sync-values.py --helm-render
