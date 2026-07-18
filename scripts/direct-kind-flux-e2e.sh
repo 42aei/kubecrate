@@ -302,6 +302,9 @@ if ! curl --fail --silent "${CRATECHECK_STATUS_URL}" >/dev/null 2>&1; then
   fail "CrateCheck not reachable after port-forward"
 fi
 
+# Allow one configured 2s CrateCheck evaluation cycle after ESO becomes ready.
+sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"
+
 # Capture baseline green.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/baseline-status.json"
 validate_status_json green "${TMPDIR}/baseline-status.json"
