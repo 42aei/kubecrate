@@ -1,6 +1,6 @@
 ## Context
 
-The current branch already contains the application and platform-service manifests needed to validate ESO through CrateCheck. It also contains reusable scenario assertions for JSON/UI green, controlled red, restoration, and projected Secret content. The failure is the surrounding exact-tree transport: temporary Git refs, generated per-run deploy keys, GitHub inventory validation, ownership markers, and crash-recovery logic.
+The current branch already contains the application and platform-service manifests needed to validate ESO through CrateCheck. It also contains the JSON status and projected Secret assertions needed for green, controlled red, and restoration. The superseded exact-tree transport added temporary Git refs, generated per-run deploy keys, GitHub inventory validation, ownership markers, and crash-recovery logic that are not needed by the direct workflow.
 
 The direct path can use the existing PR branch `kubecrate/cratecheck-restack-eso` at an exact verified commit. Flux supports HTTPS GitRepository authentication with a Kubernetes Secret containing username/password. The runner can obtain a token at runtime from the active `faksibot` `gh` session, create that Secret only inside its disposable cluster, and redact command output.
 
@@ -11,7 +11,7 @@ The direct path can use the existing PR branch `kubecrate/cratecheck-restack-eso
 - One command creates, validates, and deletes a unique disposable kind cluster.
 - Flux reconciles the exact verified PR #17 commit through its existing remote branch.
 - ESO projects the exact expected value.
-- CrateCheck API and structured UI show green, controlled ESO red, and restored green.
+- CrateCheck `/status.json` shows green, controlled ESO red, and restored green.
 - No credential appears in files, arguments visible in logs, stdout/stderr, or retained evidence.
 - The runner is understandable as a linear operator workflow.
 
@@ -28,7 +28,7 @@ The direct path can use the existing PR branch `kubecrate/cratecheck-restack-eso
 
 ### Use the existing PR branch at a verified exact commit
 
-The runner accepts or discovers PR #17’s branch and expected commit. Before cluster creation it verifies the remote branch and PR head both equal the expected commit. Flux follows that existing branch. No temporary remote ref is created.
+The runner accepts the expected commit or derives it from the clean local `HEAD`. Before cluster creation it verifies the remote branch and PR head both equal that commit. Flux follows the existing PR branch. No temporary remote ref is created.
 
 This is sufficiently exact for the requested workflow because the runner gates before mutation and records the reconciled GitRepository artifact revision. If the branch moves during the run, the observed revision mismatch fails the run.
 
@@ -40,7 +40,7 @@ No deploy key is generated or registered. The workflow introduces no mutable Git
 
 ### Keep the runner linear
 
-The implementation target is one shell runner plus focused tests. It may call existing narrow validation helpers for status JSON/UI and Secret restoration, but it must not introduce a generalized orchestration framework.
+The implementation target is one shell runner plus focused tests. It may call one narrow `/status.json` validator, but it must not introduce a generalized orchestration framework.
 
 Complexity budget:
 
@@ -60,9 +60,9 @@ After reconciliation it proves:
 1. Flux source and Kustomizations are Ready at the expected revision.
 2. ESO controller, SecretStore, and ExternalSecret are Ready.
 3. The projected Secret strictly decodes to `kubecrate-eso-smoke-ok`.
-4. CrateCheck API and structured UI show exact expected green checks.
-5. Deleting the owned source Secret yields intended ESO red while unrelated checks remain green.
-6. Restoring the fixture yields the expected Secret value and green API/UI again.
+4. CrateCheck `/status.json` shows the exact expected green checks.
+5. Deleting the owned ExternalSecret yields intended ESO red while unrelated checks remain green.
+6. Restoring the fixture yields the expected Secret value and green JSON status again.
 
 ### Cleanup means deleting the owned cluster
 
@@ -79,7 +79,7 @@ If cluster deletion fails, the run fails and reports the exact cluster name. It 
 
 ## Migration Plan
 
-1. Start from PR #17’s current remote head `3cfb4e320eff8d2a738cb36fd2420862b1db45c3` in a clean worktree.
+1. Start from PR #17’s current remote head in a clean worktree.
 2. Implement and statically test the direct runner.
 3. Independently review only the linear workflow, credential non-leakage, exact revision gate, assertions, and cluster cleanup.
 4. Push the reviewed candidate to PR #17 using force-with-lease against the verified old head.

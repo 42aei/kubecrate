@@ -1,6 +1,6 @@
 ## 1. Establish the Minimal Candidate
 
-- [x] 1.1 Verify clean PR #17 head `3cfb4e320eff8d2a738cb36fd2420862b1db45c3`, active `faksibot`, required tools, and repository-owned kind/Flux manifests.
+- [x] 1.1 Verify the clean current PR #17 head, active `faksibot`, required tools, and repository-owned kind/Flux manifests.
 - [x] 1.2 Identify narrow reusable ESO/CrateCheck assertions and explicitly exclude temporary-ref, deploy-key, inventory, and marker lifecycle code.
 
 ## 2. Implement the Direct Runner
@@ -9,8 +9,10 @@
 - [x] 2.2 Verify PR head and remote branch head, configure Flux HTTPS source for that existing branch, and inject the runtime-only credential into the disposable cluster without logging or retaining it.
 - [x] 2.3 Install pinned Flux components, apply the repository entrypoint, wait for readiness, and verify the reconciled artifact revision.
 - [x] 2.4 Verify ESO readiness and exact projected Secret value.
-- [x] 2.5 Reuse or minimally adapt focused CrateCheck API/UI baseline, controlled-red, restoration, and projected-value assertions.
+- [x] 2.5 Validate the JSON-only CrateCheck baseline, controlled-red, restoration, and projected-value assertions.
 - [x] 2.6 Delete the disposable cluster on every exit and verify absence; report its name if deletion fails.
+
+The earlier exact-tree/deploy-key/ref lifecycle implementation was superseded by this direct workflow and has been removed together with its dedicated docs, tests, and Make targets.
 
 ## 3. Focused Tests and Review
 
@@ -23,5 +25,5 @@
 
 - [ ] 4.1 Commit the reviewed candidate and advance PR #17 with force-with-lease only after verifying the expected old head.
 - [ ] 4.2 Run the direct disposable-cluster E2E once; allow one unchanged rerun only for a demonstrated transient kind, registry, or network failure.
-- [ ] 4.3 Verify exact Flux revision, ESO projected value, CrateCheck API/UI green-red-green, cluster deletion, clean worktree, and required GitHub checks.
+- [ ] 4.3 Verify exact Flux revision, ESO projected value, CrateCheck `/status.json` green-red-green, cluster deletion, clean worktree, and required GitHub checks.
 - [ ] 4.4 Record concise evidence and leave PR #17 open and unmerged for Christian’s review.

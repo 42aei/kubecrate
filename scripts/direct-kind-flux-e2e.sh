@@ -7,7 +7,7 @@ set -Eeuo pipefail
 REPO="${KUBECRATE_GITHUB_REPO:-42aei/kubecrate}"
 HTTPS_URL="https://github.com/${REPO}.git"
 PR_BRANCH="${KUBECRATE_PR_BRANCH:-kubecrate/cratecheck-restack-eso}"
-EXPECTED_COMMIT="${KUBECRATE_EXPECTED_COMMIT:-3cfb4e320eff8d2a738cb36fd2420862b1db45c3}"
+EXPECTED_COMMIT="${KUBECRATE_EXPECTED_COMMIT:-$(git rev-parse HEAD)}"
 CLUSTER_PREFIX="${KUBECRATE_E2E_CLUSTER_PREFIX:-kubecrate-e2e}"
 CLUSTER=""
 CONTEXT=""
@@ -76,7 +76,7 @@ cluster_state() {
 }
 
 validate_status_json() {
-  python3 scripts/final_qa_helpers.py validate-json --phase "$1" "$2"
+  python3 scripts/validate-cratecheck-status.py --phase "$1" "$2"
 }
 
 # Strict projected Secret decode: validates canonical base64 alphabet/padding,

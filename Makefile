@@ -21,10 +21,7 @@ MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 FLUX_SYNC_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync.yaml
 
-.PHONY: final-qa-exact-tree kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-preflight kind-unique-smoke validate-cratecheck validate-flux-sync-values
-
-final-qa-exact-tree:
-> scripts/final-qa-exact-tree.sh
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate-cratecheck validate-flux-sync-values
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -43,12 +40,8 @@ kind-dev-misc-local-create: kind-dev-misc-local-check-prereqs
 kind-dev-misc-local-delete:
 > kind delete cluster --name "$(KIND_CLUSTER_NAME)"
 
-kind-unique-preflight:
-> python3 scripts/preflight-flux-deploy-key.py
-
-kind-unique-create: kind-unique-preflight
-kind-unique-create:
-> $(MAKE) kind-dev-misc-local-create KIND_CLUSTER_NAME="$(KIND_UNIQUE_CLUSTER_NAME)"
+kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
+kind-unique-create: kind-dev-misc-local-create
 > mkdir -p "$$(dirname "$(KIND_UNIQUE_STATE_FILE)")"
 > printf '%s\n' "$(KIND_UNIQUE_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
 > printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_UNIQUE_CLUSTER_NAME)" "$(KIND_UNIQUE_CLUSTER_NAME)"

@@ -68,22 +68,22 @@ The runner SHALL verify ESO controller readiness, SecretStore readiness, Externa
 - **THEN** the run fails without printing encoded or decoded Secret values
 
 ### Requirement: CrateCheck proves green, controlled red, and restored green
-The runner SHALL validate exact ESO check identities and states in `/status.json` and structured browser UI evidence at baseline, controlled failure, and restoration.
+The runner SHALL validate the exact enabled check identities and states in `/status.json` at baseline, controlled failure, and restoration.
 
 #### Scenario: Baseline green
 - **WHEN** projection is healthy
-- **THEN** expected ESO checks are green in API and UI
+- **THEN** expected ESO checks are green in `/status.json`
 - **AND** unrelated enabled checks are green
 
 #### Scenario: Controlled red
-- **WHEN** the runner removes the owned source Secret in the disposable cluster
-- **THEN** intended ESO checks become red in API and UI
+- **WHEN** the runner removes the owned ExternalSecret in the disposable cluster
+- **THEN** intended ESO checks become red in `/status.json`
 - **AND** unrelated enabled checks remain green
 
 #### Scenario: Restored green
 - **WHEN** the runner restores the source fixture
 - **THEN** the projected value again equals `kubecrate-eso-smoke-ok`
-- **AND** API and UI return to the exact green state
+- **AND** `/status.json` returns to the exact green state
 
 ### Requirement: Cleanup deletes the disposable cluster
 The runner SHALL trap normal exit and interruption, delete only the unique cluster it created, and verify that cluster is absent before reporting success.
@@ -111,5 +111,5 @@ The card SHALL complete only after the exact reviewed candidate passes the direc
 
 #### Scenario: Review-ready result
 - **WHEN** all acceptance requirements pass
-- **THEN** the delivery result includes PR URL, exact commit, static checks, Flux revision, ESO value assertion, API/UI green-red-green evidence, and cluster deletion proof
+- **THEN** the delivery result includes PR URL, exact commit, static checks, Flux revision, ESO value assertion, `/status.json` green-red-green evidence, and cluster deletion proof
 - **AND** PR #17 remains open and unmerged

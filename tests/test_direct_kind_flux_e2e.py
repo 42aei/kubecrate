@@ -14,15 +14,17 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "direct-kind-flux-e2e.sh"
 RENDERER = ROOT / "scripts" / "render-direct-flux-source.py"
-HELPER = ROOT / "scripts" / "final_qa_helpers.py"
+STATUS_VALIDATOR = ROOT / "scripts" / "validate-cratecheck-status.py"
 
-EXPECTED_COMMIT = "3cfb4e320eff8d2a738cb36fd2420862b1db45c3"
+EXPECTED_COMMIT = "a" * 40
 PR_BRANCH = "kubecrate/cratecheck-restack-eso"
 
 
 def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     runner = RUNNER.read_text()
     assert "KUBECRATE_E2E_OBSERVE_SECONDS" not in runner
+    assert 'EXPECTED_COMMIT="${KUBECRATE_EXPECTED_COMMIT:-$(git rev-parse HEAD)}"' in runner
+    assert "3cfb4e320eff8d2a738cb36fd2420862b1db45c3" not in runner
 
 
 def test_runner_uses_only_three_phase_json_status_contract() -> None:
