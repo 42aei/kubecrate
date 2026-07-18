@@ -50,6 +50,7 @@ def render_entrypoint() -> str:
 
 def validate_child_kustomization_sources(rendered: str) -> None:
     expected_names = {
+        "cratecheck",
         "external-secrets-operator",
         "external-secrets-operator-smoke",
     }
