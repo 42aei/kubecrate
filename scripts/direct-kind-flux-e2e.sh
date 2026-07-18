@@ -322,8 +322,8 @@ flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smok
 assert_context
 kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
 
-# Wait for CrateCheck to observe the failure.
-sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-35}"
+# Allow one configured 2s CrateCheck evaluation cycle.
+sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"
 
 # Capture red.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/red-status.json"
@@ -367,8 +367,8 @@ kubectl --context "${CONTEXT}" wait --for=condition=Ready \
 assert_context
 decode_smoke_value eso-smoke-projected
 
-# Wait for CrateCheck to observe restored state.
-sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-35}"
+# Allow one configured 2s CrateCheck evaluation cycle.
+sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"
 
 # Capture restored green.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/restored-status.json"

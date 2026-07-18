@@ -9,7 +9,9 @@ metadata:
 data:
   status.yaml: |
     # CrateCheck config contract: https://github.com/42aei/cratecheck/blob/main/docs/kubernetes/README.md#adapting-for-another-service
-    interval: 30s
+    # Keep QA feedback fast with the currently released CrateCheck image.
+    # interval: 0 can replace this after the uncached mode is released.
+    interval: 2s
     checks:
       - id: cratecheck-deployment-ready
         name: CrateCheck deployment ready

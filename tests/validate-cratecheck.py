@@ -63,8 +63,9 @@ def validate_status_config() -> bool:
         "kind" not in status_cfg,
     )
     all_ok &= check(
-        "interval is non-empty",
-        bool(status_cfg.get("interval")),
+        "interval uses the short QA evaluation cadence",
+        status_cfg.get("interval") == "2s",
+        f"got {status_cfg.get('interval')!r}",
     )
     checks = status_cfg.get("checks", [])
     all_ok &= check(
