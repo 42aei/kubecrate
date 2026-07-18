@@ -73,6 +73,40 @@ def test_runner_is_executable_and_syntax_valid() -> None:
     assert subprocess.run(["bash", "-n", str(RUNNER)]).returncode == 0
 
 
+@pytest.mark.parametrize(
+    ("revision", "valid"),
+    [
+        (f"main@sha1:{EXPECTED_COMMIT}", True),
+        (f"refs/heads/main@sha1:{EXPECTED_COMMIT}", True),
+        (f"main@sha1:{EXPECTED_COMMIT}0", False),
+        (f"main@sha1:0{EXPECTED_COMMIT}", False),
+        ("main@sha1:" + "b" * 40, False),
+        ("", False),
+        (f"sha1:{EXPECTED_COMMIT}", False),
+        (f"main@sha256:{EXPECTED_COMMIT}", False),
+    ],
+)
+def test_flux_artifact_revision_contract(revision: str, valid: bool) -> None:
+    """Exercise the runner's exact artifact-revision validator in isolation."""
+    runner = RUNNER.read_text()
+    start = runner.index("validate_artifact_revision()")
+    end = runner.index("\n}\n", start) + 3
+    function = runner[start:end]
+    command = f'''set -Eeuo pipefail
+EXPECTED_COMMIT={EXPECTED_COMMIT!r}
+fail() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+{function}
+validate_artifact_revision "$1"
+'''
+    result = subprocess.run(
+        ["bash", "-c", command, "revision-test", revision],
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is valid, result.stderr
+
+
 def test_renderer_is_executable_and_syntax_valid() -> None:
     assert RENDERER.stat().st_mode & 0o111
     assert subprocess.run(["python3", "-m", "py_compile", str(RENDERER)]).returncode == 0

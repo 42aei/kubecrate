@@ -50,12 +50,12 @@ def validate_status(data: Any, phase: str) -> None:
         assert counts["green"] == len(EXPECTED_IDS), "not all checks are green"
         return
 
-    assert data.get("status") in {"red", "yellow", "unknown"}, (
-        "controlled-red overall status remained green"
-    )
+    assert data.get("status") == "red", "controlled-red overall status is not red"
     changed = {check_id for check_id, status in statuses.items() if status != "green"}
-    assert changed, "controlled red changed no check"
-    assert changed <= RED_IDS, "unrelated checks became non-green"
+    assert changed == RED_IDS, "controlled-red check set mismatch"
+    assert all(statuses[check_id] == "red" for check_id in RED_IDS), (
+        "controlled-red checks must be red"
+    )
 
 
 def main() -> int:

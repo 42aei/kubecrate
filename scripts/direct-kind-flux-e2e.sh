@@ -79,6 +79,15 @@ validate_status_json() {
   python3 scripts/validate-cratecheck-status.py --phase "$1" "$2"
 }
 
+validate_artifact_revision() {
+  local revision="$1"
+  if [[ ! "${revision}" =~ ^[^@[:space:]]+@sha1:([0-9a-f]{40})$ ]]; then
+    fail "unsupported Flux artifact revision format: ${revision:-empty}"
+  fi
+  test "${BASH_REMATCH[1]}" = "${EXPECTED_COMMIT}" || \
+    fail "Flux artifact commit ${BASH_REMATCH[1]} != expected ${EXPECTED_COMMIT}"
+}
+
 # Strict projected Secret decode: validates canonical base64 alphabet/padding,
 # enforces exact expected value, never prints encoded or decoded content.
 decode_smoke_value() {
@@ -234,9 +243,7 @@ flux --context "${CONTEXT}" reconcile kustomization "${SYNC_NAME}" \
 actual_revision="$(kubectl --context "${CONTEXT}" get gitrepository "${SYNC_NAME}" \
   -n "${FLUX_NAMESPACE}" -o jsonpath='{.status.artifact.revision}' 2>/dev/null || true)"
 test -n "${actual_revision}" || fail "could not read Flux artifact revision"
-if ! printf '%s' "${actual_revision}" | grep -qF "${EXPECTED_COMMIT}"; then
-  fail "Flux artifact revision ${actual_revision} does not contain expected ${EXPECTED_COMMIT}"
-fi
+validate_artifact_revision "${actual_revision}"
 
 # Wait for Flux child Kustomizations in dependency order.
 assert_context
