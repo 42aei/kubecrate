@@ -18,12 +18,12 @@ The earlier exact-tree/deploy-key/ref lifecycle implementation was superseded by
 
 - [x] 3.1 Add tests for exact revision mismatch, shared/wrong context refusal, credential sentinel non-leakage, readiness failure, assertion failure, interrupt cleanup, and cleanup failure.
 - [x] 3.2 Run shell syntax, Python tests, OpenSpec strict validation, manifest/CrateCheck/Flux validations, and `git diff --check`.
-- [ ] 3.3 Run one independent comprehensive review restricted to the direct workflow, credential handling, exact revision, assertions, and cluster cleanup; reject generalized framework expansion.
-- [ ] 3.4 Apply at most one bounded fix/re-review cycle for defects in this small direct workflow; otherwise stop for triage.
+- [x] 3.3 Run one independent comprehensive review restricted to the direct workflow, credential handling, exact revision, assertions, and cluster cleanup; reject generalized framework expansion.
+- [x] 3.4 Apply at most one bounded fix/re-review cycle for defects in this small direct workflow; otherwise stop for triage.
 
 ## 4. Live E2E and PR Delivery
 
-- [ ] 4.1 Commit the reviewed candidate and advance PR #17 with force-with-lease only after verifying the expected old head.
-- [ ] 4.2 Run the direct disposable-cluster E2E once; allow one unchanged rerun only for a demonstrated transient kind, registry, or network failure.
-- [ ] 4.3 Verify exact Flux revision, ESO projected value, CrateCheck `/status.json` green-red-green, cluster deletion, clean worktree, and required GitHub checks.
-- [ ] 4.4 Record concise evidence and leave PR #17 open and unmerged for Christian’s review.
+- [x] 4.1 Commit the reviewed candidate and advance PR #17 with force-with-lease only after verifying the expected old head.
+- [x] 4.2 Run the direct disposable-cluster E2E once; allow one unchanged rerun only for a demonstrated transient kind, registry, or network failure.
+- [x] 4.3 Verify exact Flux revision, ESO projected value, CrateCheck `/status.json` green-red-green, cluster deletion, clean worktree, and required GitHub checks.
+- [x] 4.4 Record concise evidence and leave PR #17 open and unmerged for Christian’s review.
