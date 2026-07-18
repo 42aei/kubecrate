@@ -486,6 +486,52 @@ data:
 
 # ── Readiness failure ─────────────────────────────────────────────────────────
 
+def test_child_flux_readiness_precedes_workload_access() -> None:
+    """Child Kustomizations become Ready in dependency order before workloads."""
+    text = RUNNER.read_text()
+    ordered_commands = [
+        'kustomization/external-secrets-operator -n "${FLUX_NAMESPACE}"',
+        'kustomization/external-secrets-operator-smoke -n "${FLUX_NAMESPACE}"',
+        'kustomization/cratecheck -n "${FLUX_NAMESPACE}"',
+        "deployment/cratecheck -n cratecheck",
+        "deployment/external-secrets -n core-external-secrets-operator",
+        "decode_smoke_value eso-smoke-projected",
+    ]
+    positions = [text.index(command) for command in ordered_commands]
+    assert positions == sorted(positions), (
+        "Flux child readiness must follow dependency order and precede namespace, "
+        "workload, and projected Secret access"
+    )
+
+
+def test_cratecheck_child_failure_prevents_workload_access(tmp_path: Path) -> None:
+    """A non-Ready CrateCheck child stops the runner before namespace access."""
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    log = tmp_path / "kubectl.log"
+    fake_command(bindir, "kubectl", f'''echo "$*" >>"{log}"
+if [[ "$*" == *"config current-context"* ]]; then printf 'kind-test'; exit 0; fi
+if [[ "$*" == *"kustomization/cratecheck "* ]]; then exit 42; fi
+exit 0''')
+    text = RUNNER.read_text()
+    readiness = text.split("# Wait for Flux child Kustomizations in dependency order.", 1)[1].split(
+        "# Verify the projected Secret value exactly", 1
+    )[0]
+    script = "set -Eeuo pipefail\nCONTEXT=kind-test\nFLUX_NAMESPACE=flux-system\n" + (
+        "fail() { printf '%s\\n' \"$*\" >&2; exit 1; }\n"
+        "assert_context() { actual=\"$(kubectl config current-context)\"; "
+        "test \"${actual}\" = \"${CONTEXT}\" || fail wrong-context; }\n"
+    ) + readiness
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"},
+        text=True, capture_output=True, timeout=10)
+    assert result.returncode == 42, result.stderr
+    calls = log.read_text()
+    assert "kustomization/cratecheck " in calls
+    assert "deployment/cratecheck" not in calls
+    assert "deployment/external-secrets" not in calls
+
+
 def test_eso_readiness_gate_targets_rendered_deployment(tmp_path: Path) -> None:
     """The shipped readiness commands wait for the Helm release's Deployment name."""
     bindir = tmp_path / "bin"; bindir.mkdir()

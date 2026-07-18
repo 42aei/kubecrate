@@ -257,6 +257,17 @@ if ! printf '%s' "${actual_revision}" | grep -qF "${EXPECTED_COMMIT}"; then
   fail "Flux artifact revision ${actual_revision} does not contain expected ${EXPECTED_COMMIT}"
 fi
 
+# Wait for Flux child Kustomizations in dependency order.
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/external-secrets-operator -n "${FLUX_NAMESPACE}" --timeout=300s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/cratecheck -n "${FLUX_NAMESPACE}" --timeout=300s
+
 # Wait for ESO and CrateCheck deployments.
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Available \
@@ -266,13 +277,6 @@ kubectl --context "${CONTEXT}" wait --for=condition=Available \
   deployment/external-secrets -n core-external-secrets-operator --timeout=180s
 
 # ── ESO Validation ───────────────────────────────────────────────────────────
-
-assert_context
-kubectl --context "${CONTEXT}" wait --for=condition=Ready \
-  kustomization/external-secrets-operator -n "${FLUX_NAMESPACE}" --timeout=300s
-assert_context
-kubectl --context "${CONTEXT}" wait --for=condition=Ready \
-  kustomization/external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
 
 # Verify the projected Secret value exactly, without printing it.
 assert_context
