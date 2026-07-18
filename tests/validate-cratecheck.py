@@ -26,6 +26,7 @@ CLUSTER_BINDING_DIR = (
     REPO_ROOT / "clusters" / "kind-dev-misc-local" / "application-services" / "cratecheck"
 )
 ENTRYPOINT_DIR = REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
+CRATECHECK_KUSTOMIZATION_PATH = ENTRYPOINT_DIR / "cratecheck-kustomization.yaml"
 
 FAILURES: list[str] = []
 
@@ -204,6 +205,73 @@ def validate_deployment() -> bool:
     all_ok &= check(
         "Deployment mounts cratecheck-status-config ConfigMap",
         has_config_volume,
+    )
+    return all_ok
+
+
+def validate_cratecheck_reconciliation_order() -> bool:
+    """Validate the Flux boundary that starts CrateCheck after ESO smoke is healthy."""
+    try:
+        with open(CRATECHECK_KUSTOMIZATION_PATH) as fh:
+            resource = yaml.safe_load(fh)
+        with open(ENTRYPOINT_DIR / "kustomization.yaml") as fh:
+            entrypoint = yaml.safe_load(fh)
+    except Exception as exc:
+        return check("CrateCheck Flux ordering manifests are parseable", False, str(exc))
+
+    metadata = resource.get("metadata", {})
+    spec = resource.get("spec", {})
+    dependencies = [
+        dependency.get("name") for dependency in spec.get("dependsOn", [])
+    ]
+    entrypoint_resources = entrypoint.get("resources", [])
+
+    expected_contract = {
+        "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+        "kind": "Kustomization",
+        "name": "cratecheck",
+        "namespace": "flux-system",
+        "labels": {
+            "app.kubernetes.io/name": "cratecheck",
+            "app.kubernetes.io/part-of": "kubecrate",
+            "kubecrate.io/workload-category": "application-services",
+        },
+        "dependsOn": ["external-secrets-operator-smoke"],
+        "interval": "1m0s",
+        "path": "./clusters/kind-dev-misc-local/application-services/cratecheck",
+        "prune": True,
+        "sourceRef": {"kind": "GitRepository", "name": "flux-system-sync"},
+        "timeout": "5m0s",
+        "wait": True,
+    }
+    actual_contract = {
+        "apiVersion": resource.get("apiVersion"),
+        "kind": resource.get("kind"),
+        "name": metadata.get("name"),
+        "namespace": metadata.get("namespace"),
+        "labels": metadata.get("labels"),
+        "dependsOn": dependencies,
+        "interval": spec.get("interval"),
+        "path": spec.get("path"),
+        "prune": spec.get("prune"),
+        "sourceRef": spec.get("sourceRef"),
+        "timeout": spec.get("timeout"),
+        "wait": spec.get("wait"),
+    }
+
+    all_ok = True
+    all_ok &= check(
+        "CrateCheck Flux Kustomization has the ordering and source contract",
+        actual_contract == expected_contract,
+        f"got {actual_contract}",
+    )
+    all_ok &= check(
+        "entrypoint includes the CrateCheck Flux Kustomization",
+        "./cratecheck-kustomization.yaml" in entrypoint_resources,
+    )
+    all_ok &= check(
+        "entrypoint does not apply CrateCheck directly",
+        "../application-services/cratecheck" not in entrypoint_resources,
     )
     return all_ok
 
@@ -495,6 +563,9 @@ def main():
 
     print("\n=== CrateCheck Deployment validation ===")
     deploy_ok = validate_deployment()
+
+    print("\n=== CrateCheck Flux reconciliation ordering validation ===")
+    ordering_ok = validate_cratecheck_reconciliation_order()
 
     print("\n=== CrateCheck CEL expression validation ===")
     cel_ok = validate_cel_expressions()

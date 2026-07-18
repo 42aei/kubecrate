@@ -6,4 +6,4 @@ resources:
   - ../platform-services/flux
   - ./external-secrets-operator-kustomization.yaml
   - ./external-secrets-operator-smoke-kustomization.yaml
-  - ../application-services/cratecheck
+  - ./cratecheck-kustomization.yaml
