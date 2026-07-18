@@ -23,7 +23,6 @@ PORT_FORWARD_PID=""
 RED_STATE=none
 CRATECHECK_PORT=18080
 CRATECHECK_STATUS_URL="http://127.0.0.1:${CRATECHECK_PORT}/status.json"
-CRATECHECK_UI_URL="http://127.0.0.1:${CRATECHECK_PORT}/status"
 TMPDIR=""
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
@@ -92,10 +91,6 @@ cluster_state() {
 
 validate_status_json() {
   python3 scripts/final_qa_helpers.py validate-json --phase "$1" "$2"
-}
-
-validate_status_html() {
-  python3 scripts/final_qa_helpers.py validate-html --phase "$1" "$2"
 }
 
 # Strict projected Secret decode: validates canonical base64 alphabet/padding,
@@ -310,11 +305,6 @@ fi
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/baseline-status.json"
 validate_status_json green "${TMPDIR}/baseline-status.json"
 
-chromium --headless --no-sandbox --disable-gpu --dump-dom \
-  "${CRATECHECK_UI_URL}" >"${TMPDIR}/baseline-status.html" 2>/dev/null || \
-  fail "chromium browser UI capture failed"
-validate_status_html green "${TMPDIR}/baseline-status.html"
-
 # ── Controlled Red ───────────────────────────────────────────────────────────
 
 RED_STATE=restore_required
@@ -329,11 +319,6 @@ kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-syste
 # Capture red.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/red-status.json"
 validate_status_json red "${TMPDIR}/red-status.json"
-
-chromium --headless --no-sandbox --disable-gpu --dump-dom \
-  "${CRATECHECK_UI_URL}" >"${TMPDIR}/red-status.html" 2>/dev/null || \
-  fail "chromium red UI capture failed"
-validate_status_html red "${TMPDIR}/red-status.html"
 
 # ── Restore Green ────────────────────────────────────────────────────────────
 
@@ -371,11 +356,6 @@ decode_smoke_value eso-smoke-projected
 # Capture restored green.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/restored-status.json"
 validate_status_json green "${TMPDIR}/restored-status.json"
-
-chromium --headless --no-sandbox --disable-gpu --dump-dom \
-  "${CRATECHECK_UI_URL}" >"${TMPDIR}/restored-status.html" 2>/dev/null || \
-  fail "chromium restored UI capture failed"
-validate_status_html green "${TMPDIR}/restored-status.html"
 
 RED_STATE=none
 

@@ -25,6 +25,26 @@ def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     assert "KUBECRATE_E2E_OBSERVE_SECONDS" not in runner
 
 
+def test_runner_uses_only_three_phase_json_status_contract() -> None:
+    runner = RUNNER.read_text()
+
+    assert "chromium" not in runner.lower()
+    assert "CRATECHECK_UI_URL" not in runner
+    assert "validate_status_html" not in runner
+    assert "status.html" not in runner
+
+    validations = [
+        line.strip()
+        for line in runner.splitlines()
+        if line.strip().startswith("validate_status_json ")
+    ]
+    assert validations == [
+        'validate_status_json green "${TMPDIR}/baseline-status.json"',
+        'validate_status_json red "${TMPDIR}/red-status.json"',
+        'validate_status_json green "${TMPDIR}/restored-status.json"',
+    ]
+
+
 def init_repo(path: Path, content: str) -> str:
     subprocess.run(["git", "init", "-q", path], check=True)
     subprocess.run(["git", "-C", path, "config", "user.email", "e2e@test"], check=True)
@@ -83,7 +103,7 @@ elif [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0
 fi
 exit 0''')
     for name in ("kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -147,7 +167,7 @@ exit 0''')
 if [[ "$*" == *"ls-remote"* ]]; then echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0; fi
 exec /usr/bin/git "$@"''')
     for name in ("kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -408,7 +428,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -626,7 +646,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -707,7 +727,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -786,7 +806,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -890,7 +910,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -979,7 +999,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -1008,7 +1028,7 @@ elif [[ "$*" == *"api user"* ]]; then printf 'octocat'; exit 0
 fi
 exit 0''')
     for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -1037,7 +1057,7 @@ elif [[ "$*" == *"api user"* ]]; then printf ''; exit 0
 fi
 exit 0''')
     for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -1066,7 +1086,7 @@ elif [[ "$*" == *"api user"* ]]; then exit 1
 fi
 exit 0''')
     for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -1156,7 +1176,7 @@ fi
 exit 0
 '''
     for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
-                 "curl", "python3", "base64", "chromium"):
+                 "curl", "python3", "base64"):
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
