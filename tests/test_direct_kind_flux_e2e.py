@@ -20,10 +20,9 @@ EXPECTED_COMMIT = "3cfb4e320eff8d2a738cb36fd2420862b1db45c3"
 PR_BRANCH = "kubecrate/cratecheck-restack-eso"
 
 
-def test_runner_uses_short_bounded_observation_waits() -> None:
+def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     runner = RUNNER.read_text()
-    assert runner.count('sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"') == 3
-    assert 'KUBECRATE_E2E_OBSERVE_SECONDS:-35' not in runner
+    assert "KUBECRATE_E2E_OBSERVE_SECONDS" not in runner
 
 
 def init_repo(path: Path, content: str) -> str:

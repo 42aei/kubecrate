@@ -302,9 +302,6 @@ if ! curl --fail --silent "${CRATECHECK_STATUS_URL}" >/dev/null 2>&1; then
   fail "CrateCheck not reachable after port-forward"
 fi
 
-# Allow one configured 2s CrateCheck evaluation cycle after ESO becomes ready.
-sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"
-
 # Capture baseline green.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/baseline-status.json"
 validate_status_json green "${TMPDIR}/baseline-status.json"
@@ -324,9 +321,6 @@ flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smok
 
 assert_context
 kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
-
-# Allow one configured 2s CrateCheck evaluation cycle.
-sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"
 
 # Capture red.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/red-status.json"
@@ -369,9 +363,6 @@ kubectl --context "${CONTEXT}" wait --for=condition=Ready \
 # Verify the projected value is restored.
 assert_context
 decode_smoke_value eso-smoke-projected
-
-# Allow one configured 2s CrateCheck evaluation cycle.
-sleep "${KUBECRATE_E2E_OBSERVE_SECONDS:-3}"
 
 # Capture restored green.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/restored-status.json"
