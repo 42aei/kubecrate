@@ -43,7 +43,7 @@ EXPECTED_NAMES = {
 }
 RED_IDS = {"eso-externalsecret-ready", "eso-projected-secret-exists"}
 STATUSES = {"green", "red", "yellow", "unknown"}
-MUTATED_STATES = {"suspended", "source_deleted", "restore_required"}
+MUTATED_STATES = {"suspended", "externalsecret_deleted", "restore_required"}
 
 
 def restoration_required(state: str) -> bool:
@@ -89,8 +89,8 @@ def restore_cluster(context: str, run=subprocess.run) -> None:
         ["flux", "--context", context, "resume", "kustomization", "external-secrets-operator-smoke", "-n", "flux-system"],
         ["flux", "--context", context, "reconcile", "kustomization", "external-secrets-operator-smoke", "-n", "flux-system", "--timeout=180s"],
         ["kubectl", "--context", context, "wait", "--for=condition=Ready", "kustomization/external-secrets-operator-smoke", "-n", "flux-system", "--timeout=180s"],
-        ["kubectl", "--context", context, "get", "secret", "eso-smoke-source", "-n", "kubecrate-system"],
         ["kubectl", "--context", context, "wait", "--for=jsonpath={.status.conditions[?(@.type==\"Ready\")].status}=True", "externalsecret/eso-smoke-projection", "-n", "kubecrate-system", "--timeout=180s"],
+        ["kubectl", "--context", context, "get", "secret", "eso-smoke-projected", "-n", "kubecrate-system", "-o", "json"],
     )
     for index, command in enumerate(commands):
         result = run(command, text=True, capture_output=True)
@@ -98,6 +98,14 @@ def restore_cluster(context: str, run=subprocess.run) -> None:
             raise RuntimeError(f"restoration command failed: {' '.join(command)}")
         if index == 0 and result.stdout.strip() != context:
             raise RuntimeError(f"restoration context mismatch: {result.stdout.strip() or 'none'}")
+        if command[-1] == "json":
+            try:
+                encoded = json.loads(result.stdout)["data"]["smoke-test"]
+                decoded = base64.b64decode(encoded, validate=True)
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError("restored projected Secret is malformed") from exc
+            if base64.b64encode(decoded).decode() != encoded or decoded != b"kubecrate-eso-smoke-ok":
+                raise RuntimeError("restored projected Secret value mismatch")
 
 
 def _assert_ref(obj: Any, ref: str, sha: str) -> None:

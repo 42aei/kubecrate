@@ -127,9 +127,7 @@ controlled_red() {
   RED_STATE=restore_required
   flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smoke -n flux-system
   assert_context
-  kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
-  assert_context
-  kubectl --context "${CONTEXT}" wait --for=condition=Ready=false externalsecret/eso-smoke-projection -n kubecrate-system --timeout=180s || true
+  kubectl --context "${CONTEXT}" delete externalsecret eso-smoke-projection -n kubecrate-system
 }
 
 capture_red() {
@@ -140,15 +138,14 @@ capture_red() {
   python3 scripts/final_qa_helpers.py validate-html --phase red "${EVIDENCE}/red-status.html"
 }
 
-restore_source_secret() {
+restore_smoke_resources() {
   assert_context
   python3 scripts/final_qa_helpers.py restore --context "${CONTEXT}"
 }
 
 restore_if_needed() {
   test "$(kubectl config current-context 2>/dev/null)" = "${CONTEXT}" || return 1
-  restore_source_secret || return 1
-  sleep "${KUBECRATE_QA_OBSERVE_SECONDS:-35}"
+  restore_smoke_resources || return 1
   ensure_port_forward || return 1
   capture_green restored || return 1
   RED_STATE=none

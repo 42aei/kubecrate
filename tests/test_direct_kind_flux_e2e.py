@@ -268,7 +268,9 @@ def test_runner_assert_context_before_every_mutation() -> None:
 
     # Also verify the controlled-red mutations.
     assert 'assert_context\nflux --context "${CONTEXT}" suspend kustomization' in text
-    assert 'assert_context\nkubectl --context "${CONTEXT}" delete secret' in text
+    assert ('assert_context\nkubectl --context "${CONTEXT}" delete externalsecret '
+            'eso-smoke-projection') in text
+    assert 'delete secret eso-smoke-source' not in text
 
     assert '--kube-context "${CONTEXT}"' in text
 
@@ -290,6 +292,24 @@ def test_cleanup_trap_installed_and_restores_before_cluster_delete() -> None:
 
     assert "RED_STATE=restore_required" in text
     assert "RED_STATE=none" in text
+
+
+def test_controlled_red_deletes_directly_observed_externalsecret_and_restores_in_order() -> None:
+    """Red is immediate, while restore reconciles before exact projected-value proof."""
+    text = RUNNER.read_text()
+    red = text[text.index("# ── Controlled Red"):text.index("# ── Restore Green")]
+    assert "delete externalsecret eso-smoke-projection" in red
+    assert "delete secret eso-smoke-source" not in red
+    restore = text[text.index("# ── Restore Green"):]
+    ordered = [
+        'resume kustomization external-secrets-operator-smoke',
+        'reconcile kustomization external-secrets-operator-smoke',
+        'wait --for=condition=Ready',
+        'decode_smoke_value eso-smoke-projected',
+        'validate_status_json green',
+    ]
+    positions = [restore.index(fragment) for fragment in ordered]
+    assert positions == sorted(positions)
 
 
 # ── Runner preflight ordering ────────────────────────────────────────────────

@@ -135,8 +135,6 @@ start_port_forward
 
 capture_green "baseline"
 controlled_red
-# Let CrateCheck's configured interval observe the reversible failure.
-sleep "${KUBECRATE_QA_OBSERVE_SECONDS:-35}"
 capture_red
 restore_if_needed
 printf 'final-qa: PASS candidate=%s tree=%s branch=%s evidence=%s\n' "${CANDIDATE_SHA}" "${CANDIDATE_TREE}" "${QA_BRANCH}" "${EVIDENCE}"

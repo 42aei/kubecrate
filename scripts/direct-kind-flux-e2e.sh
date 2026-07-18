@@ -41,20 +41,6 @@ cleanup() {
   if test "${RED_STATE}" != none && ${CLUSTER_CREATED}; then
     if test "$(kubectl config current-context 2>/dev/null || true)" = "${CONTEXT}"; then
       flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
-      kubectl --context "${CONTEXT}" apply -f - >/dev/null 2>&1 <<'RESTORE_SOURCE' || true
-apiVersion: v1
-kind: Secret
-metadata:
-  name: eso-smoke-source
-  namespace: kubecrate-system
-  labels:
-    app.kubernetes.io/name: eso-smoke-source
-    app.kubernetes.io/part-of: kubecrate
-    kubecrate.io/workload-category: platform-services
-    kubecrate.io/smoke-test: external-secrets-operator
-stringData:
-  smoke-test: kubecrate-eso-smoke-ok
-RESTORE_SOURCE
       flux --context "${CONTEXT}" reconcile kustomization external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
     fi
   fi
@@ -314,7 +300,7 @@ flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smok
   -n "${FLUX_NAMESPACE}"
 
 assert_context
-kubectl --context "${CONTEXT}" delete secret eso-smoke-source -n kubecrate-system
+kubectl --context "${CONTEXT}" delete externalsecret eso-smoke-projection -n kubecrate-system
 
 # Capture red.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/red-status.json"
@@ -322,23 +308,6 @@ validate_status_json red "${TMPDIR}/red-status.json"
 
 # ── Restore Green ────────────────────────────────────────────────────────────
 
-assert_context
-cat >"${TMPDIR}/eso-smoke-source-restore.yaml" <<'RESTORE_SOURCE'
-apiVersion: v1
-kind: Secret
-metadata:
-  name: eso-smoke-source
-  namespace: kubecrate-system
-  labels:
-    app.kubernetes.io/name: eso-smoke-source
-    app.kubernetes.io/part-of: kubecrate
-    kubecrate.io/workload-category: platform-services
-    kubecrate.io/smoke-test: external-secrets-operator
-stringData:
-  smoke-test: kubecrate-eso-smoke-ok
-RESTORE_SOURCE
-
-kubectl --context "${CONTEXT}" apply -f "${TMPDIR}/eso-smoke-source-restore.yaml"
 assert_context
 flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke \
   -n "${FLUX_NAMESPACE}"

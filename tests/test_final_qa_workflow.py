@@ -130,7 +130,7 @@ def test_mutating_cluster_commands_use_explicit_context_and_guards() -> None:
         'flux --context "${CONTEXT}" reconcile source git',
         'flux --context "${CONTEXT}" reconcile kustomization "${SYNC_NAME}"',
         'flux --context "${CONTEXT}" suspend kustomization',
-        'kubectl --context "${CONTEXT}" delete secret',
+        'kubectl --context "${CONTEXT}" delete externalsecret',
         'final_qa_helpers.py restore --context "${CONTEXT}"',
     )
     for fragment in mutation_fragments:

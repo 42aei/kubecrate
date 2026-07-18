@@ -1058,15 +1058,19 @@ def test_restoration_uses_explicit_context_and_checks_before_teardown() -> None:
 
     def run(command, **_kwargs):
         calls.append(command)
-        output = context + "\n" if len(calls) == 1 else ""
+        if len(calls) == 1:
+            output = context + "\n"
+        elif command[-1] == "json":
+            output = json.dumps({"data": {"smoke-test": base64.b64encode(b"kubecrate-eso-smoke-ok").decode()}})
+        else:
+            output = ""
         return SimpleNamespace(returncode=0, stdout=output)
 
     helpers.restore_cluster(context, run=run)
     assert all("--context" in command and context in command for command in calls)
     joined = [" ".join(c) for c in calls]
-    assert next(i for i, c in enumerate(joined) if "get secret eso-smoke-source" in c) < next(
-        i for i, c in enumerate(joined) if "externalsecret/eso-smoke-projection" in c
-    )
+    assert next(i for i, c in enumerate(joined) if "externalsecret/eso-smoke-projection" in c) < next(
+        i for i, c in enumerate(joined) if "get secret eso-smoke-projected" in c)
 
 
 def test_restoration_failure_is_nonzero_and_stops_verification() -> None:
@@ -1082,7 +1086,7 @@ def test_restoration_failure_is_nonzero_and_stops_verification() -> None:
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("state", ["suspended", "source_deleted"])
+@pytest.mark.parametrize("state", ["suspended", "externalsecret_deleted"])
 def test_failure_after_each_red_mutation_requires_restoration(state: str) -> None:
     assert helpers.restoration_required(state)
 
@@ -1090,7 +1094,7 @@ def test_failure_after_each_red_mutation_requires_restoration(state: str) -> Non
 def test_mutation_state_is_set_immediately_after_suspend_and_delete() -> None:
     text = LIFECYCLE.read_text()
     suspend = text.index('flux --context "${CONTEXT}" suspend')
-    delete = text.index('kubectl --context "${CONTEXT}" delete secret')
+    delete = text.index('kubectl --context "${CONTEXT}" delete externalsecret')
     intent = text.index("RED_STATE=restore_required")
     assert intent < suspend < delete
     cleanup = text[text.index("cleanup()") : text.index("install_cleanup_traps()")]
@@ -1962,7 +1966,18 @@ def test_port_forward_timeout_is_bounded_and_reports_log(tmp_path: Path) -> None
 
 def test_restoration_rechecks_transport_before_restored_capture() -> None:
     text = LIFECYCLE.read_text(); restore = text[text.index("restore_if_needed()") :]
-    assert restore.index("restore_source_secret") < restore.index("ensure_port_forward") < restore.index("capture_green restored")
+    assert restore.index("restore_smoke_resources") < restore.index("ensure_port_forward") < restore.index("capture_green restored")
+
+
+def test_final_qa_red_targets_observed_externalsecret_and_restores_before_green() -> None:
+    lifecycle = LIFECYCLE.read_text()
+    red = lifecycle[lifecycle.index("controlled_red()") : lifecycle.index("capture_red()")]
+    assert "delete externalsecret eso-smoke-projection" in red
+    assert "delete secret eso-smoke-source" not in red
+    restore = lifecycle[lifecycle.index("restore_if_needed()") :]
+    assert restore.index("restore_smoke_resources") < restore.index("ensure_port_forward") < restore.index("capture_green restored")
+    runner = SCRIPT.read_text()
+    assert "KUBECRATE_QA_OBSERVE_SECONDS" not in runner
 
 
 def lifecycle_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -2001,13 +2016,14 @@ while :; do sleep 1; done
         command = bindir / name
         command.write_text("#!/usr/bin/env bash\nname=$(basename $0); echo \"$name $*\" >>\"$CALL_LOG\"\n"
                            "if [[ $name == kubectl && $* == *'config current-context'* ]]; then echo kind-kubecrate-qa-test; fi\n"
+                           "if [[ $name == kubectl && $* == *'get secret eso-smoke-projected'* ]]; then echo '{\"data\":{\"smoke-test\":\"a3ViZWNyYXRlLWVzby1zbW9rZS1vaw==\"}}'; fi\n"
                            "if [[ $name == kubectl && $* == *'port-forward'* ]]; then sleep 30; fi\n"
                            "if [[ $name == kind && $* == 'get clusters' ]]; then test -f \"$CLUSTER_DELETED\" || echo kubecrate-qa-test; fi\n"
                            "if [[ $name == kind && $* == *'delete cluster'* ]]; then touch \"$CLUSTER_DELETED\"; fi\n"
                            "if [[ $name == curl ]]; then cat \"$STATUS_FILE\"; fi\n"
                            "if [[ $name == chromium ]]; then cat \"$HTML_FILE\"; fi\n"
                            "if [[ $name == flux && $* == *suspend* && $SCENARIO == after-suspend ]]; then touch \"$BARRIER\"; fi\n"
-                           "if [[ $name == kubectl && $* == *'delete secret'* && $SCENARIO == after-delete ]]; then touch \"$BARRIER\"; fi\n"
+                           "if [[ $name == kubectl && $* == *'delete externalsecret'* && $SCENARIO == after-delete ]]; then touch \"$BARRIER\"; fi\n"
                            "test \"${FAIL_RESTORE:-0}\" != 1 || [[ $* != *resume* ]]\n")
         command.chmod(0o755)
     return repo, bindir, log
@@ -2034,7 +2050,7 @@ def test_actual_shell_signal_restores_before_cluster_delete(tmp_path: Path, scen
     rc, calls, _, _, _ = run_lifecycle_signal(tmp_path, scenario)
     assert rc != 0
     assert calls.index("flux --context kind-kubecrate-qa-test resume") < calls.index("kind delete cluster")
-    assert "kubectl --context kind-kubecrate-qa-test get secret eso-smoke-source" in calls
+    assert "kubectl --context kind-kubecrate-qa-test get secret eso-smoke-projected" in calls
     assert "kubectl --context kind-kubecrate-qa-test port-forward" in calls
     assert "curl --fail --silent --show-error" in calls
     assert "chromium --headless" in calls
