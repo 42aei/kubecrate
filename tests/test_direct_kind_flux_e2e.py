@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "direct-kind-flux-e2e.sh"
 RENDERER = ROOT / "scripts" / "render-direct-flux-source.py"
 STATUS_VALIDATOR = ROOT / "scripts" / "validate-cratecheck-status.py"
+ENVOY_RUNBOOK = ROOT / "docs" / "kind-envoy-gateway-ingress-runbook.md"
 
 EXPECTED_COMMIT = "a" * 40
 PR_BRANCH = "kubecrate/envoy-after-eso-minimal-qa"
@@ -48,6 +50,36 @@ def test_runner_uses_json_only_eso_and_envoy_status_contract() -> None:
         'validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"',
         'validate_status_json green "${TMPDIR}/envoy-restored-status.json"',
     ]
+
+
+def test_envoy_runbook_python_snippets_execute_and_baseline_enforces_green() -> None:
+    snippets = re.findall(r"python3 -c '\n(.*?)\n'", ENVOY_RUNBOOK.read_text(), re.DOTALL)
+    assert len(snippets) == 5
+
+    green = {
+        "status": "green",
+        "checks": [{"id": "envoy-httproute-ready", "status": "green"}],
+    }
+    red = {
+        "status": "red",
+        "checks": [{"id": "envoy-httproute-ready", "status": "red"}],
+    }
+    for snippet in snippets:
+        compile(snippet, str(ENVOY_RUNBOOK), "exec")
+        status = red if "expected non-green after red test" in snippet else green
+        result = subprocess.run(
+            ["python3", "-c", snippet], input=json.dumps(status), text=True,
+            capture_output=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+
+    baseline = next(snippet for snippet in snippets if "GREEN baseline confirmed" in snippet)
+    result = subprocess.run(
+        ["python3", "-c", baseline], input=json.dumps(red), text=True,
+        capture_output=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "expected green" in result.stderr
 
 
 def init_repo(path: Path, content: str) -> str:
@@ -336,6 +368,25 @@ def test_cleanup_trap_installed_and_restores_before_cluster_delete() -> None:
     assert "RED_STATE=eso_restore_required" in text
     assert "RED_STATE=envoy_restore_required" in text
     assert "RED_STATE=none" in text
+
+
+def test_success_cleanup_leaves_no_failure_evidence(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    run_tmp = tmp_path / "run-tmp"
+    run_tmp.mkdir()
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+EVIDENCE_ROOT={str(evidence)!r}
+TMPDIR={str(run_tmp)!r}
+CLUSTER_CREATED=false
+cleanup
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not evidence.exists()
+    assert not run_tmp.exists()
 
 
 def test_controlled_red_deletes_directly_observed_externalsecret_and_restores_in_order() -> None:
@@ -681,7 +732,9 @@ def test_readiness_failure_exits_nonzero_and_cleanup_runs(tmp_path: Path) -> Non
     deleted = tmp_path / "cluster-deleted"
     cluster_name_file = tmp_path / "cluster-name"
     cluster_created = tmp_path / "cluster-created"
-    kubectl_wait_count = tmp_path / "kubectl-wait-count"
+    evidence = tmp_path / "evidence"
+    run_tmp_root = tmp_path / "run-tmp"
+    run_tmp_root.mkdir()
 
     dispatch = f'''#!/usr/bin/env bash
 echo "$0 $*" >>"{log}"
@@ -711,12 +764,12 @@ elif [[ $name == kubectl ]]; then
     if test -f "{cluster_name_file}"; then printf 'kind-%s' "$(cat "{cluster_name_file}")"; fi
     exit 0
   fi
-  if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then
-    count=$(test -f "{kubectl_wait_count}" && cat "{kubectl_wait_count}" || echo 0)
-    echo $((count + 1)) >"{kubectl_wait_count}"
-    if test $count -ge 4; then exit 1; fi
+  if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
+    printf 'main@sha1:{EXPECTED_COMMIT}'
     exit 0
   fi
+  if [[ "$*" == *"kustomization/cratecheck "* ]]; then exit 1; fi
+  if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then exit 0; fi
   exit 0
 elif [[ $name == flux ]]; then
   exit 0
@@ -734,11 +787,31 @@ exit 0
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
-           "KUBECRATE_PR_BRANCH": PR_BRANCH}
+           "KUBECRATE_PR_BRANCH": PR_BRANCH,
+           "KUBECRATE_E2E_EVIDENCE_DIR": str(evidence),
+           "KUBECRATE_E2E_TMP_ROOT": str(run_tmp_root)}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
     assert result.returncode != 0, f"runner should fail on readiness timeout (rc={result.returncode})"
     assert deleted.exists(), "cluster must be deleted after readiness failure"
+    bundles = list(evidence.iterdir())
+    assert len(bundles) == 1
+    bundle = bundles[0]
+    summary = (bundle / "summary.txt").read_text()
+    assert f"candidate={EXPECTED_COMMIT}" in summary
+    assert f"ref={PR_BRANCH}" in summary
+    assert "phase=flux-child-readiness" in summary
+    assert "assertion=cratecheck Kustomization became Ready" in summary
+    assert "cluster=kubecrate-e2e-" in summary
+    assert "context=kind-kubecrate-e2e-" in summary
+    assert (bundle / "readiness.txt").is_file()
+    assert json.loads((bundle / "status-verdict.json").read_text()) == {
+        "status": "not-observed"
+    }
+    evidence_text = "".join(item.read_text() for item in bundle.iterdir())
+    assert "test-token" not in evidence_text
+    assert "kind: Secret" not in evidence_text
+    assert list(run_tmp_root.iterdir()) == []
 
 
 # ── Cleanup failure ──────────────────────────────────────────────────────────

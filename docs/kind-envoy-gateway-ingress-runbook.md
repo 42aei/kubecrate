@@ -46,7 +46,7 @@ import json,sys
 data=json.load(sys.stdin)
 print("overall:", data.get("overallStatus", data.get("overall_status", "UNKNOWN")))
 for c in data.get("checks", data.get("items", [])):
-    print(f"  {c.get(\"id\", \"?\")}: {c.get(\"state\", c.get(\"status\", \"?\"))}")
+    print("  {}: {}".format(c.get("id", "?"), c.get("state", c.get("status", "?"))))
 '
 ```
 
@@ -64,7 +64,7 @@ import json,sys
 data=json.load(sys.stdin)
 print("overall:", data.get("overallStatus", data.get("overall_status", "UNKNOWN")))
 for c in data.get("checks", data.get("items", [])):
-    print(f"  {c.get(\"id\", \"?\")}: {c.get(\"state\", c.get(\"status\", \"?\"))}")
+    print("  {}: {}".format(c.get("id", "?"), c.get("state", c.get("status", "?"))))
 '
 kill %1 2>/dev/null
 ```
@@ -89,8 +89,9 @@ import json,sys
 data=json.load(sys.stdin)
 checks = {c["id"]: c for c in data.get("checks", data.get("items", []))}
 route = checks.get("envoy-httproute-ready", {})
-print(f"envoy-httproute-ready: {route.get(\"state\", route.get(\"status\", \"?\"))}")
-assert route.get("state") == "green" or route.get("status") == "green", "expected green"
+state = route.get("state", route.get("status", "?"))
+print(f"envoy-httproute-ready: {state}")
+assert state == "green", "expected green"
 print("GREEN baseline confirmed")
 '
 ```

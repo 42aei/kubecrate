@@ -25,10 +25,68 @@ RED_STATE=none
 CRATECHECK_PORT=18080
 CRATECHECK_STATUS_URL="http://127.0.0.1:${CRATECHECK_PORT}/status.json"
 ENVOY_STATUS_URL="http://127.0.0.1:10080/status.json"
+RUN_TMP_ROOT="${KUBECRATE_E2E_TMP_ROOT:-${TMPDIR:-/tmp}}"
 TMPDIR=""
+EVIDENCE_ROOT="${KUBECRATE_E2E_EVIDENCE_DIR:-${PWD}/.tmp/direct-kind-flux-e2e-failures}"
+CURRENT_PHASE=preflight
+CURRENT_ASSERTION="preflight completed"
+FAILURE_ASSERTION=""
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
+
+write_failure_evidence() {
+  local bundle="${EVIDENCE_ROOT}/${CLUSTER}"
+  mkdir -p "${bundle}"
+  chmod 700 "${EVIDENCE_ROOT}" "${bundle}" 2>/dev/null || true
+  {
+    printf 'result=fail\n'
+    printf 'candidate=%s\n' "${EXPECTED_COMMIT}"
+    printf 'ref=%s\n' "${PR_BRANCH}"
+    printf 'phase=%s\n' "${CURRENT_PHASE}"
+    printf 'assertion=%s\n' "${FAILURE_ASSERTION:-${CURRENT_ASSERTION}}"
+    printf 'cluster=%s\n' "${CLUSTER}"
+    printf 'context=%s\n' "${CONTEXT}"
+  } >"${bundle}/summary.txt"
+
+  {
+    printf '%s\n' '== nodes =='
+    kubectl --context "${CONTEXT}" get nodes 2>&1 || true
+    printf '%s\n' '== Flux Kustomizations =='
+    flux --context "${CONTEXT}" get kustomizations -n "${FLUX_NAMESPACE}" 2>&1 || true
+    printf '%s\n' '== workload readiness =='
+    kubectl --context "${CONTEXT}" get deployments -A 2>&1 || true
+  } >"${bundle}/readiness.txt"
+
+  local status_file=""
+  for candidate in envoy-restored-status.json envoy-red-status.json envoy-baseline-status.json \
+      restored-status.json red-status.json baseline-status.json; do
+    if test -s "${TMPDIR}/${candidate}"; then status_file="${TMPDIR}/${candidate}"; break; fi
+  done
+  if test -n "${status_file}"; then
+    python3 - "${status_file}" >"${bundle}/status-verdict.json" <<'PY' || \
+      printf '{"status":"unavailable"}\n' >"${bundle}/status-verdict.json"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    data = json.load(stream)
+verdict = {
+    "status": data.get("status", data.get("overallStatus", data.get("overall_status", "unknown"))),
+    "checks": [
+        {"id": item.get("id", "unknown"), "status": item.get("status", item.get("state", "unknown"))}
+        for item in data.get("checks", data.get("items", []))
+        if isinstance(item, dict)
+    ],
+}
+json.dump(verdict, sys.stdout, sort_keys=True)
+sys.stdout.write("\n")
+PY
+  else
+    printf '{"status":"not-observed"}\n' >"${bundle}/status-verdict.json"
+  fi
+  printf 'direct-e2e: failure evidence=%s\n' "${bundle}" >&2
+}
 
 assert_context() {
   actual="$(kubectl config current-context 2>/dev/null || true)"
@@ -39,6 +97,9 @@ cleanup() {
   rc=$?
   trap - EXIT INT TERM
   cleanup_failed=false
+  if test "${rc}" -ne 0 && ${CLUSTER_CREATED}; then
+    write_failure_evidence || true
+  fi
   # Restore if we left the cluster in a broken state.
   if test "${RED_STATE}" != none && ${CLUSTER_CREATED}; then
     if test "$(kubectl config current-context 2>/dev/null || true)" = "${CONTEXT}"; then
@@ -177,9 +238,10 @@ fi
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'failure_rc=$?; test -n "${FAILURE_ASSERTION}" || FAILURE_ASSERTION="${CURRENT_ASSERTION} (line ${LINENO}, rc ${failure_rc})"' ERR
 
 # Create a private temporary directory for the token Secret manifest.
-TMPDIR="$(mktemp -d)"
+TMPDIR="$(mktemp -d "${RUN_TMP_ROOT%/}/kubecrate-direct-e2e.XXXXXX")"
 chmod 700 "${TMPDIR}"
 
 # Write the HTTPS credentials Secret manifest.
@@ -199,11 +261,16 @@ chmod 600 "${TMPDIR}/flux-https-secret.yaml"
 # that lists the cluster but exits non-zero still triggers deletion.
 CLUSTER_CREATED=true
 # Create the kind cluster.
+CURRENT_PHASE=cluster-create
+CURRENT_ASSERTION="disposable kind cluster created and became Ready"
 kind create cluster --name "${CLUSTER}" --config kind/config.yaml
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready node --all --timeout=180s
 
 # ── Flux Bootstrap ───────────────────────────────────────────────────────────
+
+CURRENT_PHASE=flux-bootstrap
+CURRENT_ASSERTION="Flux bootstrap and root reconciliation completed"
 
 assert_context
 helm upgrade --install flux-system "${FLUX_CHART}" \
@@ -256,31 +323,43 @@ test -n "${actual_revision}" || fail "could not read Flux artifact revision"
 validate_artifact_revision "${actual_revision}"
 
 # Wait for Flux child Kustomizations in dependency order.
+CURRENT_PHASE=flux-child-readiness
+CURRENT_ASSERTION="external-secrets-operator Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/external-secrets-operator -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="external-secrets-operator-smoke Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="cratecheck Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/cratecheck -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="envoy-gateway Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/envoy-gateway -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="envoy-gateway-smoke Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
 
 # Wait for ESO and CrateCheck deployments.
+CURRENT_PHASE=workload-readiness
+CURRENT_ASSERTION="CrateCheck Deployment became Available"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Available \
   deployment/cratecheck -n cratecheck --timeout=300s
+CURRENT_ASSERTION="External Secrets Deployment became Available"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Available \
   deployment/external-secrets -n core-external-secrets-operator --timeout=180s
 
 # ── ESO Validation ───────────────────────────────────────────────────────────
+
+CURRENT_PHASE=eso-green
+CURRENT_ASSERTION="projected ESO Secret matched the expected value"
 
 # Verify the projected Secret value exactly, without printing it.
 assert_context
@@ -311,10 +390,15 @@ if ! curl --fail --silent "${CRATECHECK_STATUS_URL}" >/dev/null 2>&1; then
 fi
 
 # Capture baseline green.
+CURRENT_PHASE=cratecheck-green
+CURRENT_ASSERTION="CrateCheck baseline status was all green"
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/baseline-status.json"
 validate_status_json green "${TMPDIR}/baseline-status.json"
 
 # ── Controlled Red ───────────────────────────────────────────────────────────
+
+CURRENT_PHASE=eso-controlled-red
+CURRENT_ASSERTION="only the expected ESO checks became red"
 
 RED_STATE=eso_restore_required
 
@@ -330,6 +414,9 @@ curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/red-sta
 validate_status_json eso-red "${TMPDIR}/red-status.json"
 
 # ── Restore Green ────────────────────────────────────────────────────────────
+
+CURRENT_PHASE=eso-restore-green
+CURRENT_ASSERTION="ESO projection and CrateCheck status returned to green"
 
 assert_context
 flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke \
@@ -353,11 +440,16 @@ RED_STATE=none
 
 # ── Envoy Gateway Scenario ───────────────────────────────────────────────────
 
+CURRENT_PHASE=envoy-green
+CURRENT_ASSERTION="Envoy ingress baseline status was all green"
+
 # Prove the host ingress path and the full all-green JSON contract.
 curl --fail --silent --show-error "${ENVOY_STATUS_URL}" >"${TMPDIR}/envoy-baseline-status.json"
 validate_status_json green "${TMPDIR}/envoy-baseline-status.json"
 
 RED_STATE=envoy_restore_required
+CURRENT_PHASE=envoy-controlled-red
+CURRENT_ASSERTION="only envoy-httproute-ready became red"
 assert_context
 flux --context "${CONTEXT}" suspend kustomization envoy-gateway-smoke \
   -n "${FLUX_NAMESPACE}"
@@ -377,6 +469,8 @@ done
 validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"
 
 # Restore the exact backend port and GitOps reconciliation.
+CURRENT_PHASE=envoy-restore-green
+CURRENT_ASSERTION="Envoy route and all checks returned to green"
 assert_context
 kubectl --context "${CONTEXT}" -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
   -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":8080}]'
