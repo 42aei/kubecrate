@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Focused semantic and CEL checks for cert-manager TLS composition."""
 
+import runpy
 from pathlib import Path
 
 import yaml
@@ -14,6 +15,7 @@ GATEWAY = ROOT / "clusters/kind-dev-misc-local/platform-services/envoy-gateway/s
 ROUTE = ROOT / "clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke/smoke-httproute.yaml"
 REFERENCE_GRANT = ROOT / "clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke/smoke-referencegrant.yaml"
 CERTIFICATES = ROOT / "clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer/local-ca-issuer.yaml"
+MANIFEST_VALIDATOR = ROOT / "scripts/validate-kubernetes-manifests.py"
 
 CERT_MANAGER_IDS = {
     "cert-manager-helmrelease-ready",
@@ -22,6 +24,11 @@ CERT_MANAGER_IDS = {
     "cert-manager-ca-issuer-ready",
     "cert-manager-tls-certificate-ready",
     "cert-manager-tls-secret-exists",
+}
+CERT_MANAGER_KUSTOMIZE_ROOTS = {
+    "platform-services/cert-manager/base",
+    "clusters/kind-dev-misc-local/platform-services/cert-manager",
+    "clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer",
 }
 
 
@@ -61,6 +68,11 @@ def test_cert_manager_rbac_is_read_only_and_exact() -> None:
         "resources": ["clusterissuers", "certificates"],
         "verbs": ["get"],
     }]
+
+
+def test_cert_manager_roots_are_in_authoritative_manifest_validation() -> None:
+    validator = runpy.run_path(str(MANIFEST_VALIDATOR))
+    assert CERT_MANAGER_KUSTOMIZE_ROOTS <= set(validator["KUSTOMIZE_ROOTS"])
 
 
 def test_issued_certificate_is_bound_to_envoy_https() -> None:

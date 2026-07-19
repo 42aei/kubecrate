@@ -393,6 +393,57 @@ cleanup
     assert not run_tmp.exists()
 
 
+def test_failure_evidence_prefers_cert_manager_red_over_stale_envoy_green(
+    tmp_path: Path,
+) -> None:
+    """The real evidence helper records the active cert-manager failure phase."""
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    for name in ("kubectl", "flux"):
+        fake_command(bindir, name, "exit 0")
+    evidence = tmp_path / "evidence"
+    run_tmp = tmp_path / "run-tmp"; run_tmp.mkdir()
+    (run_tmp / "envoy-restored-status.json").write_text(json.dumps({
+        "status": "green",
+        "checks": [{"id": "envoy-httproute-ready", "status": "green"}],
+    }))
+    (run_tmp / "cert-manager-red-status.json").write_text(json.dumps({
+        "status": "red",
+        "checks": [
+            {"id": "cert-manager-tls-certificate-ready", "status": "red"},
+        ],
+    }))
+    (run_tmp / "flux-https-secret.yaml").write_text(
+        "kind: Secret\npassword: evidence-test-token\n"
+    )
+
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+EVIDENCE_ROOT={str(evidence)!r}
+TMPDIR={str(run_tmp)!r}
+CLUSTER='kubecrate-e2e-cert-manager-red'
+CONTEXT='kind-kubecrate-e2e-cert-manager-red'
+CURRENT_PHASE='cert-manager-controlled-red'
+FAILURE_ASSERTION='forced cert-manager red evidence regression'
+write_failure_evidence
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT,
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"},
+        text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    bundle = evidence / "kubecrate-e2e-cert-manager-red"
+    assert json.loads((bundle / "status-verdict.json").read_text()) == {
+        "checks": [
+            {"id": "cert-manager-tls-certificate-ready", "status": "red"},
+        ],
+        "status": "red",
+    }
+    evidence_text = "".join(item.read_text() for item in bundle.iterdir())
+    assert "evidence-test-token" not in evidence_text
+    assert "kind: Secret" not in evidence_text
+
+
 def test_hung_failure_evidence_is_bounded_and_cleanup_completes(tmp_path: Path) -> None:
     """A hung evidence read is diagnosed without blocking restore or exact cleanup."""
     bindir = tmp_path / "bin"; bindir.mkdir()

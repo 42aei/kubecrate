@@ -25,9 +25,12 @@ SKIP_DIRS = {".git", ".worktrees", ".venv", "node_modules"}
 KUSTOMIZE_ROOTS = (
     "platform-services/flux/base",
     "platform-services/envoy-gateway/base",
+    "platform-services/cert-manager/base",
     "clusters/kind-dev-misc-local/platform-services/flux",
     "clusters/kind-dev-misc-local/platform-services/envoy-gateway",
     "clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke",
+    "clusters/kind-dev-misc-local/platform-services/cert-manager",
+    "clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer",
     "clusters/kind-dev-misc-local/entrypoint",
 )
 

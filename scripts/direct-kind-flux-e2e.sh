@@ -81,8 +81,9 @@ write_failure_evidence() {
   } >"${bundle}/readiness.txt"
 
   local status_file=""
-  for candidate in envoy-restored-status.json envoy-red-status.json envoy-baseline-status.json \
-      restored-status.json red-status.json baseline-status.json; do
+  for candidate in cert-manager-restored-status.json cert-manager-red-status.json \
+      cert-manager-baseline-status.json envoy-restored-status.json envoy-red-status.json \
+      envoy-baseline-status.json restored-status.json red-status.json baseline-status.json; do
     if test -s "${TMPDIR}/${candidate}"; then status_file="${TMPDIR}/${candidate}"; break; fi
   done
   if test -n "${status_file}"; then
