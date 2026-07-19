@@ -389,6 +389,74 @@ cleanup
     assert not run_tmp.exists()
 
 
+def test_hung_failure_evidence_is_bounded_and_cleanup_completes(tmp_path: Path) -> None:
+    """A hung evidence read is diagnosed without blocking restore or exact cleanup."""
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    log = tmp_path / "calls.log"
+    evidence = tmp_path / "evidence"
+    run_tmp = tmp_path / "run-tmp"; run_tmp.mkdir()
+    secret_manifest = run_tmp / "flux-https-secret.yaml"
+    secret_manifest.write_text("kind: Secret\npassword: evidence-test-token\n")
+    deleted = tmp_path / "cluster-deleted"
+    cluster = "kubecrate-e2e-hung-evidence"
+    context = f"kind-{cluster}"
+
+    dispatch = f'''echo "$0 $*" >>"{log}"
+name=$(basename "$0")
+if [[ $name == flux ]]; then
+  if [[ "$*" == *"get kustomizations"* ]]; then while :; do sleep 1; done; fi
+  exit 0
+elif [[ $name == kubectl ]]; then
+  if [[ "$*" == *"config current-context"* ]]; then printf '%s' '{context}'; fi
+  exit 0
+elif [[ $name == kind ]]; then
+  if [[ "$*" == *"delete cluster --name {cluster}"* ]]; then touch "{deleted}"; exit 0; fi
+  if [[ "$*" == *"get clusters"* ]] && test ! -f "{deleted}"; then printf '%s\n' '{cluster}'; fi
+  exit 0
+fi
+exit 0'''
+    for name in ("flux", "kubectl", "kind"):
+        fake_command(bindir, name, dispatch)
+
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+EVIDENCE_ROOT={str(evidence)!r}
+TMPDIR={str(run_tmp)!r}
+CLUSTER={cluster!r}
+CONTEXT={context!r}
+CLUSTER_CREATED=true
+RED_STATE=eso_restore_required
+TOKEN=evidence-test-token
+CURRENT_PHASE=controlled-red
+FAILURE_ASSERTION='forced failure for hung evidence regression'
+set +e
+false
+cleanup
+'''
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+             "KUBECRATE_E2E_EVIDENCE_TIMEOUT": "1s"},
+        text=True, capture_output=True, timeout=8,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode != 0
+    assert elapsed < 8
+    assert deleted.exists(), "exact generated cluster must be deleted after evidence timeout"
+    calls = log.read_text()
+    assert "resume kustomization external-secrets-operator-smoke" in calls
+    assert f"delete cluster --name {cluster}" in calls
+    assert calls.count("get clusters") >= 2, "cleanup must verify authoritative absence"
+    assert not run_tmp.exists(), "temporary credentials and state must be removed"
+    readiness = (evidence / cluster / "readiness.txt").read_text()
+    assert "flux-kustomizations unavailable: evidence command timed out after 1s" in readiness
+    evidence_text = "".join(item.read_text() for item in (evidence / cluster).iterdir())
+    assert "evidence-test-token" not in evidence_text
+    assert "kind: Secret" not in evidence_text
+
+
 def test_controlled_red_deletes_directly_observed_externalsecret_and_restores_in_order() -> None:
     """Red is immediate, while restore reconciles before exact projected-value proof."""
     text = RUNNER.read_text()

@@ -31,9 +31,27 @@ EVIDENCE_ROOT="${KUBECRATE_E2E_EVIDENCE_DIR:-${PWD}/.tmp/direct-kind-flux-e2e-fa
 CURRENT_PHASE=preflight
 CURRENT_ASSERTION="preflight completed"
 FAILURE_ASSERTION=""
+EVIDENCE_COMMAND_TIMEOUT="${KUBECRATE_E2E_EVIDENCE_TIMEOUT:-5s}"
+EVIDENCE_KUBECTL_REQUEST_TIMEOUT="${KUBECRATE_E2E_EVIDENCE_KUBECTL_TIMEOUT:-4s}"
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
+
+read_failure_evidence() {
+  local label="$1"
+  shift
+  local evidence_rc
+  set +e
+  timeout --signal=TERM --kill-after=1s "${EVIDENCE_COMMAND_TIMEOUT}" "$@"
+  evidence_rc=$?
+  set -e
+  if test "${evidence_rc}" -eq 124 || test "${evidence_rc}" -eq 137; then
+    printf '[%s unavailable: evidence command timed out after %s]\n' \
+      "${label}" "${EVIDENCE_COMMAND_TIMEOUT}"
+  elif test "${evidence_rc}" -ne 0; then
+    printf '[%s unavailable: evidence command exited %s]\n' "${label}" "${evidence_rc}"
+  fi
+}
 
 write_failure_evidence() {
   local bundle="${EVIDENCE_ROOT}/${CLUSTER}"
@@ -51,11 +69,14 @@ write_failure_evidence() {
 
   {
     printf '%s\n' '== nodes =='
-    kubectl --context "${CONTEXT}" get nodes 2>&1 || true
+    read_failure_evidence nodes kubectl --context "${CONTEXT}" \
+      --request-timeout="${EVIDENCE_KUBECTL_REQUEST_TIMEOUT}" get nodes 2>&1
     printf '%s\n' '== Flux Kustomizations =='
-    flux --context "${CONTEXT}" get kustomizations -n "${FLUX_NAMESPACE}" 2>&1 || true
+    read_failure_evidence flux-kustomizations flux --context "${CONTEXT}" \
+      get kustomizations -n "${FLUX_NAMESPACE}" 2>&1
     printf '%s\n' '== workload readiness =='
-    kubectl --context "${CONTEXT}" get deployments -A 2>&1 || true
+    read_failure_evidence deployments kubectl --context "${CONTEXT}" \
+      --request-timeout="${EVIDENCE_KUBECTL_REQUEST_TIMEOUT}" get deployments -A 2>&1
   } >"${bundle}/readiness.txt"
 
   local status_file=""
@@ -180,7 +201,7 @@ decode_smoke_value() {
 
 # ── Preflight ────────────────────────────────────────────────────────────────
 
-for cmd in gh git kind kubectl helm flux kustomize curl python3 base64; do
+for cmd in gh git kind kubectl helm flux kustomize curl python3 base64 timeout; do
   require "${cmd}"
 done
 
