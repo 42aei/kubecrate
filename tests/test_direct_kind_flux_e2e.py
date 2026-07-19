@@ -29,7 +29,7 @@ def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     assert "3cfb4e320eff8d2a738cb36fd2420862b1db45c3" not in runner
 
 
-def test_runner_uses_json_only_eso_and_envoy_status_contract() -> None:
+def test_runner_uses_json_only_eso_envoy_and_cert_manager_status_contract() -> None:
     runner = RUNNER.read_text()
 
     assert "chromium" not in runner.lower()
@@ -49,6 +49,9 @@ def test_runner_uses_json_only_eso_and_envoy_status_contract() -> None:
         'validate_status_json green "${TMPDIR}/envoy-baseline-status.json"',
         'validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"',
         'validate_status_json green "${TMPDIR}/envoy-restored-status.json"',
+        'validate_status_json green "${TMPDIR}/cert-manager-baseline-status.json"',
+        'validate_status_json cert-manager-red "${TMPDIR}/cert-manager-red-status.json"',
+        'validate_status_json green "${TMPDIR}/cert-manager-restored-status.json"',
     ]
 
 
@@ -367,6 +370,7 @@ def test_cleanup_trap_installed_and_restores_before_cluster_delete() -> None:
 
     assert "RED_STATE=eso_restore_required" in text
     assert "RED_STATE=envoy_restore_required" in text
+    assert "RED_STATE=cert_manager_restore_required" in text
     assert "RED_STATE=none" in text
 
 
@@ -387,6 +391,57 @@ cleanup
     assert result.returncode == 0, result.stderr
     assert not evidence.exists()
     assert not run_tmp.exists()
+
+
+def test_failure_evidence_prefers_cert_manager_red_over_stale_envoy_green(
+    tmp_path: Path,
+) -> None:
+    """The real evidence helper records the active cert-manager failure phase."""
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    for name in ("kubectl", "flux"):
+        fake_command(bindir, name, "exit 0")
+    evidence = tmp_path / "evidence"
+    run_tmp = tmp_path / "run-tmp"; run_tmp.mkdir()
+    (run_tmp / "envoy-restored-status.json").write_text(json.dumps({
+        "status": "green",
+        "checks": [{"id": "envoy-httproute-ready", "status": "green"}],
+    }))
+    (run_tmp / "cert-manager-red-status.json").write_text(json.dumps({
+        "status": "red",
+        "checks": [
+            {"id": "cert-manager-tls-certificate-ready", "status": "red"},
+        ],
+    }))
+    (run_tmp / "flux-https-secret.yaml").write_text(
+        "kind: Secret\npassword: evidence-test-token\n"
+    )
+
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+EVIDENCE_ROOT={str(evidence)!r}
+TMPDIR={str(run_tmp)!r}
+CLUSTER='kubecrate-e2e-cert-manager-red'
+CONTEXT='kind-kubecrate-e2e-cert-manager-red'
+CURRENT_PHASE='cert-manager-controlled-red'
+FAILURE_ASSERTION='forced cert-manager red evidence regression'
+write_failure_evidence
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=ROOT,
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"},
+        text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    bundle = evidence / "kubecrate-e2e-cert-manager-red"
+    assert json.loads((bundle / "status-verdict.json").read_text()) == {
+        "checks": [
+            {"id": "cert-manager-tls-certificate-ready", "status": "red"},
+        ],
+        "status": "red",
+    }
+    evidence_text = "".join(item.read_text() for item in bundle.iterdir())
+    assert "evidence-test-token" not in evidence_text
+    assert "kind: Secret" not in evidence_text
 
 
 def test_hung_failure_evidence_is_bounded_and_cleanup_completes(tmp_path: Path) -> None:
@@ -489,6 +544,20 @@ def test_envoy_scenario_is_bounded_and_restores_exact_route() -> None:
     restore = scenario.index('"value":8080')
     final_green = scenario.rindex("validate_status_json green")
     assert red_validator < restore < final_green
+
+
+def test_cert_manager_scenario_uses_trusted_https_and_exact_red_restore() -> None:
+    text = RUNNER.read_text()
+    scenario = text[text.index("# ── cert-manager TLS Scenario"):text.index("# Kill port-forward")]
+    assert '--cacert "${TMPDIR}/cratecheck-ca.crt"' in scenario
+    assert '--resolve cratecheck.local:10443:127.0.0.1' in scenario
+    assert "suspend kustomization cert-manager-local-issuer" in scenario
+    assert "delete certificate cratecheck-tls" in scenario
+    assert "delete secret cratecheck-tls" not in scenario
+    assert 'validate_status_json cert-manager-red "${TMPDIR}/cert-manager-red-status.json"' in scenario
+    assert "resume kustomization cert-manager-local-issuer" in scenario
+    assert "reconcile kustomization cert-manager-local-issuer" in scenario
+    assert scenario.rindex("validate_status_json green") > scenario.index("resume kustomization")
 
 
 # ── Runner preflight ordering ────────────────────────────────────────────────

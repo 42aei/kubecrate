@@ -139,6 +139,19 @@ def validate_status_config() -> bool:
             "c.type == 'ResolvedRefs' && c.status == 'True'",
         )),
     )
+    cert_manager_ids = {
+        "cert-manager-helmrelease-ready",
+        "cert-manager-selfsigned-issuer-ready",
+        "cert-manager-ca-certificate-ready",
+        "cert-manager-ca-issuer-ready",
+        "cert-manager-tls-certificate-ready",
+        "cert-manager-tls-secret-exists",
+    }
+    all_ok &= check(
+        "cert-manager check IDs are present",
+        cert_manager_ids <= set(ids),
+        f"missing: {cert_manager_ids - set(ids)}",
+    )
     return all_ok
 
 
@@ -191,6 +204,11 @@ def validate_rbac() -> bool:
         "ClusterRole grants Gateway API read access",
         "gateway.networking.k8s.io" in eso_api_groups
         and {"gatewayclasses", "gateways", "httproutes"} <= eso_resources,
+    )
+    all_ok &= check(
+        "ClusterRole grants exact cert-manager resource reads",
+        "cert-manager.io" in eso_api_groups
+        and {"clusterissuers", "certificates"} <= eso_resources,
     )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"

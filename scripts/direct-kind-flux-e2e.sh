@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Direct disposable kind + Flux E2E runner.
 # Creates a unique kind cluster, bootstraps Flux with HTTPS credentials,
-# validates ESO, Envoy ingress, and CrateCheck red/green scenarios, then cleans up.
+# validates ESO, Envoy ingress, cert-manager TLS, and CrateCheck scenarios, then cleans up.
 set -Eeuo pipefail
 
 REPO="${KUBECRATE_GITHUB_REPO:-42aei/kubecrate}"
@@ -25,6 +25,7 @@ RED_STATE=none
 CRATECHECK_PORT=18080
 CRATECHECK_STATUS_URL="http://127.0.0.1:${CRATECHECK_PORT}/status.json"
 ENVOY_STATUS_URL="http://127.0.0.1:10080/status.json"
+ENVOY_TLS_STATUS_URL="https://cratecheck.local:10443/status.json"
 RUN_TMP_ROOT="${KUBECRATE_E2E_TMP_ROOT:-${TMPDIR:-/tmp}}"
 TMPDIR=""
 EVIDENCE_ROOT="${KUBECRATE_E2E_EVIDENCE_DIR:-${PWD}/.tmp/direct-kind-flux-e2e-failures}"
@@ -80,8 +81,9 @@ write_failure_evidence() {
   } >"${bundle}/readiness.txt"
 
   local status_file=""
-  for candidate in envoy-restored-status.json envoy-red-status.json envoy-baseline-status.json \
-      restored-status.json red-status.json baseline-status.json; do
+  for candidate in cert-manager-restored-status.json cert-manager-red-status.json \
+      cert-manager-baseline-status.json envoy-restored-status.json envoy-red-status.json \
+      envoy-baseline-status.json restored-status.json red-status.json baseline-status.json; do
     if test -s "${TMPDIR}/${candidate}"; then status_file="${TMPDIR}/${candidate}"; break; fi
   done
   if test -n "${status_file}"; then
@@ -132,6 +134,9 @@ cleanup() {
           -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":8080}]' >/dev/null 2>&1 || true
         flux --context "${CONTEXT}" resume kustomization envoy-gateway-smoke -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
         flux --context "${CONTEXT}" reconcile kustomization envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
+      elif test "${RED_STATE}" = cert_manager_restore_required; then
+        flux --context "${CONTEXT}" resume kustomization cert-manager-local-issuer -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
+        flux --context "${CONTEXT}" reconcile kustomization cert-manager-local-issuer -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
       fi
     fi
   fi
@@ -357,6 +362,14 @@ CURRENT_ASSERTION="cratecheck Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/cratecheck -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="cert-manager Kustomization became Ready"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/cert-manager -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="cert-manager local issuer Kustomization became Ready"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/cert-manager-local-issuer -n "${FLUX_NAMESPACE}" --timeout=300s
 CURRENT_ASSERTION="envoy-gateway Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
@@ -523,6 +536,66 @@ while (( SECONDS < deadline )); do
 done
 curl --fail --silent --show-error "${ENVOY_STATUS_URL}" >"${TMPDIR}/envoy-restored-status.json"
 validate_status_json green "${TMPDIR}/envoy-restored-status.json"
+RED_STATE=none
+
+# ── cert-manager TLS Scenario ────────────────────────────────────────────────
+
+CURRENT_PHASE=cert-manager-tls-green
+CURRENT_ASSERTION="cert-manager-issued certificate provided trusted HTTPS"
+assert_context
+kubectl --context "${CONTEXT}" get secret cratecheck-tls -n cratecheck \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d >"${TMPDIR}/cratecheck-ca.crt"
+test -s "${TMPDIR}/cratecheck-ca.crt" || fail "cert-manager TLS CA certificate is empty"
+curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
+  --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
+  >"${TMPDIR}/cert-manager-baseline-status.json"
+validate_status_json green "${TMPDIR}/cert-manager-baseline-status.json"
+
+RED_STATE=cert_manager_restore_required
+CURRENT_PHASE=cert-manager-controlled-red
+CURRENT_ASSERTION="only the cert-manager TLS Certificate check became red"
+assert_context
+flux --context "${CONTEXT}" suspend kustomization cert-manager-local-issuer \
+  -n "${FLUX_NAMESPACE}"
+assert_context
+kubectl --context "${CONTEXT}" delete certificate cratecheck-tls -n cratecheck
+curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" \
+  >"${TMPDIR}/cert-manager-red-status.json"
+validate_status_json cert-manager-red "${TMPDIR}/cert-manager-red-status.json"
+curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
+  --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" >/dev/null
+
+CURRENT_PHASE=cert-manager-restore-green
+CURRENT_ASSERTION="cert-manager TLS issuance, HTTPS, and all checks returned to green"
+assert_context
+flux --context "${CONTEXT}" resume kustomization cert-manager-local-issuer \
+  -n "${FLUX_NAMESPACE}"
+assert_context
+flux --context "${CONTEXT}" reconcile kustomization cert-manager-local-issuer \
+  -n "${FLUX_NAMESPACE}" --timeout=180s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/cert-manager-local-issuer -n "${FLUX_NAMESPACE}" --timeout=180s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  certificate/cratecheck-tls -n cratecheck --timeout=180s
+kubectl --context "${CONTEXT}" get secret cratecheck-tls -n cratecheck \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d >"${TMPDIR}/cratecheck-ca.crt"
+
+deadline=$((SECONDS + 60))
+while (( SECONDS < deadline )); do
+  if curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
+      --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
+      >"${TMPDIR}/cert-manager-restored-status.json" 2>/dev/null && \
+     validate_status_json green "${TMPDIR}/cert-manager-restored-status.json" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
+  --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
+  >"${TMPDIR}/cert-manager-restored-status.json"
+validate_status_json green "${TMPDIR}/cert-manager-restored-status.json"
 RED_STATE=none
 
 # Kill port-forward before cleanup.

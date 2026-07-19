@@ -19,10 +19,17 @@ EXPECTED_IDS = {
     "envoy-gatewayclass-accepted",
     "envoy-gateway-ready",
     "envoy-httproute-ready",
+    "cert-manager-helmrelease-ready",
+    "cert-manager-selfsigned-issuer-ready",
+    "cert-manager-ca-certificate-ready",
+    "cert-manager-ca-issuer-ready",
+    "cert-manager-tls-certificate-ready",
+    "cert-manager-tls-secret-exists",
 }
 RED_IDS = {
     "eso-red": {"eso-externalsecret-ready", "eso-projected-secret-exists"},
     "envoy-red": {"envoy-httproute-ready"},
+    "cert-manager-red": {"cert-manager-tls-certificate-ready"},
 }
 STATUSES = {"green", "red", "yellow", "unknown"}
 
@@ -68,7 +75,11 @@ def validate_status(data: Any, phase: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=("green", "eso-red", "envoy-red"), required=True)
+    parser.add_argument(
+        "--phase",
+        choices=("green", "eso-red", "envoy-red", "cert-manager-red"),
+        required=True,
+    )
     parser.add_argument("status_file", type=Path)
     args = parser.parse_args()
     try:

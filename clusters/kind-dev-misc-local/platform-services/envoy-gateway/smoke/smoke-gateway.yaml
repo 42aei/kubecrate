@@ -17,3 +17,16 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: cratecheck-tls
+            namespace: cratecheck
+      allowedRoutes:
+        namespaces:
+          from: All

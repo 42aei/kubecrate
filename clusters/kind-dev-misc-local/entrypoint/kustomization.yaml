@@ -9,3 +9,5 @@ resources:
   - ./cratecheck-kustomization.yaml
   - ./envoy-gateway-kustomization.yaml
   - ./envoy-gateway-smoke-kustomization.yaml
+  - ./cert-manager-kustomization.yaml
+  - ./cert-manager-local-issuer-kustomization.yaml
