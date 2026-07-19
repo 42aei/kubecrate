@@ -1,7 +1,7 @@
 ---
 task_id: "0017"
 title: "Introduce cert-manager certificate management"
-status: "started"
+status: "done"
 depends_on: ["0011", "0014", "0016"]
 openspec_change: "introduce-cert-manager-certificate-management"
 ---
