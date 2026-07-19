@@ -4,4 +4,6 @@ resources:
   - ./kubecrate-system-namespace.yaml
   - ./kubecrate-reconciliation-marker.yaml
   - ../platform-services/flux
-  - ../application-services/cratecheck
+  - ./external-secrets-operator-kustomization.yaml
+  - ./external-secrets-operator-smoke-kustomization.yaml
+  - ./cratecheck-kustomization.yaml

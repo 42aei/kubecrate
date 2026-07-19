@@ -9,7 +9,8 @@ metadata:
 data:
   status.yaml: |
     # CrateCheck config contract: https://github.com/42aei/cratecheck/blob/main/docs/kubernetes/README.md#adapting-for-another-service
-    interval: 30s
+    # Evaluate checks on every request so status observations are current.
+    interval: 0
     checks:
       - id: cratecheck-deployment-ready
         name: CrateCheck deployment ready
@@ -52,3 +53,61 @@ data:
           object.data['status.yaml'] != ''
         successMessage: check ConfigMap is present and non-empty
         failureMessage: check ConfigMap is missing or empty
+      - id: eso-helmrelease-ready
+        name: ESO HelmRelease ready
+        severity: red
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: core-external-secrets-operator
+          name: external-secrets
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: ESO HelmRelease is ready
+        failureMessage: ESO HelmRelease is not ready
+      - id: eso-secretstore-ready
+        name: ESO smoke SecretStore ready
+        severity: red
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: SecretStore
+          namespace: kubecrate-system
+          name: eso-smoke-kubernetes-store
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c['type'] == 'Ready' && c['status'] == 'True')
+        successMessage: ESO smoke store is ready
+        failureMessage: ESO smoke store is not ready
+      - id: eso-externalsecret-ready
+        name: ESO smoke ExternalSecret ready
+        severity: red
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          namespace: kubecrate-system
+          name: eso-smoke-projection
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c['type'] == 'Ready' && c['status'] == 'True')
+        successMessage: ESO smoke projection is synced and ready
+        failureMessage: ESO smoke projection is not ready
+      - id: eso-projected-secret-exists
+        name: ESO projected smoke Secret exists
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: Secret
+          namespace: kubecrate-system
+          name: eso-smoke-projected
+        expression: >-
+          has(object.metadata) &&
+          object.metadata.name == 'eso-smoke-projected'
+        successMessage: ESO projected smoke target exists
+        failureMessage: ESO projected smoke target not found

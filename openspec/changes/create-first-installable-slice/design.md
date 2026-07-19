@@ -156,9 +156,9 @@ Flux is an explicit approved exception for this first slice: Flux controllers an
 This exception is concrete and tool-specific, not a new workload-category rule. The first slice uses Flux Helm chart defaults plus the conventional `flux2-sync` bootstrap object conventions, which use `flux-system` for:
 
 - Flux controllers
-- generated Git credential `Secret/flux-system`
-- `GitRepository/flux-system`
-- `Kustomization/flux-system`
+- generated Git credential `Secret/flux-system-sync`
+- `GitRepository/flux-system-sync`
+- `Kustomization/flux-system-sync`
 
 Keeping `flux-system` avoids inventing a parallel `core-flux` namespace contract that would diverge from Flux chart defaults, Flux bootstrap ecosystem examples, and the object naming or namespace conventions used for the first GitOps controller bootstrap path. This keeps bootstrap installation and GitOps-managed operation aligned on the same controller namespace and object identities.
 
@@ -166,20 +166,20 @@ Keeping `flux-system` avoids inventing a parallel `core-flux` namespace contract
 
 The first slice uses the conventional Flux bootstrap object names in namespace `flux-system`:
 
-- Secret: `flux-system`
-- GitRepository: `flux-system`
-- Kustomization: `flux-system`
+- Secret: `flux-system-sync`
+- GitRepository: `flux-system-sync`
+- Kustomization: `flux-system-sync`
 
-Bootstrap applies the initial Git source and reconciliation objects so those names are stable across bootstrap installation and GitOps-managed operation. `flux2-sync` runs in SSH mode against this repository and the active implementation branch. The generated private key remains in `Secret/flux-system` in namespace `flux-system`.
+Bootstrap applies the initial Git source and reconciliation objects so those names are stable across bootstrap installation and GitOps-managed operation. `flux2-sync` runs in SSH mode against this repository and the active implementation branch. The generated private key remains in `Secret/flux-system-sync` in namespace `flux-system`.
 
-The public-key retrieval step is concrete for this slice: the operator retrieves the generated deploy key from `Secret/flux-system` with an operator-visible command equivalent to `kubectl -n flux-system get secret flux-system -o jsonpath='{.data.identity\\.pub}' | base64 -d`. Bootstrap output or companion docs may wrap that command, but the source of truth is the generated `identity.pub` field in `Secret/flux-system`.
+The public-key retrieval step is concrete for this slice: the operator retrieves the generated deploy key from `Secret/flux-system-sync` with an operator-visible command equivalent to `kubectl -n flux-system get secret flux-system-sync -o jsonpath='{.data.identity\.pub}' | base64 -d`. Bootstrap output or companion docs may wrap that command, but the source of truth is the generated `identity.pub` field in `Secret/flux-system-sync`.
 
 Registration and reconciliation evidence for the tracer bullet is:
 
-1. `kubectl -n flux-system get secret flux-system` shows the generated Secret exists.
+1. `kubectl -n flux-system get secret flux-system-sync` shows the generated Secret exists.
 2. The operator registers the retrieved public key with the Git provider as a deploy key for this repository.
-3. `flux get sources git -n flux-system` or equivalent object-specific status shows `GitRepository/flux-system` Ready against the configured SSH repository URL and branch.
-4. `flux get kustomizations -n flux-system` or equivalent object-specific status shows `Kustomization/flux-system` Ready.
+3. `flux get sources git -n flux-system` or equivalent object-specific status shows `GitRepository/flux-system-sync` Ready against the configured SSH repository URL and branch.
+4. `flux get kustomizations -n flux-system` or equivalent object-specific status shows `Kustomization/flux-system-sync` Ready.
 5. The entrypoint content, including `kubecrate-reconciliation-marker`, reconciles without bootstrap re-applying desired state after deploy-key registration.
 
 ### Kind validation plumbing

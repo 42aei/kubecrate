@@ -15,21 +15,21 @@ Kubecrate SHALL use a Helm-driven bootstrap installation path for Flux in this f
 - **AND** the operator does not need a separate platform service credential projection controller to complete the first slice bootstrap contract
 
 ### Requirement: Flux SSH deploy-key generation and registration
-Kubecrate SHALL use `flux2-sync` SSH deploy-key generation for the first Git source contract in this slice. Bootstrap installation SHALL create `Secret/flux-system` in namespace `flux-system`, keep the generated private key material in-cluster, and expose operator retrieval of the generated public key from `identity.pub` for deploy-key registration with the Git provider.
+Kubecrate SHALL use `flux2-sync` SSH deploy-key generation for the first Git source contract in this slice. Bootstrap installation SHALL create `Secret/flux-system-sync` in namespace `flux-system`, keep the generated private key material in-cluster, and expose operator retrieval of the generated public key from `identity.pub` for deploy-key registration with the Git provider.
 
 #### Scenario: Flux sync secret is created during bootstrap
 - **WHEN** bootstrap installation executes the `flux2-sync` contract in SSH mode
-- **THEN** `Secret/flux-system` exists in namespace `flux-system`
+- **THEN** `Secret/flux-system-sync` exists in namespace `flux-system`
 - **AND** the Secret contains generated SSH identity material for the Flux Git source contract
 
 #### Scenario: Operator retrieves the generated public key from identity.pub
 - **WHEN** the operator needs to register repository access for Flux
-- **THEN** the generated public key is retrievable from `Secret/flux-system` field `identity.pub`
+- **THEN** the generated public key is retrievable from `Secret/flux-system-sync` field `identity.pub`
 - **AND** bootstrap output or operator guidance identifies that field as the source of truth for deploy-key registration
 
 #### Scenario: Deploy-key registration happens before Flux source readiness
 - **WHEN** the generated public key has not yet been registered with the Git provider as a deploy key
-- **THEN** `GitRepository/flux-system` SHALL NOT be considered ready for GitOps-managed operation
+- **THEN** `GitRepository/flux-system-sync` SHALL NOT be considered ready for GitOps-managed operation
 - **AND** operator registration of that deploy key is required before Flux source readiness is expected
 
 ### Requirement: Platform services namespaces use the core prefix
@@ -68,7 +68,7 @@ Bootstrap installation SHALL hand off Flux to self-management after bootstrap in
 #### Scenario: Flux Git source uses SSH remote and current branch
 - **WHEN** Flux is configured to reconcile this repository
 - **THEN** the Flux `GitRepository` resource points to this repository's SSH remote URL and the current implementation branch
-- **AND** Git credentials are provided by generated SSH identity material stored in `Secret/flux-system`
+- **AND** Git credentials are provided by generated SSH identity material stored in `Secret/flux-system-sync`
 - **AND** validation requires a commit and push to the implementation branch for Flux to detect and reconcile changes
 - **AND** local Git server alternatives are secondary and out of the default path for this slice
 
@@ -124,7 +124,7 @@ Kubecrate SHALL include a tracer bullet that proves GitOps-managed operation per
 
 #### Scenario: Baseline reconcile succeeds with kubecrate-reconciliation-marker at version X
 - **WHEN** bootstrap installation completes and Flux has reconciled
-- **THEN** evidence confirms Flux is running, `Secret/flux-system` contains generated sync identity material, and `ConfigMap/kubecrate-reconciliation-marker` is present in namespace `kubecrate-system` at version X (`v0.1.0`)
+- **THEN** evidence confirms Flux is running, `Secret/flux-system-sync` contains generated sync identity material, and `ConfigMap/kubecrate-reconciliation-marker` is present in namespace `kubecrate-system` at version X (`v0.1.0`)
 - **AND** the evidence command `kubectl get configmap kubecrate-reconciliation-marker -n kubecrate-system -o jsonpath='{.data.version}'` returns the expected value for version X
 - **AND** validation confirms the intended cluster context, expected resources, relevant health, readiness, or sync conditions, and no blocking errors in recent events or logs
 

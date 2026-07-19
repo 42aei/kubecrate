@@ -20,7 +20,7 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate validate-cratecheck validate-flux-sync-values
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -42,8 +42,8 @@ kind-dev-misc-local-delete:
 kind-unique-create: KIND_CLUSTER_NAME := $(KIND_UNIQUE_CLUSTER_NAME)
 kind-unique-create: kind-dev-misc-local-create
 > mkdir -p "$$(dirname "$(KIND_UNIQUE_STATE_FILE)")"
-> printf '%s\n' "$(KIND_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
-> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_CLUSTER_NAME)" "$(KIND_CLUSTER_NAME)"
+> printf '%s\n' "$(KIND_UNIQUE_CLUSTER_NAME)" >"$(KIND_UNIQUE_STATE_FILE)"
+> printf 'cluster=%s\ncontext=kind-%s\n' "$(KIND_UNIQUE_CLUSTER_NAME)" "$(KIND_UNIQUE_CLUSTER_NAME)"
 
 kind-unique-current:
 > test -s "$(KIND_UNIQUE_STATE_FILE)" || { printf 'no kind unique cluster state found at %s\n' "$(KIND_UNIQUE_STATE_FILE)" >&2; exit 1; }
@@ -81,23 +81,34 @@ kind-dev-misc-local-bootstrap:
 > kubectl --context "$(KIND_CONTEXT)" apply -k "$(ENTRYPOINT_ROOT)"
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready helmreleases.helm.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > printf 'Register this deploy key with the Git provider before waiting for GitOps-managed operation readiness:\n'
-> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\.pub}' | base64 -d && printf '\n'
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.data.identity\.pub}' | base64 -d && printf '\n'
 > printf 'After deploy-key registration, run: make kind-dev-misc-local-await-gitops\n'
 
 kind-dev-misc-local-await-gitops:
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
-> flux --context "$(KIND_CONTEXT)" reconcile source git "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> flux --context "$(KIND_CONTEXT)" reconcile source git "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
+> for kustomization in external-secrets-operator external-secrets-operator-smoke cratecheck; do kubectl --context "$(KIND_CONTEXT)" get kustomizations.kustomize.toolkit.fluxcd.io/"$${kustomization}" -n "$(FLUX_NAMESPACE)" >/dev/null || { printf 'missing expected child Flux Kustomization: %s\n' "$${kustomization}" >&2; exit 1; }; done
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
 
 kind-dev-misc-local-evidence:
 > kubectl --context "$(KIND_CONTEXT)" get nodes
 > kubectl --context "$(KIND_CONTEXT)" get deployments -n "$(FLUX_NAMESPACE)"
-> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_RELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $$k, $$_ := .data}}{{printf "%s\n" $$k}}{{end}}'
+> kubectl --context "$(KIND_CONTEXT)" get secret "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o go-template='{{range $$k, $$_ := .data}}{{printf "%s\n" $$k}}{{end}}'
 > flux --context "$(KIND_CONTEXT)" get sources git -n "$(FLUX_NAMESPACE)"
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
+
+PYTHON ?= python3
+
+validate: validate-cratecheck validate-flux-sync-values
+
+validate-cratecheck:
+> $(PYTHON) tests/validate-cratecheck.py
+
+validate-flux-sync-values:
+> $(PYTHON) tests/validate-flux-sync-values.py --helm-render

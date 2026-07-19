@@ -1,11 +1,13 @@
 secret:
   create: true
+  generate:
+    sshKeyAlgorithm: ed25519
 gitRepository:
   spec:
-    url: ssh://git@github.com/anderskovitdk/kubecrate.git
+    url: ssh://git@github.com/42aei/kubecrate.git
     interval: 1m
     ref:
-      branch: pivot/flux-sync-ssh-bootstrap
+      branch: kubecrate/cratecheck-restack-eso
 kustomization:
   spec:
     interval: 1m

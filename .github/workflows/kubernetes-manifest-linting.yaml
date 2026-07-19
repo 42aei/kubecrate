@@ -6,6 +6,9 @@ on:
       - '**/*.yaml'
       - '**/*.yml'
       - 'scripts/validate-kubernetes-manifests.py'
+      - 'tests/**'
+      - 'requirements-dev.txt'
+      - 'Makefile'
       - '.github/workflows/kubernetes-manifest-linting.yaml'
   push:
     branches:
@@ -14,6 +17,9 @@ on:
       - '**/*.yaml'
       - '**/*.yml'
       - 'scripts/validate-kubernetes-manifests.py'
+      - 'tests/**'
+      - 'requirements-dev.txt'
+      - 'Makefile'
       - '.github/workflows/kubernetes-manifest-linting.yaml'
   workflow_dispatch:
 
@@ -80,12 +86,17 @@ jobs:
           python-version: '3.12'
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pyyaml
+        run: python -m pip install --upgrade -r requirements-dev.txt
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: latest
+
+      - name: Set up pinned Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.16.4
 
       - name: Set up kubeconform
         env:
@@ -99,3 +110,9 @@ jobs:
 
       - name: Render Kustomize roots and validate output
         run: python scripts/validate-kubernetes-manifests.py --check kustomize
+
+      - name: Validate Flux sync credential generation values
+        run: python tests/validate-flux-sync-values.py --helm-render
+
+      - name: Validate CrateCheck config and ESO expressions
+        run: python tests/validate-cratecheck.py
