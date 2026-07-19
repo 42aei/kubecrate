@@ -10,6 +10,7 @@ metadata:
     kubecrate.io/smoke-test: envoy-gateway
 spec:
   provider:
+    type: Kubernetes
     kubernetes:
       envoyService:
         type: NodePort
