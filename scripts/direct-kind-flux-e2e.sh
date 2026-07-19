@@ -366,6 +366,13 @@ assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
 
+# The smoke Kustomization can be Ready before Envoy has programmed its generated
+# data plane. Gate baseline status and host ingress on the Gateway contract.
+CURRENT_ASSERTION="Envoy smoke Gateway became Programmed"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Programmed \
+  gateway/kubecrate-envoy-smoke -n core-envoy-gateway --timeout=300s
+
 # Wait for ESO and CrateCheck deployments.
 CURRENT_PHASE=workload-readiness
 CURRENT_ASSERTION="CrateCheck Deployment became Available"

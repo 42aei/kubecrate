@@ -1262,6 +1262,112 @@ exit 0''')
 
 # ── ESO deployment wait propagation ──────────────────────────────────────────
 
+def test_envoy_gateway_programmed_wait_failure_propagates(tmp_path: Path) -> None:
+    """The exact smoke Gateway Programmed gate fails closed and cleans up."""
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    for d in ("kind", "clusters/kind-dev-misc-local/platform-services/flux",
+              "clusters/kind-dev-misc-local/entrypoint"):
+        (repo / d).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    (repo / "clusters/kind-dev-misc-local/platform-services/flux/helm-values.yaml").write_text("{}\n")
+    (repo / "clusters/kind-dev-misc-local/entrypoint/kustomization.yaml").write_text(
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+        "  - ../platform-services/flux\n")
+    (repo / "clusters/kind-dev-misc-local/platform-services/flux/kustomization.yaml").write_text(
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n")
+    init_repo(repo, "envoy-gateway-wait-fail")
+
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    log = tmp_path / "calls.log"
+    deleted = tmp_path / "cluster-deleted"
+    cluster_name_file = tmp_path / "cluster-name"
+    cluster_created = tmp_path / "cluster-created"
+    gateway_wait_failed = tmp_path / "gateway-wait-failed"
+
+    dispatch = f'''#!/usr/bin/env bash
+echo "$0 $*" >>"{log}"
+name=$(basename $0)
+if [[ $name == gh ]]; then
+  if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
+  if [[ "$*" == *"auth status"* ]]; then exit 0; fi
+  if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  exit 0
+elif [[ $name == kind ]]; then
+  if [[ "$*" == *"create cluster"* ]]; then
+    touch "{cluster_created}"
+    for arg; do if [[ "$prev" == --name ]]; then echo "$arg" >"{cluster_name_file}"; fi; prev="$arg"; done
+    exit 0
+  fi
+  if [[ "$*" == *"get clusters"* ]]; then
+    if test -f "{cluster_name_file}" && test -f "{cluster_created}" && test ! -f "{deleted}"; then
+      cat "{cluster_name_file}"
+    fi
+    exit 0
+  fi
+  if [[ "$*" == *"delete cluster"* ]]; then touch "{deleted}"; exit 0; fi
+  exit 0
+elif [[ $name == kubectl ]]; then
+  if [[ "$*" == *"config current-context"* ]]; then
+    if test -f "{cluster_name_file}"; then printf 'kind-%s' "$(cat "{cluster_name_file}")"; fi
+    exit 0
+  fi
+  if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
+    printf 'main@sha1:{EXPECTED_COMMIT}'
+    exit 0
+  fi
+  if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then
+    if [[ "$*" == *"--for=condition=Programmed"* && "$*" == *"gateway/kubecrate-envoy-smoke"* && "$*" == *"-n core-envoy-gateway"* ]]; then
+      touch "{gateway_wait_failed}"
+      exit 42
+    fi
+    exit 0
+  fi
+  exit 0
+elif [[ $name == git ]]; then
+  if [[ "$*" == *"ls-remote"* ]]; then
+    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+  fi
+  exec /usr/bin/git "$@"
+fi
+exit 0
+'''
+    for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
+                 "curl", "python3", "base64"):
+        fake_command(bindir, name, dispatch)
+
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_PR_BRANCH": PR_BRANCH}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+
+    assert result.returncode == 42, (
+        f"runner must propagate the Gateway Programmed wait rc=42, got {result.returncode}; "
+        f"stderr: {result.stderr}"
+    )
+    assert gateway_wait_failed.exists(), "the exact Gateway Programmed gate was not reached"
+    calls = log.read_text()
+    assert (
+        "wait --for=condition=Programmed gateway/kubecrate-envoy-smoke "
+        "-n core-envoy-gateway --timeout=300s"
+    ) in calls
+    smoke_ready = calls.index(
+        "wait --for=condition=Ready kustomization/envoy-gateway-smoke "
+        "-n flux-system --timeout=300s"
+    )
+    gateway_programmed = calls.index(
+        "wait --for=condition=Programmed gateway/kubecrate-envoy-smoke "
+        "-n core-envoy-gateway --timeout=300s"
+    )
+    assert smoke_ready < gateway_programmed
+    assert "deployment/cratecheck" not in calls
+    assert "deployment/external-secrets" not in calls
+    cluster_name = cluster_name_file.read_text().strip()
+    assert f"delete cluster --name {cluster_name}" in calls
+
+
 def test_eso_deployment_wait_failure_propagates(tmp_path: Path) -> None:
     """ESO deployment wait failure propagates non-zero (no || true)."""
     repo = tmp_path / "repo"; repo.mkdir()
