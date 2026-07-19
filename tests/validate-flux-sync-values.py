@@ -22,6 +22,7 @@ def load_values(text: str) -> dict:
     assert isinstance(values, dict)
     assert values.get("secret", {}).get("create") is True
     assert values.get("secret", {}).get("generate", {}).get("sshKeyAlgorithm") == "ed25519"
+    assert values.get("gitRepository", {}).get("spec", {}).get("ref", {}).get("branch") == "main"
     return values
 
 

@@ -7,7 +7,7 @@ gitRepository:
     url: ssh://git@github.com/42aei/kubecrate.git
     interval: 1m
     ref:
-      branch: kubecrate/cratecheck-restack-eso
+      branch: main
 kustomization:
   spec:
     interval: 1m
