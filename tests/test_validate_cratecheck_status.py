@@ -37,20 +37,29 @@ def test_green_requires_every_exact_enabled_check() -> None:
         MODULE.validate_status(missing, "green")
 
 
-def test_red_requires_both_source_dependent_eso_checks() -> None:
-    MODULE.validate_status(payload(changed=set(MODULE.RED_IDS)), "red")
+def test_eso_red_requires_both_source_dependent_eso_checks() -> None:
+    MODULE.validate_status(payload(changed=set(MODULE.RED_IDS["eso-red"])), "eso-red")
     with pytest.raises(AssertionError):
-        MODULE.validate_status(payload(changed={"eso-externalsecret-ready"}), "red")
+        MODULE.validate_status(payload(changed={"eso-externalsecret-ready"}), "eso-red")
 
 
-def test_red_rejects_unrelated_check_failure() -> None:
+def test_eso_red_rejects_unrelated_check_failure() -> None:
     with pytest.raises(AssertionError):
-        MODULE.validate_status(payload(changed={"cratecheck-deployment-ready"}), "red")
+        MODULE.validate_status(payload(changed={"cratecheck-deployment-ready"}), "eso-red")
+
+
+def test_envoy_red_changes_only_route_check() -> None:
+    MODULE.validate_status(payload(changed={"envoy-httproute-ready"}), "envoy-red")
+    with pytest.raises(AssertionError):
+        MODULE.validate_status(
+            payload(changed={"envoy-httproute-ready", "envoy-gateway-ready"}),
+            "envoy-red",
+        )
 
 
 @pytest.mark.parametrize("status", ["yellow", "unknown"])
-def test_red_rejects_non_red_intended_state(status: str) -> None:
-    invalid = payload(changed=set(MODULE.RED_IDS))
+def test_eso_red_rejects_non_red_intended_state(status: str) -> None:
+    invalid = payload(changed=set(MODULE.RED_IDS["eso-red"]))
     invalid["checks"][next(
         index for index, check in enumerate(invalid["checks"])
         if check["id"] == "eso-projected-secret-exists"
@@ -58,7 +67,7 @@ def test_red_rejects_non_red_intended_state(status: str) -> None:
     invalid["summary"]["red"] -= 1
     invalid["summary"][status] += 1
     with pytest.raises(AssertionError):
-        MODULE.validate_status(invalid, "red")
+        MODULE.validate_status(invalid, "eso-red")
 
 
 def test_summary_must_match_exact_check_states() -> None:

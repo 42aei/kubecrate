@@ -53,6 +53,15 @@ rules:
       - secrets
     verbs:
       - get
+  # Envoy Gateway platform service checks
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - gatewayclasses
+      - gateways
+      - httproutes
+    verbs:
+      - get
   # Future platform service checks may require additional read verbs on resources
   # such as secrets, ingresses, certificates, or custom resources.
   # Expand this ClusterRole incrementally as new checks are added to the check config.

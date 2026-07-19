@@ -17,7 +17,7 @@ RENDERER = ROOT / "scripts" / "render-direct-flux-source.py"
 STATUS_VALIDATOR = ROOT / "scripts" / "validate-cratecheck-status.py"
 
 EXPECTED_COMMIT = "a" * 40
-PR_BRANCH = "kubecrate/cratecheck-restack-eso"
+PR_BRANCH = "kubecrate/envoy-after-eso-minimal-qa"
 
 
 def test_runner_uses_on_demand_status_without_observation_waits() -> None:
@@ -27,7 +27,7 @@ def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     assert "3cfb4e320eff8d2a738cb36fd2420862b1db45c3" not in runner
 
 
-def test_runner_uses_only_three_phase_json_status_contract() -> None:
+def test_runner_uses_json_only_eso_and_envoy_status_contract() -> None:
     runner = RUNNER.read_text()
 
     assert "chromium" not in runner.lower()
@@ -38,12 +38,15 @@ def test_runner_uses_only_three_phase_json_status_contract() -> None:
     validations = [
         line.strip()
         for line in runner.splitlines()
-        if line.strip().startswith("validate_status_json ")
+        if line.strip().startswith("validate_status_json ") and "; then" not in line
     ]
     assert validations == [
         'validate_status_json green "${TMPDIR}/baseline-status.json"',
-        'validate_status_json red "${TMPDIR}/red-status.json"',
+        'validate_status_json eso-red "${TMPDIR}/red-status.json"',
         'validate_status_json green "${TMPDIR}/restored-status.json"',
+        'validate_status_json green "${TMPDIR}/envoy-baseline-status.json"',
+        'validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"',
+        'validate_status_json green "${TMPDIR}/envoy-restored-status.json"',
     ]
 
 
@@ -245,7 +248,8 @@ data:
         prune: true
 """
     result = subprocess.run(
-        ["python3", str(RENDERER), "--https-url", "https://github.com/42aei/kubecrate.git"],
+        ["python3", str(RENDERER), "--https-url", "https://github.com/42aei/kubecrate.git",
+         "--branch", PR_BRANCH],
         input=input_yaml, text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
@@ -256,12 +260,14 @@ data:
     assert "create: false" in output
     assert "sshKeyAlgorithm" not in output
     assert "secretRef" in output
+    assert f"branch: {PR_BRANCH}" in output
 
 
 def test_renderer_rejects_missing_or_multiple_configmaps() -> None:
     """Renderer fails on zero or multiple flux-sync-values ConfigMaps."""
     result = subprocess.run(
-        ["python3", str(RENDERER), "--https-url", "https://example.com"],
+        ["python3", str(RENDERER), "--https-url", "https://example.com",
+         "--branch", PR_BRANCH],
         input="apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: other\n",
         text=True, capture_output=True, timeout=10)
     assert result.returncode != 0
@@ -275,7 +281,8 @@ data:
   values.yaml: "{}"
 """
     result = subprocess.run(
-        ["python3", str(RENDERER), "--https-url", "https://example.com"],
+        ["python3", str(RENDERER), "--https-url", "https://example.com",
+         "--branch", PR_BRANCH],
         input=cm + "\n---\n" + cm, text=True, capture_output=True, timeout=10)
     assert result.returncode != 0
 
@@ -326,7 +333,8 @@ def test_cleanup_trap_installed_and_restores_before_cluster_delete() -> None:
     assert "kind delete cluster" in cleanup_func
     assert 'test "$(cluster_state)" = absent' in cleanup_func
 
-    assert "RED_STATE=restore_required" in text
+    assert "RED_STATE=eso_restore_required" in text
+    assert "RED_STATE=envoy_restore_required" in text
     assert "RED_STATE=none" in text
 
 
@@ -346,6 +354,22 @@ def test_controlled_red_deletes_directly_observed_externalsecret_and_restores_in
     ]
     positions = [restore.index(fragment) for fragment in ordered]
     assert positions == sorted(positions)
+
+
+def test_envoy_scenario_is_bounded_and_restores_exact_route() -> None:
+    text = RUNNER.read_text()
+    scenario = text[text.index("# ── Envoy Gateway Scenario"):text.index("# Kill port-forward")]
+    assert scenario.count("patch httproute envoy-smoke-cratecheck") == 2
+    assert '"value":9999' in scenario
+    assert '"value":8080' in scenario
+    assert "suspend kustomization envoy-gateway-smoke" in scenario
+    assert "resume kustomization envoy-gateway-smoke" in scenario
+    assert 'validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"' in scenario
+    assert 'curl --fail --silent --show-error "${ENVOY_STATUS_URL}"' in scenario
+    red_validator = scenario.index("validate_status_json envoy-red")
+    restore = scenario.index('"value":8080')
+    final_green = scenario.rindex("validate_status_json green")
+    assert red_validator < restore < final_green
 
 
 # ── Runner preflight ordering ────────────────────────────────────────────────
@@ -552,12 +576,13 @@ data:
 """)
     result = subprocess.run(
         ["bash", "-c",
-         f"kustomize build {base} | python3 {RENDERER} --https-url https://github.com/42aei/kubecrate.git"],
+         f"kustomize build {base} | python3 {RENDERER} --https-url https://github.com/42aei/kubecrate.git --branch {PR_BRANCH}"],
         text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert "https://github.com/42aei/kubecrate.git" in result.stdout
     assert "ssh://" not in result.stdout
     assert "secretRef" in result.stdout
+    assert f"branch: {PR_BRANCH}" in result.stdout
 
 
 # ── Readiness failure ─────────────────────────────────────────────────────────
@@ -569,6 +594,8 @@ def test_child_flux_readiness_precedes_workload_access() -> None:
         'kustomization/external-secrets-operator -n "${FLUX_NAMESPACE}"',
         'kustomization/external-secrets-operator-smoke -n "${FLUX_NAMESPACE}"',
         'kustomization/cratecheck -n "${FLUX_NAMESPACE}"',
+        'kustomization/envoy-gateway -n "${FLUX_NAMESPACE}"',
+        'kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}"',
         "deployment/cratecheck -n cratecheck",
         "deployment/external-secrets -n core-external-secrets-operator",
         "decode_smoke_value eso-smoke-projected",

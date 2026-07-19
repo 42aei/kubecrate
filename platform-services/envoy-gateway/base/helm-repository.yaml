@@ -1,0 +1,13 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: envoy-gateway
+  namespace: core-envoy-gateway
+  labels:
+    app.kubernetes.io/name: envoy-gateway
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+spec:
+  interval: 30m0s
+  type: oci
+  url: oci://docker.io/envoyproxy

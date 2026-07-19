@@ -54,6 +54,8 @@ def validate_repository_contract() -> None:
         "cratecheck",
         "external-secrets-operator",
         "external-secrets-operator-smoke",
+        "envoy-gateway",
+        "envoy-gateway-smoke",
     }
     children = {
         document.get("metadata", {}).get("name"): document

@@ -1,0 +1,22 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: kubecrate-envoy-proxy
+  namespace: core-envoy-gateway
+  labels:
+    app.kubernetes.io/name: envoy-gateway
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+    kubecrate.io/smoke-test: envoy-gateway
+spec:
+  provider:
+    kubernetes:
+      envoyService:
+        type: NodePort
+        patch:
+          value:
+            spec:
+              ports:
+                - name: http
+                  port: 80
+                  nodePort: 30080

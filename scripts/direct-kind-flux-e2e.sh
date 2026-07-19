@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Direct disposable kind + Flux E2E runner.
 # Creates a unique kind cluster, bootstraps Flux with HTTPS credentials,
-# validates ESO and CrateCheck, runs controlled red/green, and cleans up.
+# validates ESO, Envoy ingress, and CrateCheck red/green scenarios, then cleans up.
 set -Eeuo pipefail
 
 REPO="${KUBECRATE_GITHUB_REPO:-42aei/kubecrate}"
 HTTPS_URL="https://github.com/${REPO}.git"
-PR_BRANCH="${KUBECRATE_PR_BRANCH:-kubecrate/cratecheck-restack-eso}"
+PR_BRANCH="${KUBECRATE_PR_BRANCH:-kubecrate/envoy-after-eso-minimal-qa}"
+PR_NUMBER="${KUBECRATE_PR_NUMBER:-19}"
 EXPECTED_COMMIT="${KUBECRATE_EXPECTED_COMMIT:-$(git rev-parse HEAD)}"
 CLUSTER_PREFIX="${KUBECRATE_E2E_CLUSTER_PREFIX:-kubecrate-e2e}"
 CLUSTER=""
@@ -23,6 +24,7 @@ PORT_FORWARD_PID=""
 RED_STATE=none
 CRATECHECK_PORT=18080
 CRATECHECK_STATUS_URL="http://127.0.0.1:${CRATECHECK_PORT}/status.json"
+ENVOY_STATUS_URL="http://127.0.0.1:10080/status.json"
 TMPDIR=""
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
@@ -40,8 +42,15 @@ cleanup() {
   # Restore if we left the cluster in a broken state.
   if test "${RED_STATE}" != none && ${CLUSTER_CREATED}; then
     if test "$(kubectl config current-context 2>/dev/null || true)" = "${CONTEXT}"; then
-      flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
-      flux --context "${CONTEXT}" reconcile kustomization external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
+      if test "${RED_STATE}" = eso_restore_required; then
+        flux --context "${CONTEXT}" resume kustomization external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
+        flux --context "${CONTEXT}" reconcile kustomization external-secrets-operator-smoke -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
+      elif test "${RED_STATE}" = envoy_restore_required; then
+        kubectl --context "${CONTEXT}" -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
+          -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":8080}]' >/dev/null 2>&1 || true
+        flux --context "${CONTEXT}" resume kustomization envoy-gateway-smoke -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
+        flux --context "${CONTEXT}" reconcile kustomization envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
+      fi
     fi
   fi
   test -z "${PORT_FORWARD_PID}" || kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
@@ -134,10 +143,10 @@ test "${remote_sha}" = "${EXPECTED_COMMIT}" || \
   fail "remote branch ${PR_BRANCH} SHA ${remote_sha} != expected ${EXPECTED_COMMIT}"
 
 # Verify the PR head via gh API.
-pr_head="$(gh api "repos/${REPO}/pulls/17" --jq '.head.sha' 2>/dev/null || true)"
-test -n "${pr_head}" || fail "could not read PR #17 head"
+pr_head="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+test -n "${pr_head}" || fail "could not read PR #${PR_NUMBER} head"
 test "${pr_head}" = "${EXPECTED_COMMIT}" || \
-  fail "PR #17 head ${pr_head} != expected ${EXPECTED_COMMIT}"
+  fail "PR #${PR_NUMBER} head ${pr_head} != expected ${EXPECTED_COMMIT}"
 
 # Verify local worktree is clean.
 git diff --quiet || fail "worktree has unstaged changes"
@@ -219,7 +228,8 @@ rm -f "${TMPDIR}/flux-https-secret.yaml"
 # Render the entrypoint with HTTPS source override and apply.
 assert_context
 kustomize build "${ENTRYPOINT_ROOT}" | \
-  python3 scripts/render-direct-flux-source.py --https-url "${HTTPS_URL}" | \
+  python3 scripts/render-direct-flux-source.py --https-url "${HTTPS_URL}" \
+    --branch "${PR_BRANCH}" | \
   kubectl --context "${CONTEXT}" apply -f -
 
 # Wait for the HelmRelease to become Ready.
@@ -255,6 +265,12 @@ kubectl --context "${CONTEXT}" wait --for=condition=Ready \
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/cratecheck -n "${FLUX_NAMESPACE}" --timeout=300s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/envoy-gateway -n "${FLUX_NAMESPACE}" --timeout=300s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
 
 # Wait for ESO and CrateCheck deployments.
 assert_context
@@ -300,7 +316,7 @@ validate_status_json green "${TMPDIR}/baseline-status.json"
 
 # ── Controlled Red ───────────────────────────────────────────────────────────
 
-RED_STATE=restore_required
+RED_STATE=eso_restore_required
 
 assert_context
 flux --context "${CONTEXT}" suspend kustomization external-secrets-operator-smoke \
@@ -311,7 +327,7 @@ kubectl --context "${CONTEXT}" delete externalsecret eso-smoke-projection -n kub
 
 # Capture red.
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/red-status.json"
-validate_status_json red "${TMPDIR}/red-status.json"
+validate_status_json eso-red "${TMPDIR}/red-status.json"
 
 # ── Restore Green ────────────────────────────────────────────────────────────
 
@@ -333,6 +349,58 @@ decode_smoke_value eso-smoke-projected
 curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/restored-status.json"
 validate_status_json green "${TMPDIR}/restored-status.json"
 
+RED_STATE=none
+
+# ── Envoy Gateway Scenario ───────────────────────────────────────────────────
+
+# Prove the host ingress path and the full all-green JSON contract.
+curl --fail --silent --show-error "${ENVOY_STATUS_URL}" >"${TMPDIR}/envoy-baseline-status.json"
+validate_status_json green "${TMPDIR}/envoy-baseline-status.json"
+
+RED_STATE=envoy_restore_required
+assert_context
+flux --context "${CONTEXT}" suspend kustomization envoy-gateway-smoke \
+  -n "${FLUX_NAMESPACE}"
+assert_context
+kubectl --context "${CONTEXT}" -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
+  -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":9999}]'
+
+# Poll the direct path because ingress is intentionally unavailable during red.
+deadline=$((SECONDS + 60))
+while (( SECONDS < deadline )); do
+  curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" >"${TMPDIR}/envoy-red-status.json"
+  if validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"
+
+# Restore the exact backend port and GitOps reconciliation.
+assert_context
+kubectl --context "${CONTEXT}" -n cratecheck patch httproute envoy-smoke-cratecheck --type=json \
+  -p='[{"op":"replace","path":"/spec/rules/0/backendRefs/0/port","value":8080}]'
+assert_context
+flux --context "${CONTEXT}" resume kustomization envoy-gateway-smoke \
+  -n "${FLUX_NAMESPACE}"
+assert_context
+flux --context "${CONTEXT}" reconcile kustomization envoy-gateway-smoke \
+  -n "${FLUX_NAMESPACE}" --timeout=180s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=180s
+
+deadline=$((SECONDS + 60))
+while (( SECONDS < deadline )); do
+  if curl --fail --silent --show-error "${ENVOY_STATUS_URL}" \
+      >"${TMPDIR}/envoy-restored-status.json" 2>/dev/null && \
+     validate_status_json green "${TMPDIR}/envoy-restored-status.json" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+curl --fail --silent --show-error "${ENVOY_STATUS_URL}" >"${TMPDIR}/envoy-restored-status.json"
+validate_status_json green "${TMPDIR}/envoy-restored-status.json"
 RED_STATE=none
 
 # Kill port-forward before cleanup.

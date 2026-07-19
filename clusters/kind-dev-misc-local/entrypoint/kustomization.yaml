@@ -7,3 +7,5 @@ resources:
   - ./external-secrets-operator-kustomization.yaml
   - ./external-secrets-operator-smoke-kustomization.yaml
   - ./cratecheck-kustomization.yaml
+  - ./envoy-gateway-kustomization.yaml
+  - ./envoy-gateway-smoke-kustomization.yaml

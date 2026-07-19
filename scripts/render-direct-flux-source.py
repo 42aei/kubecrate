@@ -40,6 +40,7 @@ def require_mapping(value: Any, path: str) -> dict[Any, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--https-url", required=True)
+    parser.add_argument("--branch", required=True)
     parser.add_argument("--secret-name", default="flux-system-sync")
     args = parser.parse_args()
     try:
@@ -70,6 +71,10 @@ def main() -> int:
             spec = require_mapping(git_repo.get("spec"), "gitRepository.spec")
             spec["url"] = args.https_url
             spec["secretRef"] = {"name": args.secret_name}
+            if spec.get("ref") is None:
+                spec["ref"] = {}
+            ref = require_mapping(spec.get("ref"), "gitRepository.spec.ref")
+            ref["branch"] = args.branch
             data["values.yaml"] = yaml.safe_dump(values, sort_keys=False)
             matches += 1
         if matches != 1:
