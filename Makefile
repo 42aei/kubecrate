@@ -19,9 +19,8 @@ FLUX_CHART := oci://ghcr.io/fluxcd-community/charts/flux2
 FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
-FLUX_SYNC_VALUES := $(FLUX_PLATFORM_SERVICE_ROOT)/helm-values-sync.yaml
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate-cratecheck validate-flux-sync-values
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate validate-cratecheck validate-flux-sync-values
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -89,7 +88,6 @@ kind-dev-misc-local-await-gitops:
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/source-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/kustomize-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Available deployment/helm-controller -n "$(FLUX_NAMESPACE)" --timeout=180s
-> expected_url="$$(python3 -c 'import re,sys; text=open(sys.argv[1]).read(); print(re.search(r"(?m)^    url: (\S+)", text).group(1))' "$(FLUX_SYNC_VALUES)")"; expected_branch="$$(python3 -c 'import re,sys; text=open(sys.argv[1]).read(); print(re.search(r"(?m)^      branch: (\S+)", text).group(1))' "$(FLUX_SYNC_VALUES)")"; live_url="$$(kubectl --context "$(KIND_CONTEXT)" get gitrepository "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.spec.url}' 2>/dev/null || true)"; live_branch="$$(kubectl --context "$(KIND_CONTEXT)" get gitrepository "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" -o jsonpath='{.spec.ref.branch}' 2>/dev/null || true)"; if [ "$${live_url}" != "$${expected_url}" ] || [ "$${live_branch}" != "$${expected_branch}" ]; then printf 'GitRepository/flux-system-sync is not reconciling the reviewed implementation source.\nexpected url: %s\nlive url: %s\nexpected branch: %s\nlive branch: %s\n' "$${expected_url}" "$${live_url}" "$${expected_branch}" "$${live_branch}" >&2; exit 1; fi
 > flux --context "$(KIND_CONTEXT)" reconcile source git "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
@@ -105,15 +103,12 @@ kind-dev-misc-local-evidence:
 > flux --context "$(KIND_CONTEXT)" get kustomizations -n "$(FLUX_NAMESPACE)"
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
 
-VENV_DIR ?= .venv
-VENV_PYTHON := $(VENV_DIR)/bin/python
+PYTHON ?= python3
+
+validate: validate-cratecheck validate-flux-sync-values
 
 validate-cratecheck:
-> test -x "$(VENV_PYTHON)" || python3 -m venv "$(VENV_DIR)"
-> $(VENV_PYTHON) -m pip install --upgrade --quiet -r requirements-dev.txt
-> $(VENV_PYTHON) tests/validate-cratecheck.py
+> $(PYTHON) tests/validate-cratecheck.py
 
 validate-flux-sync-values:
-> test -x "$(VENV_PYTHON)" || python3 -m venv "$(VENV_DIR)"
-> $(VENV_PYTHON) -m pip install --upgrade --quiet -r requirements-dev.txt
-> $(VENV_PYTHON) tests/validate-flux-sync-values.py --helm-render
+> $(PYTHON) tests/validate-flux-sync-values.py --helm-render

@@ -874,23 +874,7 @@ exit 0
     assert deleted.exists(), "cleanup must delete cluster after partial create"
 
 
-# ── Fix 2: Strict base64 decode ──────────────────────────────────────────────
-
-def test_decode_smoke_value_validates_base64_and_exact_value() -> None:
-    """decode_smoke_value uses canonical base64 regex and exact value check."""
-    text = RUNNER.read_text()
-    # Verify the helper exists and contains all validation steps.
-    assert "decode_smoke_value()" in text
-    assert 'test "${decoded}" = "kubecrate-eso-smoke-ok"' in text
-    assert '[[ "${encoded}" =~ ^[A-Za-z0-9+/]*={0,2}$ ]]' in text
-    assert "value not valid base64" in text
-    assert "could not decode" in text
-    assert "smoke-test field empty" in text
-    # Verify no raw base64 -d with || true remains.
-    assert "base64 -d 2>/dev/null || true" not in text, "loose base64 decode with || true still present"
-    # Both projected and restored checks call the helper exactly twice.
-    assert text.count("decode_smoke_value eso-smoke-projected") == 2
-
+# ── Projected value integration failures ─────────────────────────────────────
 
 def test_malformed_base64_decode_fails_at_projected_check(tmp_path: Path) -> None:
     """Runner fails when projected Secret contains non-base64 characters."""
@@ -1067,10 +1051,19 @@ exit 0
     assert "Secret value mismatch" in result.stderr, f"expected value mismatch, got: {result.stderr}"
 
 
-# ── Fix 3: Identity guard ────────────────────────────────────────────────────
+# ── Identity guard ────────────────────────────────────────────────────────────
 
-def test_identity_guard_rejects_wrong_user(tmp_path: Path) -> None:
-    """Runner fails before cluster creation when active user is not faksibot."""
+@pytest.mark.parametrize(
+    ("user_script", "expected_user", "forbidden_call"),
+    [
+        ("printf 'octocat'; exit 0", "octocat", "create cluster"),
+        ("printf ''; exit 0", "unknown", "auth token"),
+        ("exit 1", "unknown", "auth token"),
+    ],
+)
+def test_identity_guard_rejects_unexpected_user(
+    tmp_path: Path, user_script: str, expected_user: str, forbidden_call: str
+) -> None:
     repo = tmp_path / "repo"; repo.mkdir()
     shutil.copytree(ROOT / "scripts", repo / "scripts")
     (repo / "kind").mkdir(parents=True, exist_ok=True)
@@ -1080,7 +1073,7 @@ def test_identity_guard_rejects_wrong_user(tmp_path: Path) -> None:
     bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
     fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
 if [[ "$*" == *"auth status"* ]]; then exit 0
-elif [[ "$*" == *"api user"* ]]; then printf 'octocat'; exit 0
+elif [[ "$*" == *"api user"* ]]; then {user_script}
 fi
 exit 0''')
     for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
@@ -1092,72 +1085,14 @@ exit 0''')
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
-    assert result.returncode != 0, f"runner must fail on wrong user (rc={result.returncode})"
-    assert "expected faksibot" in result.stderr, f"expected identity rejection, got: {result.stderr}"
+
+    assert result.returncode != 0
+    assert f"expected faksibot, got {expected_user}" in result.stderr
     calls = log.read_text() if log.exists() else ""
-    assert "create cluster" not in calls, "must not create cluster for wrong user"
+    assert forbidden_call not in calls
 
 
-def test_identity_guard_rejects_empty_user(tmp_path: Path) -> None:
-    """Runner fails when gh api user returns empty string."""
-    repo = tmp_path / "repo"; repo.mkdir()
-    shutil.copytree(ROOT / "scripts", repo / "scripts")
-    (repo / "kind").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
-    init_repo(repo, "empty-user")
-
-    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
-    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
-if [[ "$*" == *"auth status"* ]]; then exit 0
-elif [[ "$*" == *"api user"* ]]; then printf ''; exit 0
-fi
-exit 0''')
-    for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64"):
-        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
-
-    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
-           "KUBECRATE_PR_BRANCH": PR_BRANCH}
-    result = subprocess.run(
-        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
-    assert result.returncode != 0, f"runner must fail on empty user (rc={result.returncode})"
-    assert "expected faksibot" in result.stderr, f"expected identity rejection, got: {result.stderr}"
-    calls = log.read_text() if log.exists() else ""
-    assert "auth token" not in calls, "must not retrieve token for empty user"
-
-
-def test_identity_guard_rejects_api_failure(tmp_path: Path) -> None:
-    """Runner fails when gh api user command exits non-zero."""
-    repo = tmp_path / "repo"; repo.mkdir()
-    shutil.copytree(ROOT / "scripts", repo / "scripts")
-    (repo / "kind").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
-    init_repo(repo, "api-fail")
-
-    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
-    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
-if [[ "$*" == *"auth status"* ]]; then exit 0
-elif [[ "$*" == *"api user"* ]]; then exit 1
-fi
-exit 0''')
-    for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
-                 "curl", "python3", "base64"):
-        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
-
-    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
-           "KUBECRATE_PR_BRANCH": PR_BRANCH}
-    result = subprocess.run(
-        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
-    assert result.returncode != 0, f"runner must fail on API failure (rc={result.returncode})"
-    stderr = result.stderr
-    assert "expected faksibot" in stderr, f"expected identity rejection for API failure, got: {stderr}"
-    calls = log.read_text() if log.exists() else ""
-    assert "auth token" not in calls, "must not retrieve token after API failure"
-
-
-# ── Fix 4: ESO deployment wait propagation ───────────────────────────────────
+# ── ESO deployment wait propagation ──────────────────────────────────────────
 
 def test_eso_deployment_wait_failure_propagates(tmp_path: Path) -> None:
     """ESO deployment wait failure propagates non-zero (no || true)."""

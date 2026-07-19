@@ -86,7 +86,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Python dependencies
-        run: python -m pip install --upgrade pyyaml
+        run: python -m pip install --upgrade -r requirements-dev.txt
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
@@ -112,7 +112,7 @@ jobs:
         run: python scripts/validate-kubernetes-manifests.py --check kustomize
 
       - name: Validate Flux sync credential generation values
-        run: make validate-flux-sync-values
+        run: python tests/validate-flux-sync-values.py --helm-render
 
       - name: Validate CrateCheck config and ESO expressions
-        run: make validate-cratecheck
+        run: python tests/validate-cratecheck.py
