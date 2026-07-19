@@ -5,3 +5,4 @@ resources:
   - ./smoke-gatewayclass.yaml
   - ./smoke-gateway.yaml
   - ./smoke-httproute.yaml
+  - ./smoke-referencegrant.yaml

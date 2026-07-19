@@ -65,12 +65,13 @@ def test_route_cel_accepts_only_exact_healthy_parent() -> None:
     assert not evaluate(expression, {"status": {"parents": [unresolved]}})
 
 
-def test_envoyproxy_has_deterministic_http_nodeport_patch() -> None:
+def test_envoyproxy_has_deterministic_http_and_https_nodeport_patch() -> None:
     resource = yaml.safe_load(ENVOYPROXY.read_text())
     provider = resource["spec"]["provider"]
     assert provider["type"] == "Kubernetes"
     service = provider["kubernetes"]["envoyService"]
     assert service["type"] == "NodePort"
     assert service["patch"]["value"]["spec"]["ports"] == [
-        {"name": "http", "port": 80, "nodePort": 30080}
+        {"name": "http", "port": 80, "nodePort": 30080},
+        {"name": "https", "port": 443, "nodePort": 30443},
     ]

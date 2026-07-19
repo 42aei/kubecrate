@@ -62,6 +62,14 @@ rules:
       - httproutes
     verbs:
       - get
+  # cert-manager platform service checks
+  - apiGroups:
+      - cert-manager.io
+    resources:
+      - clusterissuers
+      - certificates
+    verbs:
+      - get
   # Future platform service checks may require additional read verbs on resources
   # such as secrets, ingresses, certificates, or custom resources.
   # Expand this ClusterRole incrementally as new checks are added to the check config.

@@ -11,6 +11,7 @@ spec:
   dependsOn:
     - name: envoy-gateway
     - name: cratecheck
+    - name: cert-manager-local-issuer
   interval: 1m0s
   path: ./clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke
   prune: true

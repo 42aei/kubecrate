@@ -15,6 +15,11 @@ spec:
       name: kubecrate-envoy-smoke
       namespace: core-envoy-gateway
       sectionName: http
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: kubecrate-envoy-smoke
+      namespace: core-envoy-gateway
+      sectionName: https
   rules:
     - matches:
         - path:

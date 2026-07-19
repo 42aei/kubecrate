@@ -56,6 +56,8 @@ def validate_repository_contract() -> None:
         "external-secrets-operator-smoke",
         "envoy-gateway",
         "envoy-gateway-smoke",
+        "cert-manager",
+        "cert-manager-local-issuer",
     }
     children = {
         document.get("metadata", {}).get("name"): document
