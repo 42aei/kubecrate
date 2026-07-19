@@ -1,0 +1,29 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: envoy-gateway-smoke
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: envoy-gateway-smoke
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+spec:
+  dependsOn:
+    - name: envoy-gateway
+    - name: cratecheck
+  interval: 1m0s
+  path: ./clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system-sync
+  timeout: 5m0s
+  wait: true
+  healthChecks:
+    - apiVersion: gateway.networking.k8s.io/v1
+      kind: GatewayClass
+      name: kubecrate-envoy-gateway
+    - apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      name: kubecrate-envoy-smoke
+      namespace: core-envoy-gateway

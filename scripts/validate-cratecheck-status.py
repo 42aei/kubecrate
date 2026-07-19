@@ -15,8 +15,15 @@ EXPECTED_IDS = {
     "eso-secretstore-ready",
     "eso-externalsecret-ready",
     "eso-projected-secret-exists",
+    "envoy-helmrelease-ready",
+    "envoy-gatewayclass-accepted",
+    "envoy-gateway-ready",
+    "envoy-httproute-ready",
 }
-RED_IDS = {"eso-externalsecret-ready", "eso-projected-secret-exists"}
+RED_IDS = {
+    "eso-red": {"eso-externalsecret-ready", "eso-projected-secret-exists"},
+    "envoy-red": {"envoy-httproute-ready"},
+}
 STATUSES = {"green", "red", "yellow", "unknown"}
 
 
@@ -51,16 +58,17 @@ def validate_status(data: Any, phase: str) -> None:
         return
 
     assert data.get("status") == "red", "controlled-red overall status is not red"
+    expected_red = RED_IDS[phase]
     changed = {check_id for check_id, status in statuses.items() if status != "green"}
-    assert changed == RED_IDS, "controlled-red check set mismatch"
-    assert all(statuses[check_id] == "red" for check_id in RED_IDS), (
+    assert changed == expected_red, "controlled-red check set mismatch"
+    assert all(statuses[check_id] == "red" for check_id in expected_red), (
         "controlled-red checks must be red"
     )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=("green", "red"), required=True)
+    parser.add_argument("--phase", choices=("green", "eso-red", "envoy-red"), required=True)
     parser.add_argument("status_file", type=Path)
     args = parser.parse_args()
     try:

@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../platform-services/envoy-gateway/base
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: envoy-gateway-values
+    namespace: core-envoy-gateway
+    files:
+      - values.yaml=./helm-values.yaml

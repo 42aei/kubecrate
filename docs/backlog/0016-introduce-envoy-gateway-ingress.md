@@ -1,8 +1,9 @@
 ---
 task_id: "0016"
 title: "Introduce Envoy Gateway ingress"
-status: "proposed"
+status: "started"
 depends_on: ["0011", "0014"]
+openspec: "openspec/changes/introduce-envoy-gateway-ingress/"
 ---
 
 ## Goal

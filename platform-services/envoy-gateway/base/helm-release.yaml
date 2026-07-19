@@ -1,0 +1,31 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: envoy-gateway
+  namespace: core-envoy-gateway
+  labels:
+    app.kubernetes.io/name: envoy-gateway
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+spec:
+  interval: 30m0s
+  releaseName: envoy-gateway
+  targetNamespace: core-envoy-gateway
+  timeout: 5m0s
+  chart:
+    spec:
+      chart: gateway-helm
+      sourceRef:
+        kind: HelmRepository
+        name: envoy-gateway
+        namespace: core-envoy-gateway
+      version: v1.4.2
+  install:
+    createNamespace: false
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  valuesFrom:
+    - kind: ConfigMap
+      name: envoy-gateway-values
+      valuesKey: values.yaml

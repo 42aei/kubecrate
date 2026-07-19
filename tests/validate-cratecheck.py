@@ -114,6 +114,31 @@ def validate_status_config() -> bool:
             "c['type'] == 'Ready'" in expression
             and "c['status'] == 'True'" in expression,
         )
+    envoy_check_ids = {
+        "envoy-helmrelease-ready",
+        "envoy-gatewayclass-accepted",
+        "envoy-gateway-ready",
+        "envoy-httproute-ready",
+    }
+    all_ok &= check(
+        "Envoy Gateway check IDs are present",
+        envoy_check_ids <= set(ids),
+        f"missing: {envoy_check_ids - set(ids)}",
+    )
+    route_expression = next(
+        c["expression"] for c in checks if c.get("id") == "envoy-httproute-ready"
+    )
+    all_ok &= check(
+        "Envoy route check scopes controller, parent, and required conditions",
+        all(token in route_expression for token in (
+            "gateway.envoyproxy.io/gatewayclass-controller",
+            "kubecrate-envoy-smoke",
+            "core-envoy-gateway",
+            "sectionName == 'http'",
+            "c.type == 'Accepted' && c.status == 'True'",
+            "c.type == 'ResolvedRefs' && c.status == 'True'",
+        )),
+    )
     return all_ok
 
 
@@ -161,6 +186,11 @@ def validate_rbac() -> bool:
     all_ok &= check(
         "ClusterRole grants secrets read access",
         "secrets" in eso_resources,
+    )
+    all_ok &= check(
+        "ClusterRole grants Gateway API read access",
+        "gateway.networking.k8s.io" in eso_api_groups
+        and {"gatewayclasses", "gateways", "httproutes"} <= eso_resources,
     )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"

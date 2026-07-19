@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -15,9 +16,10 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "direct-kind-flux-e2e.sh"
 RENDERER = ROOT / "scripts" / "render-direct-flux-source.py"
 STATUS_VALIDATOR = ROOT / "scripts" / "validate-cratecheck-status.py"
+ENVOY_RUNBOOK = ROOT / "docs" / "kind-envoy-gateway-ingress-runbook.md"
 
 EXPECTED_COMMIT = "a" * 40
-PR_BRANCH = "kubecrate/cratecheck-restack-eso"
+PR_BRANCH = "kubecrate/envoy-after-eso-minimal-qa"
 
 
 def test_runner_uses_on_demand_status_without_observation_waits() -> None:
@@ -27,7 +29,7 @@ def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     assert "3cfb4e320eff8d2a738cb36fd2420862b1db45c3" not in runner
 
 
-def test_runner_uses_only_three_phase_json_status_contract() -> None:
+def test_runner_uses_json_only_eso_and_envoy_status_contract() -> None:
     runner = RUNNER.read_text()
 
     assert "chromium" not in runner.lower()
@@ -38,13 +40,46 @@ def test_runner_uses_only_three_phase_json_status_contract() -> None:
     validations = [
         line.strip()
         for line in runner.splitlines()
-        if line.strip().startswith("validate_status_json ")
+        if line.strip().startswith("validate_status_json ") and "; then" not in line
     ]
     assert validations == [
         'validate_status_json green "${TMPDIR}/baseline-status.json"',
-        'validate_status_json red "${TMPDIR}/red-status.json"',
+        'validate_status_json eso-red "${TMPDIR}/red-status.json"',
         'validate_status_json green "${TMPDIR}/restored-status.json"',
+        'validate_status_json green "${TMPDIR}/envoy-baseline-status.json"',
+        'validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"',
+        'validate_status_json green "${TMPDIR}/envoy-restored-status.json"',
     ]
+
+
+def test_envoy_runbook_python_snippets_execute_and_baseline_enforces_green() -> None:
+    snippets = re.findall(r"python3 -c '\n(.*?)\n'", ENVOY_RUNBOOK.read_text(), re.DOTALL)
+    assert len(snippets) == 5
+
+    green = {
+        "status": "green",
+        "checks": [{"id": "envoy-httproute-ready", "status": "green"}],
+    }
+    red = {
+        "status": "red",
+        "checks": [{"id": "envoy-httproute-ready", "status": "red"}],
+    }
+    for snippet in snippets:
+        compile(snippet, str(ENVOY_RUNBOOK), "exec")
+        status = red if "expected non-green after red test" in snippet else green
+        result = subprocess.run(
+            ["python3", "-c", snippet], input=json.dumps(status), text=True,
+            capture_output=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+
+    baseline = next(snippet for snippet in snippets if "GREEN baseline confirmed" in snippet)
+    result = subprocess.run(
+        ["python3", "-c", baseline], input=json.dumps(red), text=True,
+        capture_output=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "expected green" in result.stderr
 
 
 def init_repo(path: Path, content: str) -> str:
@@ -245,7 +280,8 @@ data:
         prune: true
 """
     result = subprocess.run(
-        ["python3", str(RENDERER), "--https-url", "https://github.com/42aei/kubecrate.git"],
+        ["python3", str(RENDERER), "--https-url", "https://github.com/42aei/kubecrate.git",
+         "--branch", PR_BRANCH],
         input=input_yaml, text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
@@ -256,12 +292,14 @@ data:
     assert "create: false" in output
     assert "sshKeyAlgorithm" not in output
     assert "secretRef" in output
+    assert f"branch: {PR_BRANCH}" in output
 
 
 def test_renderer_rejects_missing_or_multiple_configmaps() -> None:
     """Renderer fails on zero or multiple flux-sync-values ConfigMaps."""
     result = subprocess.run(
-        ["python3", str(RENDERER), "--https-url", "https://example.com"],
+        ["python3", str(RENDERER), "--https-url", "https://example.com",
+         "--branch", PR_BRANCH],
         input="apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: other\n",
         text=True, capture_output=True, timeout=10)
     assert result.returncode != 0
@@ -275,7 +313,8 @@ data:
   values.yaml: "{}"
 """
     result = subprocess.run(
-        ["python3", str(RENDERER), "--https-url", "https://example.com"],
+        ["python3", str(RENDERER), "--https-url", "https://example.com",
+         "--branch", PR_BRANCH],
         input=cm + "\n---\n" + cm, text=True, capture_output=True, timeout=10)
     assert result.returncode != 0
 
@@ -326,8 +365,96 @@ def test_cleanup_trap_installed_and_restores_before_cluster_delete() -> None:
     assert "kind delete cluster" in cleanup_func
     assert 'test "$(cluster_state)" = absent' in cleanup_func
 
-    assert "RED_STATE=restore_required" in text
+    assert "RED_STATE=eso_restore_required" in text
+    assert "RED_STATE=envoy_restore_required" in text
     assert "RED_STATE=none" in text
+
+
+def test_success_cleanup_leaves_no_failure_evidence(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    run_tmp = tmp_path / "run-tmp"
+    run_tmp.mkdir()
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+EVIDENCE_ROOT={str(evidence)!r}
+TMPDIR={str(run_tmp)!r}
+CLUSTER_CREATED=false
+cleanup
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not evidence.exists()
+    assert not run_tmp.exists()
+
+
+def test_hung_failure_evidence_is_bounded_and_cleanup_completes(tmp_path: Path) -> None:
+    """A hung evidence read is diagnosed without blocking restore or exact cleanup."""
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    log = tmp_path / "calls.log"
+    evidence = tmp_path / "evidence"
+    run_tmp = tmp_path / "run-tmp"; run_tmp.mkdir()
+    secret_manifest = run_tmp / "flux-https-secret.yaml"
+    secret_manifest.write_text("kind: Secret\npassword: evidence-test-token\n")
+    deleted = tmp_path / "cluster-deleted"
+    cluster = "kubecrate-e2e-hung-evidence"
+    context = f"kind-{cluster}"
+
+    dispatch = f'''echo "$0 $*" >>"{log}"
+name=$(basename "$0")
+if [[ $name == flux ]]; then
+  if [[ "$*" == *"get kustomizations"* ]]; then while :; do sleep 1; done; fi
+  exit 0
+elif [[ $name == kubectl ]]; then
+  if [[ "$*" == *"config current-context"* ]]; then printf '%s' '{context}'; fi
+  exit 0
+elif [[ $name == kind ]]; then
+  if [[ "$*" == *"delete cluster --name {cluster}"* ]]; then touch "{deleted}"; exit 0; fi
+  if [[ "$*" == *"get clusters"* ]] && test ! -f "{deleted}"; then printf '%s\n' '{cluster}'; fi
+  exit 0
+fi
+exit 0'''
+    for name in ("flux", "kubectl", "kind"):
+        fake_command(bindir, name, dispatch)
+
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+EVIDENCE_ROOT={str(evidence)!r}
+TMPDIR={str(run_tmp)!r}
+CLUSTER={cluster!r}
+CONTEXT={context!r}
+CLUSTER_CREATED=true
+RED_STATE=eso_restore_required
+TOKEN=evidence-test-token
+CURRENT_PHASE=controlled-red
+FAILURE_ASSERTION='forced failure for hung evidence regression'
+set +e
+false
+cleanup
+'''
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+             "KUBECRATE_E2E_EVIDENCE_TIMEOUT": "1s"},
+        text=True, capture_output=True, timeout=8,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode != 0
+    assert elapsed < 8
+    assert deleted.exists(), "exact generated cluster must be deleted after evidence timeout"
+    calls = log.read_text()
+    assert "resume kustomization external-secrets-operator-smoke" in calls
+    assert f"delete cluster --name {cluster}" in calls
+    assert calls.count("get clusters") >= 2, "cleanup must verify authoritative absence"
+    assert not run_tmp.exists(), "temporary credentials and state must be removed"
+    readiness = (evidence / cluster / "readiness.txt").read_text()
+    assert "flux-kustomizations unavailable: evidence command timed out after 1s" in readiness
+    evidence_text = "".join(item.read_text() for item in (evidence / cluster).iterdir())
+    assert "evidence-test-token" not in evidence_text
+    assert "kind: Secret" not in evidence_text
 
 
 def test_controlled_red_deletes_directly_observed_externalsecret_and_restores_in_order() -> None:
@@ -346,6 +473,22 @@ def test_controlled_red_deletes_directly_observed_externalsecret_and_restores_in
     ]
     positions = [restore.index(fragment) for fragment in ordered]
     assert positions == sorted(positions)
+
+
+def test_envoy_scenario_is_bounded_and_restores_exact_route() -> None:
+    text = RUNNER.read_text()
+    scenario = text[text.index("# ── Envoy Gateway Scenario"):text.index("# Kill port-forward")]
+    assert scenario.count("patch httproute envoy-smoke-cratecheck") == 2
+    assert '"value":9999' in scenario
+    assert '"value":8080' in scenario
+    assert "suspend kustomization envoy-gateway-smoke" in scenario
+    assert "resume kustomization envoy-gateway-smoke" in scenario
+    assert 'validate_status_json envoy-red "${TMPDIR}/envoy-red-status.json"' in scenario
+    assert 'curl --fail --silent --show-error "${ENVOY_STATUS_URL}"' in scenario
+    red_validator = scenario.index("validate_status_json envoy-red")
+    restore = scenario.index('"value":8080')
+    final_green = scenario.rindex("validate_status_json green")
+    assert red_validator < restore < final_green
 
 
 # ── Runner preflight ordering ────────────────────────────────────────────────
@@ -552,12 +695,13 @@ data:
 """)
     result = subprocess.run(
         ["bash", "-c",
-         f"kustomize build {base} | python3 {RENDERER} --https-url https://github.com/42aei/kubecrate.git"],
+         f"kustomize build {base} | python3 {RENDERER} --https-url https://github.com/42aei/kubecrate.git --branch {PR_BRANCH}"],
         text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert "https://github.com/42aei/kubecrate.git" in result.stdout
     assert "ssh://" not in result.stdout
     assert "secretRef" in result.stdout
+    assert f"branch: {PR_BRANCH}" in result.stdout
 
 
 # ── Readiness failure ─────────────────────────────────────────────────────────
@@ -569,6 +713,8 @@ def test_child_flux_readiness_precedes_workload_access() -> None:
         'kustomization/external-secrets-operator -n "${FLUX_NAMESPACE}"',
         'kustomization/external-secrets-operator-smoke -n "${FLUX_NAMESPACE}"',
         'kustomization/cratecheck -n "${FLUX_NAMESPACE}"',
+        'kustomization/envoy-gateway -n "${FLUX_NAMESPACE}"',
+        'kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}"',
         "deployment/cratecheck -n cratecheck",
         "deployment/external-secrets -n core-external-secrets-operator",
         "decode_smoke_value eso-smoke-projected",
@@ -654,7 +800,9 @@ def test_readiness_failure_exits_nonzero_and_cleanup_runs(tmp_path: Path) -> Non
     deleted = tmp_path / "cluster-deleted"
     cluster_name_file = tmp_path / "cluster-name"
     cluster_created = tmp_path / "cluster-created"
-    kubectl_wait_count = tmp_path / "kubectl-wait-count"
+    evidence = tmp_path / "evidence"
+    run_tmp_root = tmp_path / "run-tmp"
+    run_tmp_root.mkdir()
 
     dispatch = f'''#!/usr/bin/env bash
 echo "$0 $*" >>"{log}"
@@ -684,12 +832,12 @@ elif [[ $name == kubectl ]]; then
     if test -f "{cluster_name_file}"; then printf 'kind-%s' "$(cat "{cluster_name_file}")"; fi
     exit 0
   fi
-  if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then
-    count=$(test -f "{kubectl_wait_count}" && cat "{kubectl_wait_count}" || echo 0)
-    echo $((count + 1)) >"{kubectl_wait_count}"
-    if test $count -ge 4; then exit 1; fi
+  if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
+    printf 'main@sha1:{EXPECTED_COMMIT}'
     exit 0
   fi
+  if [[ "$*" == *"kustomization/cratecheck "* ]]; then exit 1; fi
+  if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then exit 0; fi
   exit 0
 elif [[ $name == flux ]]; then
   exit 0
@@ -707,11 +855,31 @@ exit 0
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
-           "KUBECRATE_PR_BRANCH": PR_BRANCH}
+           "KUBECRATE_PR_BRANCH": PR_BRANCH,
+           "KUBECRATE_E2E_EVIDENCE_DIR": str(evidence),
+           "KUBECRATE_E2E_TMP_ROOT": str(run_tmp_root)}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
     assert result.returncode != 0, f"runner should fail on readiness timeout (rc={result.returncode})"
     assert deleted.exists(), "cluster must be deleted after readiness failure"
+    bundles = list(evidence.iterdir())
+    assert len(bundles) == 1
+    bundle = bundles[0]
+    summary = (bundle / "summary.txt").read_text()
+    assert f"candidate={EXPECTED_COMMIT}" in summary
+    assert f"ref={PR_BRANCH}" in summary
+    assert "phase=flux-child-readiness" in summary
+    assert "assertion=cratecheck Kustomization became Ready" in summary
+    assert "cluster=kubecrate-e2e-" in summary
+    assert "context=kind-kubecrate-e2e-" in summary
+    assert (bundle / "readiness.txt").is_file()
+    assert json.loads((bundle / "status-verdict.json").read_text()) == {
+        "status": "not-observed"
+    }
+    evidence_text = "".join(item.read_text() for item in bundle.iterdir())
+    assert "test-token" not in evidence_text
+    assert "kind: Secret" not in evidence_text
+    assert list(run_tmp_root.iterdir()) == []
 
 
 # ── Cleanup failure ──────────────────────────────────────────────────────────
@@ -1093,6 +1261,112 @@ exit 0''')
 
 
 # ── ESO deployment wait propagation ──────────────────────────────────────────
+
+def test_envoy_gateway_programmed_wait_failure_propagates(tmp_path: Path) -> None:
+    """The exact smoke Gateway Programmed gate fails closed and cleans up."""
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    for d in ("kind", "clusters/kind-dev-misc-local/platform-services/flux",
+              "clusters/kind-dev-misc-local/entrypoint"):
+        (repo / d).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    (repo / "clusters/kind-dev-misc-local/platform-services/flux/helm-values.yaml").write_text("{}\n")
+    (repo / "clusters/kind-dev-misc-local/entrypoint/kustomization.yaml").write_text(
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+        "  - ../platform-services/flux\n")
+    (repo / "clusters/kind-dev-misc-local/platform-services/flux/kustomization.yaml").write_text(
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n")
+    init_repo(repo, "envoy-gateway-wait-fail")
+
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    log = tmp_path / "calls.log"
+    deleted = tmp_path / "cluster-deleted"
+    cluster_name_file = tmp_path / "cluster-name"
+    cluster_created = tmp_path / "cluster-created"
+    gateway_wait_failed = tmp_path / "gateway-wait-failed"
+
+    dispatch = f'''#!/usr/bin/env bash
+echo "$0 $*" >>"{log}"
+name=$(basename $0)
+if [[ $name == gh ]]; then
+  if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
+  if [[ "$*" == *"auth status"* ]]; then exit 0; fi
+  if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  exit 0
+elif [[ $name == kind ]]; then
+  if [[ "$*" == *"create cluster"* ]]; then
+    touch "{cluster_created}"
+    for arg; do if [[ "$prev" == --name ]]; then echo "$arg" >"{cluster_name_file}"; fi; prev="$arg"; done
+    exit 0
+  fi
+  if [[ "$*" == *"get clusters"* ]]; then
+    if test -f "{cluster_name_file}" && test -f "{cluster_created}" && test ! -f "{deleted}"; then
+      cat "{cluster_name_file}"
+    fi
+    exit 0
+  fi
+  if [[ "$*" == *"delete cluster"* ]]; then touch "{deleted}"; exit 0; fi
+  exit 0
+elif [[ $name == kubectl ]]; then
+  if [[ "$*" == *"config current-context"* ]]; then
+    if test -f "{cluster_name_file}"; then printf 'kind-%s' "$(cat "{cluster_name_file}")"; fi
+    exit 0
+  fi
+  if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
+    printf 'main@sha1:{EXPECTED_COMMIT}'
+    exit 0
+  fi
+  if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then
+    if [[ "$*" == *"--for=condition=Programmed"* && "$*" == *"gateway/kubecrate-envoy-smoke"* && "$*" == *"-n core-envoy-gateway"* ]]; then
+      touch "{gateway_wait_failed}"
+      exit 42
+    fi
+    exit 0
+  fi
+  exit 0
+elif [[ $name == git ]]; then
+  if [[ "$*" == *"ls-remote"* ]]; then
+    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+  fi
+  exec /usr/bin/git "$@"
+fi
+exit 0
+'''
+    for name in ("gh", "kind", "kubectl", "helm", "flux", "kustomize", "git",
+                 "curl", "python3", "base64"):
+        fake_command(bindir, name, dispatch)
+
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_PR_BRANCH": PR_BRANCH}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+
+    assert result.returncode == 42, (
+        f"runner must propagate the Gateway Programmed wait rc=42, got {result.returncode}; "
+        f"stderr: {result.stderr}"
+    )
+    assert gateway_wait_failed.exists(), "the exact Gateway Programmed gate was not reached"
+    calls = log.read_text()
+    assert (
+        "wait --for=condition=Programmed gateway/kubecrate-envoy-smoke "
+        "-n core-envoy-gateway --timeout=300s"
+    ) in calls
+    smoke_ready = calls.index(
+        "wait --for=condition=Ready kustomization/envoy-gateway-smoke "
+        "-n flux-system --timeout=300s"
+    )
+    gateway_programmed = calls.index(
+        "wait --for=condition=Programmed gateway/kubecrate-envoy-smoke "
+        "-n core-envoy-gateway --timeout=300s"
+    )
+    assert smoke_ready < gateway_programmed
+    assert "deployment/cratecheck" not in calls
+    assert "deployment/external-secrets" not in calls
+    cluster_name = cluster_name_file.read_text().strip()
+    assert f"delete cluster --name {cluster_name}" in calls
+
 
 def test_eso_deployment_wait_failure_propagates(tmp_path: Path) -> None:
     """ESO deployment wait failure propagates non-zero (no || true)."""
