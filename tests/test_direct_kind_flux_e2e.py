@@ -152,6 +152,67 @@ def test_renderer_is_executable_and_syntax_valid() -> None:
 
 # ── Revision mismatch ────────────────────────────────────────────────────────
 
+@pytest.mark.parametrize(
+    ("remote_main", "pr_state", "pr_merged", "merge_commit", "accepted", "error"),
+    [
+        (EXPECTED_COMMIT, "closed", "true", EXPECTED_COMMIT, True, ""),
+        ("b" * 40, "closed", "true", EXPECTED_COMMIT, False, "remote branch main SHA"),
+        (EXPECTED_COMMIT, "closed", "true", "b" * 40, False, "merge commit"),
+        (EXPECTED_COMMIT, "open", "false", EXPECTED_COMMIT, False, "not closed and merged"),
+    ],
+)
+def test_current_main_identity_mode_fails_closed_before_cluster_creation(
+    tmp_path: Path, remote_main: str, pr_state: str, pr_merged: str,
+    merge_commit: str, accepted: bool, error: str,
+) -> None:
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    (repo / "kind").mkdir(parents=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    init_repo(repo, "current-main")
+
+    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
+    fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
+if [[ "$*" == *"ls-remote"* ]]; then
+  echo "{remote_main}\trefs/heads/main"
+  exit 0
+fi
+exec /usr/bin/git "$@"''')
+    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
+if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
+elif [[ "$*" == *"auth status"* ]]; then exit 0
+elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
+elif [[ "$*" == *"pulls/"* ]]; then printf '%s\\t%s\\t%s\\n' '{pr_state}' '{pr_merged}' '{merge_commit}'; exit 0
+fi
+exit 0''')
+    fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
+if [[ "$*" == *"get clusters"* ]]; then exit 0; fi
+if [[ "$*" == *"create cluster"* ]]; then exit 23; fi
+exit 0''')
+    for name in ("kubectl", "helm", "flux", "kustomize", "curl", "python3", "base64"):
+        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
+
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
+           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_PR_NUMBER": "21"}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    calls = log.read_text()
+    if accepted:
+        assert result.returncode == 23, result.stderr
+        assert "create cluster" in calls
+    else:
+        assert result.returncode != 0
+        assert error in result.stderr
+        assert "create cluster" not in calls
+
+
+def test_current_main_mode_renders_flux_main() -> None:
+    text = RUNNER.read_text()
+    assert "SOURCE_BRANCH=main" in text
+    assert '--branch "${SOURCE_BRANCH}"' in text
+
 def test_revision_mismatch_fails_before_cluster_creation(tmp_path: Path) -> None:
     """Runner fails when remote branch SHA differs from expected."""
     repo = tmp_path / "repo"; repo.mkdir()
