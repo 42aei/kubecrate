@@ -40,7 +40,7 @@ Kubecrate SHALL provide a minimal Kyverno smoke policy that proves admission con
 - **AND** the rule matches only namespaces named `kyverno-smoke-*`
 - **AND** namespaces carrying the label `kubecrate.io/validated: "true"` can be created
 - **AND** namespaces without the label are denied on creation
-- **AND** the denied admission reports `Namespace must have label kubecrate.io/validated: 'true'`
+- **AND** the denied admission reports `Namespace requires kubecrate.io/validated=true`
 
 #### Scenario: Allowed fixture namespace exists
 - **WHEN** the ClusterPolicy is Ready

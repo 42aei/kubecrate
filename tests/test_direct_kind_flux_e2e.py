@@ -735,7 +735,8 @@ def test_kyverno_scenario_proves_exact_deny_and_bounded_red_restore() -> None:
     admission = text[text.index("# Prove the policy admitted"):text.index("CURRENT_PHASE=kyverno-green")]
     assert "create namespace kyverno-smoke-denied" in admission
     assert "test \"${deny_rc}\" -ne 0" in admission
-    assert "Namespace must have label kubecrate.io/validated: 'true'" in admission
+    assert 'assert_kyverno_denial_reason "${deny_output}"' in admission
+    assert 'KYVERNO_DENIAL_REASON="Namespace requires kubecrate.io/validated=true"' in text
 
     scenario = text[text.index("# ── Kyverno Policy Scenario"):text.index("# Kill port-forward")]
     assert "suspend kustomization kyverno-smoke-policy" in scenario
@@ -744,6 +745,45 @@ def test_kyverno_scenario_proves_exact_deny_and_bounded_red_restore() -> None:
     assert "resume kustomization kyverno-smoke-policy" in scenario
     assert "reconcile kustomization kyverno-smoke-policy" in scenario
     assert scenario.rindex("validate_status_json green") > scenario.index("resume kustomization")
+
+
+def test_kyverno_denial_reason_matches_real_kubectl_output() -> None:
+    """The exact policy reason survives Kyverno's kubectl error serialization."""
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    observed = """Error from server: admission webhook "validate.kyverno.svc-fail" denied the request:
+
+resource Namespace//kyverno-smoke-denied was blocked due to the following policies
+
+require-ns-label:
+  require-validated-label: 'validation error: Namespace requires kubecrate.io/validated=true.
+    rule require-validated-label failed at path /metadata/labels/kubecrate.io/validated/'
+"""
+    script = (
+        helper_source
+        + "\nassert_kyverno_denial_reason \"$1\"\n"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "kyverno-denial-test", observed],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+    wrong_reason = observed.replace(
+        "Namespace requires kubecrate.io/validated=true",
+        "Namespace was denied for an unspecified reason",
+    )
+    rejected = subprocess.run(
+        ["bash", "-c", script, "kyverno-denial-test", wrong_reason],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert rejected.returncode != 0
+    assert "did not contain the exact policy reason" in rejected.stderr
 
 
 # ── Runner preflight ordering ────────────────────────────────────────────────

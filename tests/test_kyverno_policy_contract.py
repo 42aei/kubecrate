@@ -15,6 +15,7 @@ POLICY = ROOT / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke-po
 FIXTURE = ROOT / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke/smoke-allowed-namespace.yaml"
 ENTRYPOINT = ROOT / "clusters/kind-dev-misc-local/entrypoint"
 MANIFEST_VALIDATOR = ROOT / "scripts/validate-kubernetes-manifests.py"
+RUNNER = ROOT / "scripts/direct-kind-flux-e2e.sh"
 
 KYVERNO_IDS = {
     "kyverno-helmrelease-ready",
@@ -33,7 +34,7 @@ KYVERNO_KUSTOMIZE_ROOTS = {
     "clusters/kind-dev-misc-local/platform-services/kyverno/smoke-policy",
     "clusters/kind-dev-misc-local/platform-services/kyverno/smoke",
 }
-DENIAL_MESSAGE = "Namespace must have label kubecrate.io/validated: 'true'"
+DENIAL_MESSAGE = "Namespace requires kubecrate.io/validated=true"
 
 
 def configured_checks() -> dict[str, dict]:
@@ -93,6 +94,7 @@ def test_policy_is_narrow_and_fixture_is_a_real_allowed_consumer() -> None:
         "resources": {"kinds": ["Namespace"], "names": ["kyverno-smoke-*"]}
     }]
     assert rule["validate"]["message"] == DENIAL_MESSAGE
+    assert f'KYVERNO_DENIAL_REASON="{DENIAL_MESSAGE}"' in RUNNER.read_text()
     assert rule["validate"]["pattern"]["metadata"]["labels"] == {
         "kubecrate.io/validated": "true"
     }

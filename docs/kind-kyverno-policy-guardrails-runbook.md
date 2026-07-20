@@ -27,7 +27,7 @@ The runner verifies the active disposable context before mutation, renders the e
 
 1. the Kyverno controller, smoke policy, and consumer fixture Flux units become Ready in dependency order;
 2. `kyverno-smoke-allowed` exists with the required label, proving a real allowed admission;
-3. creating `kyverno-smoke-denied` without the label fails and includes the exact reason `Namespace must have label kubecrate.io/validated: 'true'`;
+3. creating `kyverno-smoke-denied` without the label fails and includes the exact reason `Namespace requires kubecrate.io/validated=true`;
 4. the complete CrateCheck `/status.json` contract is green;
 5. after suspending the policy Flux unit and deleting only `require-ns-label`, exactly `kyverno-clusterpolicy-ready` is red while every unrelated check remains green;
 6. Flux restores the policy and the complete JSON contract returns to green;

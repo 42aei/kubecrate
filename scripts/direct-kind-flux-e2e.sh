@@ -36,6 +36,7 @@ CURRENT_ASSERTION="preflight completed"
 FAILURE_ASSERTION=""
 EVIDENCE_COMMAND_TIMEOUT="${KUBECRATE_E2E_EVIDENCE_TIMEOUT:-5s}"
 EVIDENCE_KUBECTL_REQUEST_TIMEOUT="${KUBECRATE_E2E_EVIDENCE_KUBECTL_TIMEOUT:-4s}"
+KYVERNO_DENIAL_REASON="Namespace requires kubecrate.io/validated=true"
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
@@ -179,6 +180,13 @@ cluster_state() {
 
 validate_status_json() {
   python3 scripts/validate-cratecheck-status.py --phase "$1" "$2"
+}
+
+assert_kyverno_denial_reason() {
+  local normalized
+  normalized="$(tr '\n\r\t' '   ' <<<"$1" | tr -s ' ')"
+  [[ "${normalized}" == *"${KYVERNO_DENIAL_REASON}"* ]] || \
+    fail "Kyverno denial did not contain the exact policy reason"
 }
 
 validate_artifact_revision() {
@@ -684,8 +692,7 @@ deny_output="$(kubectl --context "${CONTEXT}" create namespace kyverno-smoke-den
 deny_rc=$?
 set -e
 test "${deny_rc}" -ne 0 || fail "Kyverno admitted an unlabeled smoke namespace"
-grep -F "Namespace must have label kubecrate.io/validated: 'true'" <<<"${deny_output}" >/dev/null \
-  || fail "Kyverno denial did not contain the exact policy reason"
+assert_kyverno_denial_reason "${deny_output}"
 if kubectl --context "${CONTEXT}" get namespace kyverno-smoke-denied >/dev/null 2>&1; then
   fail "Kyverno denied fixture unexpectedly exists"
 fi
