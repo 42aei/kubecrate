@@ -107,6 +107,100 @@ def fake_command(bindir: Path, name: str, script: str) -> Path:
     return path
 
 
+def run_candidate_identity_case(
+    tmp_path: Path,
+    *,
+    expected_commit: str | None = None,
+    staged: bool = False,
+    unstaged: bool = False,
+    relevant_untracked: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], str, str]:
+    """Run the shipped preflight until the fake kind-create sentinel."""
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    (repo / "kind").mkdir(parents=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    local_head = init_repo(repo, "candidate-identity")
+    expected_commit = expected_commit or local_head
+
+    if staged:
+        (repo / "tracked").write_text("staged-shadow")
+        subprocess.run(["git", "-C", repo, "add", "tracked"], check=True)
+    if unstaged:
+        (repo / "tracked").write_text("unstaged-shadow")
+    if relevant_untracked:
+        shadow = repo / "clusters/kind-dev-misc-local/entrypoint/local-shadow.yaml"
+        shadow.parent.mkdir(parents=True)
+        shadow.write_text("kind: ConfigMap\n")
+
+    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
+    fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
+if [[ "$*" == *"ls-remote"* ]]; then
+  echo "{expected_commit}\trefs/heads/{PR_BRANCH}"
+  exit 0
+fi
+exec /usr/bin/git "$@"''')
+    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
+if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
+elif [[ "$*" == *"auth status"* ]]; then exit 0
+elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
+elif [[ "$*" == *"pulls/"* ]]; then printf '%s' '{expected_commit}'; exit 0
+fi
+exit 0''')
+    fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
+if [[ "$*" == *"get clusters"* ]]; then exit 0; fi
+if [[ "$*" == *"create cluster"* ]]; then exit 23; fi
+exit 0''')
+    for name in ("kubectl", "helm", "flux", "kustomize", "curl", "python3", "base64"):
+        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
+
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_EXPECTED_COMMIT": expected_commit,
+           "KUBECRATE_PR_BRANCH": PR_BRANCH}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    return result, log.read_text() if log.exists() else "", local_head
+
+
+def test_local_candidate_identity_gate_accepts_matching_clean_tree(tmp_path: Path) -> None:
+    result, calls, _ = run_candidate_identity_case(tmp_path)
+    assert result.returncode == 23, result.stderr
+    assert "gh auth token" in calls
+    assert "kind create cluster" in calls
+
+
+def test_local_candidate_identity_gate_rejects_mismatched_clean_head(tmp_path: Path) -> None:
+    result, calls, local_head = run_candidate_identity_case(
+        tmp_path, expected_commit="b" * 40)
+    assert result.returncode != 0
+    assert f"local HEAD {local_head} != expected {'b' * 40}" in result.stderr
+    assert "gh auth token" not in calls
+    assert "kind create cluster" not in calls
+
+
+@pytest.mark.parametrize(
+    ("state", "error"),
+    [
+        ("staged", "worktree has staged changes"),
+        ("unstaged", "worktree has unstaged changes"),
+        ("relevant_untracked", "relevant local input paths contain untracked files"),
+    ],
+)
+def test_local_candidate_identity_gate_rejects_shadowing_state_before_mutation(
+    tmp_path: Path, state: str, error: str,
+) -> None:
+    result, calls, _ = run_candidate_identity_case(
+        tmp_path,
+        staged=state == "staged",
+        unstaged=state == "unstaged",
+        relevant_untracked=state == "relevant_untracked",
+    )
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert "gh auth token" not in calls
+    assert "kind create cluster" not in calls
+
+
 # ── Shell syntax ─────────────────────────────────────────────────────────────
 
 def test_runner_is_executable_and_syntax_valid() -> None:
@@ -172,7 +266,9 @@ def test_current_main_identity_mode_fails_closed_before_cluster_creation(
     shutil.copytree(ROOT / "scripts", repo / "scripts")
     (repo / "kind").mkdir(parents=True)
     shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
-    init_repo(repo, "current-main")
+    local_candidate = init_repo(repo, "current-main")
+    remote_main = local_candidate if remote_main == EXPECTED_COMMIT else remote_main
+    merge_commit = local_candidate if merge_commit == EXPECTED_COMMIT else merge_commit
 
     bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
     fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
@@ -197,7 +293,7 @@ exit 0''')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": local_candidate,
            "KUBECRATE_PR_NUMBER": "21"}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -237,7 +333,7 @@ exec /usr/bin/git "$@"''')
 if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
 elif [[ "$*" == *"auth status"* ]]; then exit 0
 elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
-elif [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0
+elif [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0
 fi
 exit 0''')
     for name in ("kind", "kubectl", "helm", "flux", "kustomize",
@@ -245,7 +341,8 @@ exit 0''')
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -273,7 +370,7 @@ def test_shared_cluster_name_refused_before_mutation() -> None:
 
 # ── Credential sentinel non-leakage ──────────────────────────────────────────
 
-_SENTINEL_TOKEN = "ghp_testSentinelToken1234567890abc"
+_SENTINEL_TOKEN = "«redacted:ghp_…»"
 
 def test_token_never_appears_in_stdout_stderr_or_log(tmp_path: Path) -> None:
     """Token is never leaked to stdout, stderr, or command logs."""
@@ -302,14 +399,15 @@ elif [[ "$*" == *"api"* ]]; then echo '{{"head":{{"sha":"{EXPECTED_COMMIT}"}}}}'
 fi
 exit 0''')
     fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
-if [[ "$*" == *"ls-remote"* ]]; then echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0; fi
+if [[ "$*" == *"ls-remote"* ]]; then echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0; fi
 exec /usr/bin/git "$@"''')
     for name in ("kind", "kubectl", "helm", "flux", "kustomize",
                  "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -743,7 +841,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -767,7 +865,7 @@ elif [[ $name == kubectl ]]; then
   exit 0
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 elif [[ $name == helm ]]; then
@@ -781,7 +879,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
 
     process = subprocess.Popen(
@@ -961,7 +1060,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -983,7 +1082,7 @@ elif [[ $name == kubectl ]]; then
     exit 0
   fi
   if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
-    printf 'main@sha1:{EXPECTED_COMMIT}'
+    printf 'main@sha1:%s' "$KUBECRATE_EXPECTED_COMMIT"
     exit 0
   fi
   if [[ "$*" == *"kustomization/cratecheck "* ]]; then exit 1; fi
@@ -993,7 +1092,7 @@ elif [[ $name == flux ]]; then
   exit 0
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1004,7 +1103,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH,
            "KUBECRATE_E2E_EVIDENCE_DIR": str(evidence),
            "KUBECRATE_E2E_TMP_ROOT": str(run_tmp_root)}
@@ -1016,7 +1116,7 @@ exit 0
     assert len(bundles) == 1
     bundle = bundles[0]
     summary = (bundle / "summary.txt").read_text()
-    assert f"candidate={EXPECTED_COMMIT}" in summary
+    assert f"candidate={env['KUBECRATE_EXPECTED_COMMIT']}" in summary
     assert f"ref={PR_BRANCH}" in summary
     assert "phase=flux-child-readiness" in summary
     assert "assertion=cratecheck Kustomization became Ready" in summary
@@ -1064,7 +1164,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -1094,7 +1194,7 @@ elif [[ $name == helm ]]; then
   exit 0
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1105,7 +1205,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -1146,7 +1247,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -1173,7 +1274,7 @@ elif [[ $name == kubectl ]]; then
   exit 0
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1184,7 +1285,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -1223,7 +1325,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -1245,7 +1347,7 @@ elif [[ $name == kubectl ]]; then
     exit 0
   fi
   if [[ "$*" == *"get gitrepository"* ]]; then
-    printf 'main@sha1:%s' '{EXPECTED_COMMIT}'; exit 0
+    printf 'main@sha1:%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0
   fi
   if [[ "$*" == *"get secret eso-smoke-projected"* ]]; then
     printf '!!!not!valid!base64!!!'; exit 0
@@ -1261,7 +1363,7 @@ elif [[ $name == python3 ]]; then
   exec "{shutil.which('python3')}" "$@"
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1272,7 +1374,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -1310,7 +1413,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -1332,7 +1435,7 @@ elif [[ $name == kubectl ]]; then
     exit 0
   fi
   if [[ "$*" == *"get gitrepository"* ]]; then
-    printf 'main@sha1:%s' '{EXPECTED_COMMIT}'; exit 0
+    printf 'main@sha1:%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0
   fi
   if [[ "$*" == *"get secret eso-smoke-projected"* ]]; then
     printf '%s' '{wrong_b64}'; exit 0
@@ -1350,7 +1453,7 @@ elif [[ $name == base64 ]]; then
   exec /usr/bin/base64 "$@"
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1361,7 +1464,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -1394,12 +1498,14 @@ if [[ "$*" == *"auth status"* ]]; then exit 0
 elif [[ "$*" == *"api user"* ]]; then {user_script}
 fi
 exit 0''')
-    for name in ("git", "kind", "kubectl", "helm", "flux", "kustomize",
+    fake_command(bindir, "git", f'echo "git $*" >>"{log}"; exec /usr/bin/git "$@"')
+    for name in ("kind", "kubectl", "helm", "flux", "kustomize",
                  "curl", "python3", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -1442,7 +1548,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -1464,7 +1570,7 @@ elif [[ $name == kubectl ]]; then
     exit 0
   fi
   if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
-    printf 'main@sha1:{EXPECTED_COMMIT}'
+    printf 'main@sha1:%s' "$KUBECRATE_EXPECTED_COMMIT"
     exit 0
   fi
   if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then
@@ -1477,7 +1583,7 @@ elif [[ $name == kubectl ]]; then
   exit 0
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1488,7 +1594,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -1548,7 +1655,7 @@ if [[ $name == gh ]]; then
   if [[ "$*" == *"auth token"* ]]; then printf 'test-token'; exit 0; fi
   if [[ "$*" == *"auth status"* ]]; then exit 0; fi
   if [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0; fi
-  if [[ "$*" == *"api"* ]]; then printf '%s' '{EXPECTED_COMMIT}'; exit 0; fi
+  if [[ "$*" == *"api"* ]]; then printf '%s' "$KUBECRATE_EXPECTED_COMMIT"; exit 0; fi
   exit 0
 elif [[ $name == kind ]]; then
   if [[ "$*" == *"create cluster"* ]]; then
@@ -1570,7 +1677,7 @@ elif [[ $name == kubectl ]]; then
     exit 0
   fi
   if [[ "$*" == *"get gitrepository flux-system-sync"* ]]; then
-    printf 'main@sha1:{EXPECTED_COMMIT}'
+    printf 'main@sha1:%s' "$KUBECRATE_EXPECTED_COMMIT"
     exit 0
   fi
   if [[ "$*" == *" wait "* ]] || [[ "$*" == *" wait" ]]; then
@@ -1584,7 +1691,7 @@ elif [[ $name == kubectl ]]; then
   exit 0
 elif [[ $name == git ]]; then
   if [[ "$*" == *"ls-remote"* ]]; then
-    echo "{EXPECTED_COMMIT}\trefs/heads/{PR_BRANCH}"; exit 0
+    echo "$KUBECRATE_EXPECTED_COMMIT\trefs/heads/{PR_BRANCH}"; exit 0
   fi
   exec /usr/bin/git "$@"
 fi
@@ -1595,7 +1702,8 @@ exit 0
         fake_command(bindir, name, dispatch)
 
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
-           "KUBECRATE_EXPECTED_COMMIT": EXPECTED_COMMIT,
+           "KUBECRATE_EXPECTED_COMMIT": subprocess.check_output(
+               ["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip(),
            "KUBECRATE_PR_BRANCH": PR_BRANCH}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)

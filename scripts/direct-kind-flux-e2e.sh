@@ -216,6 +216,34 @@ for cmd in gh git kind kubectl helm flux kustomize curl python3 base64 timeout; 
   require "${cmd}"
 done
 
+# Bind every locally executed input to the immutable candidate before reading
+# credentials or creating remote/live resources.
+local_head="$(git rev-parse HEAD)" || fail "could not resolve local HEAD"
+test "${local_head}" = "${EXPECTED_COMMIT}" || \
+  fail "local HEAD ${local_head} != expected ${EXPECTED_COMMIT}"
+expected_tree="$(git rev-parse "${EXPECTED_COMMIT}^{tree}")" \
+  || fail "could not resolve expected candidate tree"
+head_tree="$(git rev-parse 'HEAD^{tree}')" || fail "could not resolve local HEAD tree"
+test "${head_tree}" = "${expected_tree}" || \
+  fail "local HEAD tree ${head_tree} != expected candidate tree ${expected_tree}"
+git diff --cached --quiet || fail "worktree has staged changes"
+index_tree="$(git write-tree)" || fail "could not resolve local index tree"
+test "${index_tree}" = "${expected_tree}" || \
+  fail "local index tree ${index_tree} != expected candidate tree ${expected_tree}"
+git diff --quiet || fail "worktree has unstaged changes"
+
+LOCAL_INPUT_PATHS=(
+  scripts/direct-kind-flux-e2e.sh
+  scripts/render-direct-flux-source.py
+  scripts/validate-cratecheck-status.py
+  kind
+  clusters/kind-dev-misc-local/entrypoint
+  clusters/kind-dev-misc-local/platform-services/flux/helm-values.yaml
+)
+untracked_local_inputs="$(git ls-files --others -- "${LOCAL_INPUT_PATHS[@]}")"
+test -z "${untracked_local_inputs}" || \
+  fail "relevant local input paths contain untracked files"
+
 # Verify faksibot is active and can read the repo.
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   fail "gh auth status failed — is faksibot logged in?"
@@ -261,10 +289,6 @@ case "${IDENTITY_MODE}" in
     ;;
   *) fail "unsupported identity mode: ${IDENTITY_MODE}" ;;
 esac
-
-# Verify local worktree is clean.
-git diff --quiet || fail "worktree has unstaged changes"
-git diff --cached --quiet || fail "worktree has staged changes"
 
 # Verify kind/config.yaml exists.
 test -f kind/config.yaml || fail "kind/config.yaml not found"
