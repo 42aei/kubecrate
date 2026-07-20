@@ -1,0 +1,8 @@
+admissionController:
+  create: true
+backgroundController:
+  create: true
+cleanupController:
+  create: true
+reportsController:
+  create: true

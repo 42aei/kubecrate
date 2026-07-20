@@ -29,7 +29,7 @@ def test_runner_uses_on_demand_status_without_observation_waits() -> None:
     assert "3cfb4e320eff8d2a738cb36fd2420862b1db45c3" not in runner
 
 
-def test_runner_uses_json_only_eso_envoy_and_cert_manager_status_contract() -> None:
+def test_runner_uses_json_only_eso_envoy_cert_manager_and_kyverno_status_contract() -> None:
     runner = RUNNER.read_text()
 
     assert "chromium" not in runner.lower()
@@ -52,6 +52,9 @@ def test_runner_uses_json_only_eso_envoy_and_cert_manager_status_contract() -> N
         'validate_status_json green "${TMPDIR}/cert-manager-baseline-status.json"',
         'validate_status_json cert-manager-red "${TMPDIR}/cert-manager-red-status.json"',
         'validate_status_json green "${TMPDIR}/cert-manager-restored-status.json"',
+        'validate_status_json green "${TMPDIR}/kyverno-baseline-status.json"',
+        'validate_status_json kyverno-red "${TMPDIR}/kyverno-red-status.json"',
+        'validate_status_json green "${TMPDIR}/kyverno-restored-status.json"',
     ]
 
 
@@ -432,6 +435,7 @@ def test_cleanup_trap_installed_and_restores_before_cluster_delete() -> None:
     assert "RED_STATE=eso_restore_required" in text
     assert "RED_STATE=envoy_restore_required" in text
     assert "RED_STATE=cert_manager_restore_required" in text
+    assert "RED_STATE=kyverno_restore_required" in text
     assert "RED_STATE=none" in text
 
 
@@ -618,6 +622,22 @@ def test_cert_manager_scenario_uses_trusted_https_and_exact_red_restore() -> Non
     assert 'validate_status_json cert-manager-red "${TMPDIR}/cert-manager-red-status.json"' in scenario
     assert "resume kustomization cert-manager-local-issuer" in scenario
     assert "reconcile kustomization cert-manager-local-issuer" in scenario
+    assert scenario.rindex("validate_status_json green") > scenario.index("resume kustomization")
+
+
+def test_kyverno_scenario_proves_exact_deny_and_bounded_red_restore() -> None:
+    text = RUNNER.read_text()
+    admission = text[text.index("# Prove the policy admitted"):text.index("CURRENT_PHASE=kyverno-green")]
+    assert "create namespace kyverno-smoke-denied" in admission
+    assert "test \"${deny_rc}\" -ne 0" in admission
+    assert "Namespace must have label kubecrate.io/validated: 'true'" in admission
+
+    scenario = text[text.index("# ── Kyverno Policy Scenario"):text.index("# Kill port-forward")]
+    assert "suspend kustomization kyverno-smoke-policy" in scenario
+    assert "delete clusterpolicy require-ns-label" in scenario
+    assert 'validate_status_json kyverno-red "${TMPDIR}/kyverno-red-status.json"' in scenario
+    assert "resume kustomization kyverno-smoke-policy" in scenario
+    assert "reconcile kustomization kyverno-smoke-policy" in scenario
     assert scenario.rindex("validate_status_json green") > scenario.index("resume kustomization")
 
 

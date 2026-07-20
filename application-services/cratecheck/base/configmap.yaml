@@ -271,3 +271,49 @@ data:
           object.metadata.name == 'cratecheck-tls'
         successMessage: cert-manager TLS Secret exists
         failureMessage: cert-manager TLS Secret not found
+      - id: kyverno-helmrelease-ready
+        name: Kyverno HelmRelease ready
+        severity: red
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          namespace: core-kyverno
+          name: kyverno
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: Kyverno HelmRelease is ready
+        failureMessage: Kyverno HelmRelease is not ready
+      - id: kyverno-clusterpolicy-ready
+        name: Kyverno require-ns-label ClusterPolicy ready
+        severity: red
+        resource:
+          apiVersion: kyverno.io/v1
+          kind: ClusterPolicy
+          namespace: ""
+          name: require-ns-label
+        expression: >-
+          has(object.status) &&
+          has(object.status.conditions) &&
+          object.status.conditions.exists(c,
+            c.type == 'Ready' && c.status == 'True')
+        successMessage: Kyverno require-ns-label ClusterPolicy is ready
+        failureMessage: Kyverno require-ns-label ClusterPolicy is not ready
+      - id: kyverno-smoke-namespace-exists
+        name: Kyverno allowed smoke namespace exists
+        severity: red
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          namespace: ""
+          name: kyverno-smoke-allowed
+        expression: >-
+          has(object.metadata) &&
+          object.metadata.name == 'kyverno-smoke-allowed' &&
+          has(object.metadata.labels) &&
+          'kubecrate.io/validated' in object.metadata.labels &&
+          object.metadata.labels['kubecrate.io/validated'] == 'true'
+        successMessage: Kyverno admitted the labeled smoke namespace
+        failureMessage: Kyverno allowed smoke namespace is missing or incorrectly labeled
