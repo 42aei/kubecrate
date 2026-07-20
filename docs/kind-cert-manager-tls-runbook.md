@@ -33,6 +33,17 @@ KUBECRATE_EXPECTED_COMMIT=<full-commit-sha> \
 ./scripts/direct-kind-flux-e2e.sh
 ```
 
+To validate an already merged PR at exact current `main`, select the explicit
+identity mode. This also requires the referenced PR to be closed and merged with
+the expected commit as its merge commit, and makes Flux reconcile `main`:
+
+```sh
+KUBECRATE_E2E_IDENTITY_MODE=current-main \
+KUBECRATE_PR_NUMBER=<merged-pr-number> \
+KUBECRATE_EXPECTED_COMMIT=<full-main-commit-sha> \
+./scripts/direct-kind-flux-e2e.sh
+```
+
 The cert-manager phase waits for both Flux Kustomizations, extracts only `ca.crt` into a private temporary directory, and verifies HTTPS with hostname and CA validation:
 
 ```sh

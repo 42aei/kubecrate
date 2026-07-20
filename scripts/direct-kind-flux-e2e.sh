@@ -6,9 +6,11 @@ set -Eeuo pipefail
 
 REPO="${KUBECRATE_GITHUB_REPO:-42aei/kubecrate}"
 HTTPS_URL="https://github.com/${REPO}.git"
+IDENTITY_MODE="${KUBECRATE_E2E_IDENTITY_MODE:-pr-head}"
 PR_BRANCH="${KUBECRATE_PR_BRANCH:-kubecrate/envoy-after-eso-minimal-qa}"
 PR_NUMBER="${KUBECRATE_PR_NUMBER:-19}"
 EXPECTED_COMMIT="${KUBECRATE_EXPECTED_COMMIT:-$(git rev-parse HEAD)}"
+SOURCE_BRANCH="${PR_BRANCH}"
 CLUSTER_PREFIX="${KUBECRATE_E2E_CLUSTER_PREFIX:-kubecrate-e2e}"
 CLUSTER=""
 CONTEXT=""
@@ -61,7 +63,7 @@ write_failure_evidence() {
   {
     printf 'result=fail\n'
     printf 'candidate=%s\n' "${EXPECTED_COMMIT}"
-    printf 'ref=%s\n' "${PR_BRANCH}"
+    printf 'ref=%s\n' "${SOURCE_BRANCH}"
     printf 'phase=%s\n' "${CURRENT_PHASE}"
     printf 'assertion=%s\n' "${FAILURE_ASSERTION:-${CURRENT_ASSERTION}}"
     printf 'cluster=%s\n' "${CLUSTER}"
@@ -223,17 +225,38 @@ test "${active_user}" = "faksibot" || fail "expected faksibot, got ${active_user
 TOKEN="$(gh auth token)"
 test -n "${TOKEN}" || fail "gh auth token returned empty value"
 
-# Verify the PR branch head equals the expected commit.
-remote_sha="$(git ls-remote --heads origin "${PR_BRANCH}" | awk '{print $1}')"
-test -n "${remote_sha}" || fail "could not resolve remote branch ${PR_BRANCH}"
-test "${remote_sha}" = "${EXPECTED_COMMIT}" || \
-  fail "remote branch ${PR_BRANCH} SHA ${remote_sha} != expected ${EXPECTED_COMMIT}"
+case "${IDENTITY_MODE}" in
+  pr-head)
+    # Verify the PR branch head equals the expected commit.
+    remote_sha="$(git ls-remote --heads origin "${PR_BRANCH}" | awk '{print $1}')"
+    test -n "${remote_sha}" || fail "could not resolve remote branch ${PR_BRANCH}"
+    test "${remote_sha}" = "${EXPECTED_COMMIT}" || \
+      fail "remote branch ${PR_BRANCH} SHA ${remote_sha} != expected ${EXPECTED_COMMIT}"
 
-# Verify the PR head via gh API.
-pr_head="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
-test -n "${pr_head}" || fail "could not read PR #${PR_NUMBER} head"
-test "${pr_head}" = "${EXPECTED_COMMIT}" || \
-  fail "PR #${PR_NUMBER} head ${pr_head} != expected ${EXPECTED_COMMIT}"
+    # Verify the PR head via gh API.
+    pr_head="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)"
+    test -n "${pr_head}" || fail "could not read PR #${PR_NUMBER} head"
+    test "${pr_head}" = "${EXPECTED_COMMIT}" || \
+      fail "PR #${PR_NUMBER} head ${pr_head} != expected ${EXPECTED_COMMIT}"
+    ;;
+  current-main)
+    SOURCE_BRANCH=main
+    remote_sha="$(git ls-remote --heads origin main | awk '{print $1}')"
+    test -n "${remote_sha}" || fail "could not resolve remote branch main"
+    test "${remote_sha}" = "${EXPECTED_COMMIT}" || \
+      fail "remote branch main SHA ${remote_sha} != expected ${EXPECTED_COMMIT}"
+
+    IFS=$'\t' read -r pr_state pr_merged pr_merge_commit < <(
+      gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+        --jq '[.state, .merged, .merge_commit_sha] | @tsv' 2>/dev/null || true
+    )
+    test "${pr_state}" = closed && test "${pr_merged}" = true || \
+      fail "PR #${PR_NUMBER} is not closed and merged"
+    test "${pr_merge_commit}" = "${EXPECTED_COMMIT}" || \
+      fail "PR #${PR_NUMBER} merge commit ${pr_merge_commit:-unknown} != expected ${EXPECTED_COMMIT}"
+    ;;
+  *) fail "unsupported identity mode: ${IDENTITY_MODE}" ;;
+esac
 
 # Verify local worktree is clean.
 git diff --quiet || fail "worktree has unstaged changes"
@@ -322,7 +345,7 @@ rm -f "${TMPDIR}/flux-https-secret.yaml"
 assert_context
 kustomize build "${ENTRYPOINT_ROOT}" | \
   python3 scripts/render-direct-flux-source.py --https-url "${HTTPS_URL}" \
-    --branch "${PR_BRANCH}" | \
+    --branch "${SOURCE_BRANCH}" | \
   kubectl --context "${CONTEXT}" apply -f -
 
 # Wait for the HelmRelease to become Ready.
