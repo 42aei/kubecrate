@@ -244,6 +244,14 @@ untracked_local_inputs="$(git ls-files --others -- "${LOCAL_INPUT_PATHS[@]}")"
 test -z "${untracked_local_inputs}" || \
   fail "relevant local input paths contain untracked files"
 
+# Python places the invoked script's directory first on its import path. Reject
+# untracked top-level modules and packages that could shadow dependencies used by
+# the renderer or status validator; nested caches are not import candidates here.
+untracked_python_imports="$(git ls-files --others -- \
+  ':(glob)scripts/*.py' ':(glob)scripts/*/__init__.py')"
+test -z "${untracked_python_imports}" || \
+  fail "scripts contains untracked Python import candidates"
+
 # Verify faksibot is active and can read the repo.
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   fail "gh auth status failed — is faksibot logged in?"

@@ -114,6 +114,7 @@ def run_candidate_identity_case(
     staged: bool = False,
     unstaged: bool = False,
     relevant_untracked: bool = False,
+    python_import_shadow: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
     """Run the shipped preflight until the fake kind-create sentinel."""
     repo = tmp_path / "repo"; repo.mkdir()
@@ -132,6 +133,10 @@ def run_candidate_identity_case(
         shadow = repo / "clusters/kind-dev-misc-local/entrypoint/local-shadow.yaml"
         shadow.parent.mkdir(parents=True)
         shadow.write_text("kind: ConfigMap\n")
+    if python_import_shadow:
+        (repo / "scripts/yaml.py").write_text(
+            "raise RuntimeError('untracked yaml shadow imported')\n"
+        )
 
     bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
     fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
@@ -184,6 +189,7 @@ def test_local_candidate_identity_gate_rejects_mismatched_clean_head(tmp_path: P
         ("staged", "worktree has staged changes"),
         ("unstaged", "worktree has unstaged changes"),
         ("relevant_untracked", "relevant local input paths contain untracked files"),
+        ("python_import_shadow", "scripts contains untracked Python import candidates"),
     ],
 )
 def test_local_candidate_identity_gate_rejects_shadowing_state_before_mutation(
@@ -194,6 +200,7 @@ def test_local_candidate_identity_gate_rejects_shadowing_state_before_mutation(
         staged=state == "staged",
         unstaged=state == "unstaged",
         relevant_untracked=state == "relevant_untracked",
+        python_import_shadow=state == "python_import_shadow",
     )
     assert result.returncode != 0
     assert error in result.stderr
