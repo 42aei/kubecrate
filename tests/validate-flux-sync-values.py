@@ -58,6 +58,9 @@ def validate_repository_contract() -> None:
         "envoy-gateway-smoke",
         "cert-manager",
         "cert-manager-local-issuer",
+        "kyverno",
+        "kyverno-smoke-policy",
+        "kyverno-smoke",
     }
     children = {
         document.get("metadata", {}).get("name"): document

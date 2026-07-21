@@ -1,8 +1,9 @@
 ---
 task_id: "0018"
 title: "Introduce Kyverno policy guardrails"
-status: "proposed"
+status: "started"
 depends_on: ["0011", "0014"]
+openspec_change: "introduce-kyverno-policy-guardrails"
 ---
 
 ## Goal

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Direct disposable kind + Flux E2E runner.
 # Creates a unique kind cluster, bootstraps Flux with HTTPS credentials,
-# validates ESO, Envoy ingress, cert-manager TLS, and CrateCheck scenarios, then cleans up.
+# validates ESO, Envoy ingress, cert-manager TLS, Kyverno guardrails, and CrateCheck scenarios, then cleans up.
 set -Eeuo pipefail
 
 REPO="${KUBECRATE_GITHUB_REPO:-42aei/kubecrate}"
@@ -36,6 +36,7 @@ CURRENT_ASSERTION="preflight completed"
 FAILURE_ASSERTION=""
 EVIDENCE_COMMAND_TIMEOUT="${KUBECRATE_E2E_EVIDENCE_TIMEOUT:-5s}"
 EVIDENCE_KUBECTL_REQUEST_TIMEOUT="${KUBECRATE_E2E_EVIDENCE_KUBECTL_TIMEOUT:-4s}"
+KYVERNO_DENIAL_REASON="Namespace requires kubecrate.io/validated=true"
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
@@ -83,7 +84,8 @@ write_failure_evidence() {
   } >"${bundle}/readiness.txt"
 
   local status_file=""
-  for candidate in cert-manager-restored-status.json cert-manager-red-status.json \
+  for candidate in kyverno-restored-status.json kyverno-red-status.json \
+      kyverno-baseline-status.json cert-manager-restored-status.json cert-manager-red-status.json \
       cert-manager-baseline-status.json envoy-restored-status.json envoy-red-status.json \
       envoy-baseline-status.json restored-status.json red-status.json baseline-status.json; do
     if test -s "${TMPDIR}/${candidate}"; then status_file="${TMPDIR}/${candidate}"; break; fi
@@ -139,6 +141,9 @@ cleanup() {
       elif test "${RED_STATE}" = cert_manager_restore_required; then
         flux --context "${CONTEXT}" resume kustomization cert-manager-local-issuer -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
         flux --context "${CONTEXT}" reconcile kustomization cert-manager-local-issuer -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
+      elif test "${RED_STATE}" = kyverno_restore_required; then
+        flux --context "${CONTEXT}" resume kustomization kyverno-smoke-policy -n "${FLUX_NAMESPACE}" >/dev/null 2>&1 || true
+        flux --context "${CONTEXT}" reconcile kustomization kyverno-smoke-policy -n "${FLUX_NAMESPACE}" --timeout=180s >/dev/null 2>&1 || true
       fi
     fi
   fi
@@ -177,6 +182,13 @@ validate_status_json() {
   python3 scripts/validate-cratecheck-status.py --phase "$1" "$2"
 }
 
+assert_kyverno_denial_reason() {
+  local normalized
+  normalized="$(tr '\n\r\t' '   ' <<<"$1" | tr -s ' ')"
+  [[ "${normalized}" == *"${KYVERNO_DENIAL_REASON}"* ]] || \
+    fail "Kyverno denial did not contain the exact policy reason"
+}
+
 validate_artifact_revision() {
   local revision="$1"
   if [[ ! "${revision}" =~ ^[^@[:space:]]+@sha1:([0-9a-f]{40})$ ]]; then
@@ -211,6 +223,42 @@ decode_smoke_value() {
 for cmd in gh git kind kubectl helm flux kustomize curl python3 base64 timeout; do
   require "${cmd}"
 done
+
+# Bind every locally executed input to the immutable candidate before reading
+# credentials or creating remote/live resources.
+local_head="$(git rev-parse HEAD)" || fail "could not resolve local HEAD"
+test "${local_head}" = "${EXPECTED_COMMIT}" || \
+  fail "local HEAD ${local_head} != expected ${EXPECTED_COMMIT}"
+expected_tree="$(git rev-parse "${EXPECTED_COMMIT}^{tree}")" \
+  || fail "could not resolve expected candidate tree"
+head_tree="$(git rev-parse 'HEAD^{tree}')" || fail "could not resolve local HEAD tree"
+test "${head_tree}" = "${expected_tree}" || \
+  fail "local HEAD tree ${head_tree} != expected candidate tree ${expected_tree}"
+git diff --cached --quiet || fail "worktree has staged changes"
+index_tree="$(git write-tree)" || fail "could not resolve local index tree"
+test "${index_tree}" = "${expected_tree}" || \
+  fail "local index tree ${index_tree} != expected candidate tree ${expected_tree}"
+git diff --quiet || fail "worktree has unstaged changes"
+
+LOCAL_INPUT_PATHS=(
+  scripts/direct-kind-flux-e2e.sh
+  scripts/render-direct-flux-source.py
+  scripts/validate-cratecheck-status.py
+  kind
+  clusters/kind-dev-misc-local/entrypoint
+  clusters/kind-dev-misc-local/platform-services/flux/helm-values.yaml
+)
+untracked_local_inputs="$(git ls-files --others -- "${LOCAL_INPUT_PATHS[@]}")"
+test -z "${untracked_local_inputs}" || \
+  fail "relevant local input paths contain untracked files"
+
+# Python places the invoked script's directory first on its import path. Reject
+# untracked top-level modules and packages that could shadow dependencies used by
+# the renderer or status validator; nested caches are not import candidates here.
+untracked_python_imports="$(git ls-files --others -- \
+  ':(glob)scripts/*.py' ':(glob)scripts/*/__init__.py')"
+test -z "${untracked_python_imports}" || \
+  fail "scripts contains untracked Python import candidates"
 
 # Verify faksibot is active and can read the repo.
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
@@ -257,10 +305,6 @@ case "${IDENTITY_MODE}" in
     ;;
   *) fail "unsupported identity mode: ${IDENTITY_MODE}" ;;
 esac
-
-# Verify local worktree is clean.
-git diff --quiet || fail "worktree has unstaged changes"
-git diff --cached --quiet || fail "worktree has staged changes"
 
 # Verify kind/config.yaml exists.
 test -f kind/config.yaml || fail "kind/config.yaml not found"
@@ -401,6 +445,18 @@ CURRENT_ASSERTION="envoy-gateway-smoke Kustomization became Ready"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready \
   kustomization/envoy-gateway-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="kyverno Kustomization became Ready"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/kyverno -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="kyverno smoke policy Kustomization became Ready"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/kyverno-smoke-policy -n "${FLUX_NAMESPACE}" --timeout=300s
+CURRENT_ASSERTION="kyverno smoke fixture Kustomization became Ready"
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/kyverno-smoke -n "${FLUX_NAMESPACE}" --timeout=300s
 
 # The smoke Kustomization can be Ready before Envoy has programmed its generated
 # data plane. Gate baseline status and host ingress on the Gateway contract.
@@ -619,6 +675,76 @@ curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
   --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
   >"${TMPDIR}/cert-manager-restored-status.json"
 validate_status_json green "${TMPDIR}/cert-manager-restored-status.json"
+RED_STATE=none
+
+# ── Kyverno Policy Scenario ─────────────────────────────────────────────────
+
+# Prove the policy admitted the labeled GitOps-managed fixture and rejects the
+# same scoped resource without the required label for the exact policy reason.
+CURRENT_PHASE=kyverno-admission
+CURRENT_ASSERTION="Kyverno allowed and denied admission matched the policy contract"
+assert_context
+test "$(kubectl --context "${CONTEXT}" get namespace kyverno-smoke-allowed \
+  -o jsonpath='{.metadata.labels.kubecrate\.io/validated}')" = true \
+  || fail "Kyverno allowed fixture is missing the required label"
+set +e
+deny_output="$(kubectl --context "${CONTEXT}" create namespace kyverno-smoke-denied 2>&1)"
+deny_rc=$?
+set -e
+test "${deny_rc}" -ne 0 || fail "Kyverno admitted an unlabeled smoke namespace"
+assert_kyverno_denial_reason "${deny_output}"
+if kubectl --context "${CONTEXT}" get namespace kyverno-smoke-denied >/dev/null 2>&1; then
+  fail "Kyverno denied fixture unexpectedly exists"
+fi
+
+CURRENT_PHASE=kyverno-green
+CURRENT_ASSERTION="Kyverno baseline status was all green"
+curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" \
+  >"${TMPDIR}/kyverno-baseline-status.json"
+validate_status_json green "${TMPDIR}/kyverno-baseline-status.json"
+
+RED_STATE=kyverno_restore_required
+CURRENT_PHASE=kyverno-controlled-red
+CURRENT_ASSERTION="only the Kyverno ClusterPolicy check became red"
+assert_context
+flux --context "${CONTEXT}" suspend kustomization kyverno-smoke-policy \
+  -n "${FLUX_NAMESPACE}"
+assert_context
+kubectl --context "${CONTEXT}" delete clusterpolicy require-ns-label
+
+deadline=$((SECONDS + 60))
+while (( SECONDS < deadline )); do
+  curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" \
+    >"${TMPDIR}/kyverno-red-status.json"
+  if validate_status_json kyverno-red "${TMPDIR}/kyverno-red-status.json" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+validate_status_json kyverno-red "${TMPDIR}/kyverno-red-status.json"
+
+CURRENT_PHASE=kyverno-restore-green
+CURRENT_ASSERTION="Kyverno policy and all checks returned to green"
+assert_context
+flux --context "${CONTEXT}" resume kustomization kyverno-smoke-policy \
+  -n "${FLUX_NAMESPACE}"
+assert_context
+flux --context "${CONTEXT}" reconcile kustomization kyverno-smoke-policy \
+  -n "${FLUX_NAMESPACE}" --timeout=180s
+assert_context
+kubectl --context "${CONTEXT}" wait --for=condition=Ready \
+  kustomization/kyverno-smoke-policy -n "${FLUX_NAMESPACE}" --timeout=180s
+
+deadline=$((SECONDS + 60))
+while (( SECONDS < deadline )); do
+  curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" \
+    >"${TMPDIR}/kyverno-restored-status.json"
+  if validate_status_json green "${TMPDIR}/kyverno-restored-status.json" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+validate_status_json green "${TMPDIR}/kyverno-restored-status.json"
 RED_STATE=none
 
 # Kill port-forward before cleanup.

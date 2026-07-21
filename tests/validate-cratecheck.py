@@ -152,6 +152,16 @@ def validate_status_config() -> bool:
         cert_manager_ids <= set(ids),
         f"missing: {cert_manager_ids - set(ids)}",
     )
+    kyverno_ids = {
+        "kyverno-helmrelease-ready",
+        "kyverno-clusterpolicy-ready",
+        "kyverno-smoke-namespace-exists",
+    }
+    all_ok &= check(
+        "Kyverno check IDs are present",
+        kyverno_ids <= set(ids),
+        f"missing: {kyverno_ids - set(ids)}",
+    )
     return all_ok
 
 
@@ -209,6 +219,15 @@ def validate_rbac() -> bool:
         "ClusterRole grants exact cert-manager resource reads",
         "cert-manager.io" in eso_api_groups
         and {"clusterissuers", "certificates"} <= eso_resources,
+    )
+    all_ok &= check(
+        "ClusterRole grants exact Kyverno ClusterPolicy read access",
+        any(
+            rule.get("apiGroups") == ["kyverno.io"]
+            and rule.get("resources") == ["clusterpolicies"]
+            and rule.get("verbs") == ["get"]
+            for rule in rules
+        ),
     )
     # Verify ClusterRoleBinding exists
     crb_path = BASE_DIR / "clusterrolebinding.yaml"

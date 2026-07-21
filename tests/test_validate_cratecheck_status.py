@@ -67,6 +67,16 @@ def test_cert_manager_red_changes_only_tls_certificate_and_secret_checks() -> No
         )
 
 
+def test_kyverno_red_changes_only_clusterpolicy_check() -> None:
+    expected = set(MODULE.RED_IDS["kyverno-red"])
+    MODULE.validate_status(payload(changed=expected), "kyverno-red")
+    with pytest.raises(AssertionError):
+        MODULE.validate_status(
+            payload(changed=expected | {"kyverno-helmrelease-ready"}),
+            "kyverno-red",
+        )
+
+
 @pytest.mark.parametrize("status", ["yellow", "unknown"])
 def test_eso_red_rejects_non_red_intended_state(status: str) -> None:
     invalid = payload(changed=set(MODULE.RED_IDS["eso-red"]))

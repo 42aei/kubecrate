@@ -25,11 +25,15 @@ EXPECTED_IDS = {
     "cert-manager-ca-issuer-ready",
     "cert-manager-tls-certificate-ready",
     "cert-manager-tls-secret-exists",
+    "kyverno-helmrelease-ready",
+    "kyverno-clusterpolicy-ready",
+    "kyverno-smoke-namespace-exists",
 }
 RED_IDS = {
     "eso-red": {"eso-externalsecret-ready", "eso-projected-secret-exists"},
     "envoy-red": {"envoy-httproute-ready"},
     "cert-manager-red": {"cert-manager-tls-certificate-ready"},
+    "kyverno-red": {"kyverno-clusterpolicy-ready"},
 }
 STATUSES = {"green", "red", "yellow", "unknown"}
 
@@ -77,7 +81,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--phase",
-        choices=("green", "eso-red", "envoy-red", "cert-manager-red"),
+        choices=("green", "eso-red", "envoy-red", "cert-manager-red", "kyverno-red"),
         required=True,
     )
     parser.add_argument("status_file", type=Path)
