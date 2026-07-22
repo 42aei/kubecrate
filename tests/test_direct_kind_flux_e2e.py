@@ -715,6 +715,31 @@ data:
     assert f"branch: {PR_BRANCH}" in output
 
 
+def test_renderer_supports_explicit_anonymous_public_source() -> None:
+    input_yaml = """apiVersion: v1
+kind: ConfigMap
+metadata: {name: flux-sync-values, namespace: flux-system}
+data:
+  values.yaml: |
+    secret:
+      create: true
+      generate: {sshKeyAlgorithm: ed25519}
+    gitRepository:
+      spec:
+        url: ssh://git@github.com/42aei/kubecrate.git
+        secretRef: {name: old-secret}
+        ref: {branch: main}
+"""
+    result = subprocess.run(
+        ["python3", str(RENDERER), "--https-url",
+         "https://github.com/public-user/kubecrate.git", "--branch", "demo",
+         "--anonymous"], input=input_yaml, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert "secretRef" not in result.stdout
+    assert "generate:" not in result.stdout
+    assert "create: false" in result.stdout
+
+
 def test_renderer_rejects_missing_or_multiple_configmaps() -> None:
     """Renderer fails on zero or multiple flux-sync-values ConfigMaps."""
     result = subprocess.run(

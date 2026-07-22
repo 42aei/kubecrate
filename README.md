@@ -43,6 +43,10 @@ This repository is still early, but it now includes the first installable slice 
 
 It carries the project model, vocabulary, roadmap, and backlog alongside the first runtime files for bootstrap installation and GitOps-managed operation.
 
+## Run the retained local demo
+
+Start with [`docs/retained-local-demo.md`](docs/retained-local-demo.md). It is the supported public, anonymous path to clone or fork Kubecrate, run preflight, bring up the complete current stack in a named kind cluster, inspect it while it remains running, and explicitly tear it down.
+
 ## Documents
 
 - `docs/README.md` for the docs map
@@ -50,6 +54,7 @@ It carries the project model, vocabulary, roadmap, and backlog alongside the fir
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
 - `docs/vanilla-composition.md` for the reusable public Vanilla composition and the kind-first local reference consumer
 - `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
+- `docs/retained-local-demo.md` for the runnable retained local demo
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
 

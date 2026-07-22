@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replace SSH source with HTTPS source for the direct kind+Flux E2E runner."""
+"""Replace the durable SSH source with an HTTPS source for local workflows."""
 
 import argparse
 import sys
@@ -42,6 +42,10 @@ def main() -> int:
     parser.add_argument("--https-url", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--secret-name", default="flux-system-sync")
+    parser.add_argument(
+        "--anonymous", action="store_true",
+        help="render a public source without a Git credentials Secret",
+    )
     args = parser.parse_args()
     try:
         documents = list(yaml.load_all(sys.stdin, Loader=UniqueKeyLoader))
@@ -70,7 +74,10 @@ def main() -> int:
             git_repo = require_mapping(root.get("gitRepository"), "gitRepository")
             spec = require_mapping(git_repo.get("spec"), "gitRepository.spec")
             spec["url"] = args.https_url
-            spec["secretRef"] = {"name": args.secret_name}
+            if args.anonymous:
+                spec.pop("secretRef", None)
+            else:
+                spec["secretRef"] = {"name": args.secret_name}
             if spec.get("ref") is None:
                 spec["ref"] = {}
             ref = require_mapping(spec.get("ref"), "gitRepository.spec.ref")

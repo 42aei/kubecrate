@@ -20,7 +20,28 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate validate-cratecheck validate-flux-sync-values validate-vanilla-composition
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke local-check local-down local-evidence local-recreate local-restart local-status local-up validate validate-cratecheck validate-flux-sync-values validate-vanilla-composition
+
+local-check:
+> ./scripts/local-demo.sh check
+
+local-up:
+> ./scripts/local-demo.sh up
+
+local-status:
+> ./scripts/local-demo.sh status
+
+local-evidence:
+> ./scripts/local-demo.sh evidence
+
+local-restart:
+> ./scripts/local-demo.sh restart
+
+local-recreate:
+> ./scripts/local-demo.sh recreate
+
+local-down:
+> ./scripts/local-demo.sh down
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
