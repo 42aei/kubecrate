@@ -11,6 +11,7 @@ PR_BRANCH="${KUBECRATE_PR_BRANCH:-kubecrate/envoy-after-eso-minimal-qa}"
 PR_NUMBER="${KUBECRATE_PR_NUMBER:-19}"
 EXPECTED_COMMIT="${KUBECRATE_EXPECTED_COMMIT:-$(git rev-parse HEAD)}"
 SOURCE_BRANCH="${PR_BRANCH}"
+QA_BRANCH="${KUBECRATE_E2E_QA_BRANCH:-}"
 CLUSTER_PREFIX="${KUBECRATE_E2E_CLUSTER_PREFIX:-kubecrate-e2e}"
 CLUSTER=""
 CONTEXT=""
@@ -22,6 +23,8 @@ FLUX_HELM_VALUES="clusters/kind-dev-misc-local/platform-services/flux/helm-value
 FLUX_NAMESPACE=flux-system
 TOKEN=""
 CLUSTER_CREATED=false
+QA_REF_POST_SUCCEEDED=false
+QA_REF_OWNED=false
 PORT_FORWARD_PID=""
 RED_STATE=none
 CRATECHECK_PORT=18080
@@ -40,6 +43,27 @@ KYVERNO_DENIAL_REASON="Namespace requires kubecrate.io/validated=true"
 
 fail() { printf 'direct-e2e: ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"; }
+
+read_qa_ref() {
+  gh api "repos/${REPO}/git/ref/heads/${SOURCE_BRANCH}" \
+    --jq '[.ref, .object.type, .object.sha] | @tsv'
+}
+
+qa_ref_is_absent() {
+  local response rc
+  set +e
+  response="$(gh api "repos/${REPO}/git/ref/heads/${SOURCE_BRANCH}" 2>&1)"
+  rc=$?
+  set -e
+  test "${rc}" -ne 0 && [[ "${response}" == *"HTTP 404"* ]]
+}
+
+qa_ref_matches_expected() {
+  local ref object_type sha
+  IFS=$'\t' read -r ref object_type sha < <(read_qa_ref 2>/dev/null || true)
+  test "${ref}" = "refs/heads/${SOURCE_BRANCH}" && \
+    test "${object_type}" = commit && test "${sha}" = "${EXPECTED_COMMIT}"
+}
 
 read_failure_evidence() {
   local label="$1"
@@ -156,6 +180,19 @@ cleanup() {
       cleanup_failed=true
     fi
     test "$(cluster_state)" = absent || cleanup_failed=true
+  fi
+  if ${QA_REF_POST_SUCCEEDED} || ${QA_REF_OWNED}; then
+    if ! qa_ref_matches_expected; then
+      cleanup_failed=true
+    elif ! gh api --method DELETE "repos/${REPO}/git/refs/heads/${SOURCE_BRANCH}" \
+        >/dev/null 2>&1; then
+      cleanup_failed=true
+    elif ! qa_ref_is_absent; then
+      cleanup_failed=true
+    else
+      QA_REF_POST_SUCCEEDED=false
+      QA_REF_OWNED=false
+    fi
   fi
   # Scrub the token from the running process's memory.
   TOKEN=""
@@ -288,7 +325,6 @@ case "${IDENTITY_MODE}" in
       fail "PR #${PR_NUMBER} head ${pr_head} != expected ${EXPECTED_COMMIT}"
     ;;
   current-main)
-    SOURCE_BRANCH=main
     remote_sha="$(git ls-remote --heads origin main | awk '{print $1}')"
     test -n "${remote_sha}" || fail "could not resolve remote branch main"
     test "${remote_sha}" = "${EXPECTED_COMMIT}" || \
@@ -302,6 +338,38 @@ case "${IDENTITY_MODE}" in
       fail "PR #${PR_NUMBER} is not closed and merged"
     test "${pr_merge_commit}" = "${EXPECTED_COMMIT}" || \
       fail "PR #${PR_NUMBER} merge commit ${pr_merge_commit:-unknown} != expected ${EXPECTED_COMMIT}"
+
+    if test -z "${QA_BRANCH}"; then
+      QA_BRANCH="kubecrate-qa-settled-main-${EXPECTED_COMMIT:0:12}-$(date +%s)-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 6 || true)"
+    fi
+    [[ "${QA_BRANCH}" == kubecrate-qa-* ]] || \
+      fail "disposable QA branch must use kubecrate-qa- prefix"
+    git check-ref-format --branch "${QA_BRANCH}" >/dev/null 2>&1 || \
+      fail "invalid disposable QA branch: ${QA_BRANCH}"
+    SOURCE_BRANCH="${QA_BRANCH}"
+
+    # The GitHub create-ref API is the atomic pre-existing-ref refusal. Its
+    # response body is only diagnostic; exact GET readback establishes ownership.
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'failure_rc=$?; test -n "${FAILURE_ASSERTION}" || FAILURE_ASSERTION="${CURRENT_ASSERTION} (line ${LINENO}, rc ${failure_rc})"' ERR
+    # Defer ordinary termination signals across the successful POST/state
+    # assignment window so cleanup cannot miss a ref the runner just created.
+    trap '' INT TERM
+    if gh api --method POST "repos/${REPO}/git/refs" \
+        -f "ref=refs/heads/${SOURCE_BRANCH}" -f "sha=${EXPECTED_COMMIT}" >/dev/null; then
+      QA_REF_POST_SUCCEEDED=true
+    else
+      create_rc=$?
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      fail "disposable QA ref creation failed (rc ${create_rc})"
+    fi
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    qa_ref_matches_expected || fail "disposable QA ref readback did not match expected commit"
+    QA_REF_OWNED=true
     ;;
   *) fail "unsupported identity mode: ${IDENTITY_MODE}" ;;
 esac
@@ -327,7 +395,8 @@ if test "$(cluster_state)" != absent; then
   fail "cluster ${CLUSTER} already exists or state unknown"
 fi
 
-# Install cleanup trap.
+# Install cleanup trap. Current-main mode installs it earlier, before creating
+# its disposable remote source ref.
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

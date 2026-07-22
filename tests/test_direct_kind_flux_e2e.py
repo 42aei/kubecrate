@@ -5,8 +5,10 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -289,6 +291,11 @@ if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
 elif [[ "$*" == *"auth status"* ]]; then exit 0
 elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
 elif [[ "$*" == *"pulls/"* ]]; then printf '%s\\t%s\\t%s\\n' '{pr_state}' '{pr_merged}' '{merge_commit}'; exit 0
+elif [[ "$*" == *"--method POST"* ]]; then exit 0
+elif [[ "$*" == *"--method DELETE"* ]]; then exit 0
+elif [[ "$*" == *"git/ref/heads/"* && "$*" == *"--jq"* ]]; then
+  printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" "$KUBECRATE_EXPECTED_COMMIT"; exit 0
+elif [[ "$*" == *"git/ref/heads/"* ]]; then printf 'gh: Not Found (HTTP 404)' >&2; exit 1
 fi
 exit 0''')
     fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
@@ -301,6 +308,7 @@ exit 0''')
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
            "KUBECRATE_EXPECTED_COMMIT": local_candidate,
+           "KUBECRATE_E2E_QA_BRANCH": "kubecrate-qa-settled-main-test",
            "KUBECRATE_PR_NUMBER": "21"}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -308,16 +316,190 @@ exit 0''')
     if accepted:
         assert result.returncode == 23, result.stderr
         assert "create cluster" in calls
+        assert "--method POST repos/42aei/kubecrate/git/refs" in calls
+        assert "ref=refs/heads/kubecrate-qa-settled-main-test" in calls
+        assert "--method DELETE repos/42aei/kubecrate/git/refs/heads/kubecrate-qa-settled-main-test" in calls
     else:
         assert result.returncode != 0
         assert error in result.stderr
         assert "create cluster" not in calls
 
 
-def test_current_main_mode_renders_flux_main() -> None:
+def test_current_main_mode_renders_flux_disposable_qa_branch() -> None:
     text = RUNNER.read_text()
-    assert "SOURCE_BRANCH=main" in text
+    assert 'SOURCE_BRANCH="${QA_BRANCH}"' in text
     assert '--branch "${SOURCE_BRANCH}"' in text
+
+
+def test_current_main_uses_and_cleans_owned_disposable_ref(tmp_path: Path) -> None:
+    """Exercise create/read/use/recheck/delete/absence through the shipped runner."""
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    for directory in (
+        "kind",
+        "clusters/kind-dev-misc-local/platform-services/flux",
+        "clusters/kind-dev-misc-local/entrypoint",
+    ):
+        (repo / directory).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    (repo / "clusters/kind-dev-misc-local/platform-services/flux/helm-values.yaml").write_text("{}\n")
+    local_candidate = init_repo(repo, "current-main-owned-ref-lifecycle")
+
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    log = tmp_path / "calls.log"
+    ref_state = tmp_path / "ref-state"
+    cluster_state = tmp_path / "cluster-state"
+    cluster_name = tmp_path / "cluster-name"
+    rendered = tmp_path / "rendered.yaml"
+    qa_branch = "kubecrate-qa-settled-main-lifecycle"
+
+    fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
+if [[ "$*" == *"ls-remote"* ]]; then echo "$KUBECRATE_EXPECTED_COMMIT refs/heads/main"; exit 0; fi
+exec /usr/bin/git "$@"''')
+    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
+if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
+elif [[ "$*" == *"auth status"* ]]; then exit 0
+elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
+elif [[ "$*" == *"pulls/"* ]]; then printf 'closed\\ttrue\\t%s\\n' "$KUBECRATE_EXPECTED_COMMIT"; exit 0
+elif [[ "$*" == *"--method POST"* ]]; then
+  test ! -e "{ref_state}" || exit 1
+  touch "{ref_state}"; exit 0
+elif [[ "$*" == *"--method DELETE"* ]]; then
+  test -e "{ref_state}" || exit 1
+  rm "{ref_state}"; exit 0
+elif [[ "$*" == *"git/ref/heads/"* && "$*" == *"--jq"* ]]; then
+  test -e "{ref_state}" || exit 1
+  printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" "$KUBECRATE_EXPECTED_COMMIT"; exit 0
+elif [[ "$*" == *"git/ref/heads/"* ]]; then
+  test ! -e "{ref_state}" || exit 0
+  printf 'gh: Not Found (HTTP 404)' >&2; exit 1
+fi
+exit 0''')
+    fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
+if [[ "$*" == *"create cluster"* ]]; then
+  previous=''; for argument; do if [[ "$previous" == --name ]]; then printf '%s' "$argument" >"{cluster_name}"; fi; previous="$argument"; done
+  touch "{cluster_state}"; exit 0
+elif [[ "$*" == *"delete cluster"* ]]; then rm -f "{cluster_state}"; exit 0
+elif [[ "$*" == *"get clusters"* ]]; then
+  if test -e "{cluster_state}"; then cat "{cluster_name}"; printf '\\n'; fi
+  exit 0
+fi
+exit 0''')
+    fake_command(bindir, "kubectl", f'''echo "kubectl $*" >>"{log}"
+if [[ "$*" == *"config current-context"* ]]; then printf 'kind-%s' "$(cat "{cluster_name}")"; exit 0
+elif [[ "$*" == *"apply -f -"* ]]; then cat >"{rendered}"; exit 42
+fi
+exit 0''')
+    fake_command(bindir, "kustomize", '''cat <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flux-sync-values
+  namespace: flux-system
+data:
+  values.yaml: |
+    secret:
+      create: true
+      generate:
+        sshKeyAlgorithm: ed25519
+    gitRepository:
+      spec:
+        url: ssh://git@github.com/42aei/kubecrate.git
+        ref:
+          branch: main
+    kustomization:
+      spec:
+        path: ./clusters/kind-dev-misc-local/entrypoint
+YAML''')
+    fake_command(bindir, "python3", f'exec {shlex.quote(sys.executable)} "$@"')
+    for name in ("helm", "flux", "curl", "base64"):
+        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
+
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
+           "KUBECRATE_EXPECTED_COMMIT": local_candidate,
+           "KUBECRATE_E2E_QA_BRANCH": qa_branch,
+           "KUBECRATE_PR_NUMBER": "21"}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+
+    assert result.returncode == 42, result.stderr
+    assert not ref_state.exists()
+    assert not cluster_state.exists()
+    assert f"branch: {qa_branch}" in rendered.read_text()
+    calls = log.read_text().splitlines()
+    create = next(i for i, call in enumerate(calls) if "--method POST" in call)
+    reads = [i for i, call in enumerate(calls) if "git/ref/heads/" in call and "--jq" in call]
+    delete = next(i for i, call in enumerate(calls) if "--method DELETE" in call)
+    absence = next(i for i, call in enumerate(calls) if i > delete and "git/ref/heads/" in call)
+    render_apply = next(i for i, call in enumerate(calls) if "kubectl" in call and "apply -f -" in call)
+    assert len(reads) == 2
+    assert create < reads[0] < render_apply < reads[1] < delete < absence
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_error", "expect_delete"),
+    [
+        ("pre-existing", "ref creation failed", False),
+        ("mismatched-readback", "readback did not match", False),
+        ("changed-before-cleanup", "cleanup verification failed", False),
+    ],
+)
+def test_current_main_disposable_ref_failures_refuse_cluster_and_unsafe_delete(
+    tmp_path: Path, scenario: str, expected_error: str, expect_delete: bool,
+) -> None:
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    (repo / "kind").mkdir(parents=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    local_candidate = init_repo(repo, "current-main-ref-failure")
+    changed = "b" * 40
+    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
+    get_count = tmp_path / "get-count"
+    fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
+if [[ "$*" == *"ls-remote"* ]]; then echo "$KUBECRATE_EXPECTED_COMMIT refs/heads/main"; exit 0; fi
+exec /usr/bin/git "$@"''')
+    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
+if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
+elif [[ "$*" == *"auth status"* ]]; then exit 0
+elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
+elif [[ "$*" == *"pulls/"* ]]; then printf 'closed\\ttrue\\t%s\\n' "$KUBECRATE_EXPECTED_COMMIT"; exit 0
+elif [[ "$*" == *"--method POST"* ]]; then
+  if [[ {scenario!r} == pre-existing ]]; then printf 'gh: Reference already exists (HTTP 422)' >&2; exit 1; fi
+  exit 0
+elif [[ "$*" == *"--method DELETE"* ]]; then exit 0
+elif [[ "$*" == *"git/ref/heads/"* && "$*" == *"--jq"* ]]; then
+  count=0; test ! -f "{get_count}" || count=$(cat "{get_count}"); count=$((count + 1)); echo "$count" >"{get_count}"
+  if [[ {scenario!r} == mismatched-readback || ( {scenario!r} == changed-before-cleanup && $count -gt 1 ) ]]; then
+    printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" '{changed}'
+  else
+    printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" "$KUBECRATE_EXPECTED_COMMIT"
+  fi
+  exit 0
+elif [[ "$*" == *"git/ref/heads/"* ]]; then printf 'gh: Not Found (HTTP 404)' >&2; exit 1
+fi
+exit 0''')
+    fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
+if [[ "$*" == *"get clusters"* ]]; then exit 0; fi
+if [[ "$*" == *"create cluster"* ]]; then exit 23; fi
+exit 0''')
+    for name in ("kubectl", "helm", "flux", "kustomize", "curl", "python3", "base64"):
+        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
+           "KUBECRATE_EXPECTED_COMMIT": local_candidate,
+           "KUBECRATE_E2E_QA_BRANCH": "kubecrate-qa-settled-main-test",
+           "KUBECRATE_PR_NUMBER": "21"}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode != 0
+    calls = log.read_text()
+    if scenario == "changed-before-cleanup":
+        assert "create cluster" in calls
+    else:
+        assert "create cluster" not in calls
+    assert ("--method DELETE" in calls) is expect_delete
+    assert expected_error in result.stderr
 
 def test_revision_mismatch_fails_before_cluster_creation(tmp_path: Path) -> None:
     """Runner fails when remote branch SHA differs from expected."""
