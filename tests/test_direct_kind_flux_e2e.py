@@ -289,6 +289,11 @@ if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
 elif [[ "$*" == *"auth status"* ]]; then exit 0
 elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
 elif [[ "$*" == *"pulls/"* ]]; then printf '%s\\t%s\\t%s\\n' '{pr_state}' '{pr_merged}' '{merge_commit}'; exit 0
+elif [[ "$*" == *"--method POST"* ]]; then exit 0
+elif [[ "$*" == *"--method DELETE"* ]]; then exit 0
+elif [[ "$*" == *"git/ref/heads/"* && "$*" == *"--jq"* ]]; then
+  printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" "$KUBECRATE_EXPECTED_COMMIT"; exit 0
+elif [[ "$*" == *"git/ref/heads/"* ]]; then printf 'gh: Not Found (HTTP 404)' >&2; exit 1
 fi
 exit 0''')
     fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
@@ -301,6 +306,7 @@ exit 0''')
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
            "KUBECRATE_EXPECTED_COMMIT": local_candidate,
+           "KUBECRATE_E2E_QA_BRANCH": "kubecrate-qa-settled-main-test",
            "KUBECRATE_PR_NUMBER": "21"}
     result = subprocess.run(
         [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
@@ -308,16 +314,84 @@ exit 0''')
     if accepted:
         assert result.returncode == 23, result.stderr
         assert "create cluster" in calls
+        assert "--method POST repos/42aei/kubecrate/git/refs" in calls
+        assert "ref=refs/heads/kubecrate-qa-settled-main-test" in calls
+        assert "--method DELETE repos/42aei/kubecrate/git/refs/heads/kubecrate-qa-settled-main-test" in calls
     else:
         assert result.returncode != 0
         assert error in result.stderr
         assert "create cluster" not in calls
 
 
-def test_current_main_mode_renders_flux_main() -> None:
+def test_current_main_mode_renders_flux_disposable_qa_branch() -> None:
     text = RUNNER.read_text()
-    assert "SOURCE_BRANCH=main" in text
+    assert 'SOURCE_BRANCH="${QA_BRANCH}"' in text
     assert '--branch "${SOURCE_BRANCH}"' in text
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_error", "expect_delete"),
+    [
+        ("pre-existing", "ref creation failed", False),
+        ("mismatched-readback", "readback did not match", False),
+        ("changed-before-cleanup", "cleanup verification failed", False),
+    ],
+)
+def test_current_main_disposable_ref_failures_refuse_cluster_and_unsafe_delete(
+    tmp_path: Path, scenario: str, expected_error: str, expect_delete: bool,
+) -> None:
+    repo = tmp_path / "repo"; repo.mkdir()
+    shutil.copytree(ROOT / "scripts", repo / "scripts")
+    (repo / "kind").mkdir(parents=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    local_candidate = init_repo(repo, "current-main-ref-failure")
+    changed = "b" * 40
+    bindir = tmp_path / "bin"; bindir.mkdir(); log = tmp_path / "calls.log"
+    get_count = tmp_path / "get-count"
+    fake_command(bindir, "git", f'''echo "git $*" >>"{log}"
+if [[ "$*" == *"ls-remote"* ]]; then echo "$KUBECRATE_EXPECTED_COMMIT refs/heads/main"; exit 0; fi
+exec /usr/bin/git "$@"''')
+    fake_command(bindir, "gh", f'''echo "gh $*" >>"{log}"
+if [[ "$*" == *"auth token"* ]]; then printf 'dummy-token'; exit 0
+elif [[ "$*" == *"auth status"* ]]; then exit 0
+elif [[ "$*" == *"api user"* ]]; then printf 'faksibot'; exit 0
+elif [[ "$*" == *"pulls/"* ]]; then printf 'closed\\ttrue\\t%s\\n' "$KUBECRATE_EXPECTED_COMMIT"; exit 0
+elif [[ "$*" == *"--method POST"* ]]; then
+  if [[ {scenario!r} == pre-existing ]]; then printf 'gh: Reference already exists (HTTP 422)' >&2; exit 1; fi
+  exit 0
+elif [[ "$*" == *"--method DELETE"* ]]; then exit 0
+elif [[ "$*" == *"git/ref/heads/"* && "$*" == *"--jq"* ]]; then
+  count=0; test ! -f "{get_count}" || count=$(cat "{get_count}"); count=$((count + 1)); echo "$count" >"{get_count}"
+  if [[ {scenario!r} == mismatched-readback || ( {scenario!r} == changed-before-cleanup && $count -gt 1 ) ]]; then
+    printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" '{changed}'
+  else
+    printf 'refs/heads/%s\\tcommit\\t%s\\n' "$KUBECRATE_E2E_QA_BRANCH" "$KUBECRATE_EXPECTED_COMMIT"
+  fi
+  exit 0
+elif [[ "$*" == *"git/ref/heads/"* ]]; then printf 'gh: Not Found (HTTP 404)' >&2; exit 1
+fi
+exit 0''')
+    fake_command(bindir, "kind", f'''echo "kind $*" >>"{log}"
+if [[ "$*" == *"get clusters"* ]]; then exit 0; fi
+if [[ "$*" == *"create cluster"* ]]; then exit 23; fi
+exit 0''')
+    for name in ("kubectl", "helm", "flux", "kustomize", "curl", "python3", "base64"):
+        fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "KUBECRATE_E2E_IDENTITY_MODE": "current-main",
+           "KUBECRATE_EXPECTED_COMMIT": local_candidate,
+           "KUBECRATE_E2E_QA_BRANCH": "kubecrate-qa-settled-main-test",
+           "KUBECRATE_PR_NUMBER": "21"}
+    result = subprocess.run(
+        [str(RUNNER)], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode != 0
+    calls = log.read_text()
+    if scenario == "changed-before-cleanup":
+        assert "create cluster" in calls
+    else:
+        assert "create cluster" not in calls
+    assert ("--method DELETE" in calls) is expect_delete
+    assert expected_error in result.stderr
 
 def test_revision_mismatch_fails_before_cluster_creation(tmp_path: Path) -> None:
     """Runner fails when remote branch SHA differs from expected."""
