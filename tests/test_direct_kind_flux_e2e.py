@@ -5,8 +5,10 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -409,7 +411,7 @@ data:
       spec:
         path: ./clusters/kind-dev-misc-local/entrypoint
 YAML''')
-    fake_command(bindir, "python3", f'exec "{Path("/tmp/kubecrate-t84-venv/bin/python")}" "$@"')
+    fake_command(bindir, "python3", f'exec {shlex.quote(sys.executable)} "$@"')
     for name in ("helm", "flux", "curl", "base64"):
         fake_command(bindir, name, f'echo "{name} $*" >>"{log}"; exit 0')
 
