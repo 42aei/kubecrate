@@ -1,21 +1,21 @@
 ## 1. Contract and documentation
 
-- [x] 1.1 Create proposal, design, specification, and tasks for the frozen retained-demo scope.
-- [x] 1.2 Add one prominent README-linked runbook covering the complete public lifecycle and recovery paths.
+- [x] 1.1 Define the retained-demo proposal, design, specification, and tasks.
+- [x] 1.2 Add a README-linked runbook for the lifecycle and recovery commands.
 
 ## 2. Retained workflow
 
-- [x] 2.1 Add one repository script with check, up, status, evidence, restart, recreate, and down subcommands.
-- [x] 2.2 Derive and verify anonymous exact source identity before mutation, with runtime-only overrides.
-- [x] 2.3 Bootstrap and validate the complete current stack with bounded waits and exact green CrateCheck proof.
-- [x] 2.4 Persist ignored state and bounded sanitized evidence; retain failed clusters for inspection.
-- [x] 2.5 Add state-aware idempotence, protected scoped down with absence proof, restart, and recreate.
-- [x] 2.6 Add thin stable Make wrappers without moving authoritative lifecycle semantics into Make.
+- [x] 2.1 Add check, up, status, evidence, restart, recreate, and down subcommands.
+- [x] 2.2 Verify exact source identity before mutation, with runtime-only overrides.
+- [x] 2.3 Bootstrap and validate the current stack with bounded waits and exact-green CrateCheck proof.
+- [x] 2.4 Retain state and bounded sanitized evidence for failures.
+- [x] 2.5 Scope restart, recreate, and down to the recorded demo cluster.
+- [x] 2.6 Add thin Make wrappers.
 
-## 3. Behavioral validation
+## 3. Validation
 
-- [x] 3.1 Add fake-command tests that execute the shipped entrypoint for derivation, access, exactness, and pre-mutation failures.
-- [x] 3.2 Cover readiness/schema failure, retained failure evidence and redaction, idempotence, and scoped cleanup refusal/absence proof.
-- [x] 3.3 Run strict OpenSpec validation and status, Bash syntax, focused and full relevant pytest, project/manifests validation, and diff checks.
-- [x] 3.4 Leave live cluster mutation, commit, push, PR, and release for later authorized review/QA phases.
-- [x] 3.5 Add review-fix coverage for preflight state preservation, restrictive identity, isolated anonymous Git, bounded failure recovery, degraded evidence, versioned JSON summary, and uniform sanitization.
+- [x] 3.1 Test source derivation, exactness, and pre-mutation failures through the shipped entrypoint.
+- [x] 3.2 Test readiness/schema failures, redaction, evidence, idempotence, and scoped cleanup.
+- [x] 3.3 Run OpenSpec, Bash, pytest, project validation, link, and diff checks.
+- [x] 3.4 Keep live mutation, commit, push, PR, and release outside this pass.
+- [x] 3.5 Cover review fixes for state preservation, cluster identity, Git isolation, bounded failures, evidence schema, and sanitization.

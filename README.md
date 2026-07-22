@@ -45,7 +45,7 @@ It carries the project model, vocabulary, roadmap, and backlog alongside the fir
 
 ## Run the retained local demo
 
-Start with [`docs/retained-local-demo.md`](docs/retained-local-demo.md). It is the supported public, anonymous path to clone or fork Kubecrate, run preflight, bring up the complete current stack in a named kind cluster, inspect it while it remains running, and explicitly tear it down.
+See the [`retained local demo runbook`](docs/retained-local-demo.md) to start, inspect, recover, and stop the kind-first local stack.
 
 ## Documents
 
