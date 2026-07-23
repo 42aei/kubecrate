@@ -4,13 +4,4 @@ resources:
   - ./kubecrate-system-namespace.yaml
   - ./kubecrate-reconciliation-marker.yaml
   - ../platform-services/flux
-  - ./external-secrets-operator-kustomization.yaml
-  - ./external-secrets-operator-smoke-kustomization.yaml
-  - ./cratecheck-kustomization.yaml
-  - ./envoy-gateway-kustomization.yaml
-  - ./envoy-gateway-smoke-kustomization.yaml
-  - ./cert-manager-kustomization.yaml
-  - ./cert-manager-local-issuer-kustomization.yaml
-  - ./kyverno-kustomization.yaml
-  - ./kyverno-smoke-policy-kustomization.yaml
-  - ./kyverno-smoke-kustomization.yaml
+  - ../../../compositions/vanilla/entrypoint

@@ -2,6 +2,8 @@
 
 This runbook validates the cert-manager vertical slice on the kind-first local path. cert-manager runs as a GitOps-managed platform service in `core-cert-manager`; CrateCheck remains the generic application service validation surface.
 
+The kind-first local path consumes cert-manager through the reusable Vanilla composition at `compositions/vanilla/entrypoint/`; it no longer owns a separate kind-local cert-manager service binding.
+
 ## Scope
 
 The local-only issuer chain is:

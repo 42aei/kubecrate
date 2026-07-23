@@ -77,6 +77,8 @@ def validate_repository_contract() -> None:
         assert source_ref.get("kind") == "GitRepository", name
         assert source_ref.get("name") == SYNC_NAME, name
         assert source_ref.get("namespace", SYNC_NAMESPACE) == SYNC_NAMESPACE, name
+    wrapper = yaml.safe_load((ENTRYPOINT / "kustomization.yaml").read_text(encoding="utf-8"))
+    assert "../../../compositions/vanilla/entrypoint" in wrapper.get("resources", [])
 
 
 def validate_helm_render() -> None:

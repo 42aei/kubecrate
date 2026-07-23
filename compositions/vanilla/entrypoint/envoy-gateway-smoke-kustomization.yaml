@@ -13,7 +13,7 @@ spec:
     - name: cratecheck
     - name: cert-manager-local-issuer
   interval: 1m0s
-  path: ./clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke
+  path: ./compositions/vanilla/platform-services/envoy-gateway/smoke
   prune: true
   sourceRef:
     kind: GitRepository

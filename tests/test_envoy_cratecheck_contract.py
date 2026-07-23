@@ -10,7 +10,7 @@ from celpy.adapter import json_to_cel
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGMAP = ROOT / "application-services" / "cratecheck" / "base" / "configmap.yaml"
 ENVOYPROXY = (
-    ROOT / "clusters" / "kind-dev-misc-local" / "platform-services"
+    ROOT / "compositions" / "vanilla" / "platform-services"
     / "envoy-gateway" / "smoke" / "smoke-envoyproxy.yaml"
 )
 

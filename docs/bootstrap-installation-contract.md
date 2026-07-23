@@ -101,7 +101,7 @@ The first bootstrap path installs Flux controllers with the Flux Helm chart, the
 
 Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
 
-The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint. When a real platform service is introduced, its reusable base lives at `platform-services/<service>/base/` and its concrete cluster binding lives at `clusters/<cluster>/platform-services/<service>/` immediately.
+The first runtime files live in this repository and use reusable `platform services` definitions plus the public Vanilla composition consumed by concrete cluster entrypoints. The kind-first local reference entrypoint keeps its bootstrap and Flux self-management binding, then includes `compositions/vanilla/entrypoint/` so it exercises the same GitOps-managed operation contract external consumers will use.
 
 External-Secrets Operator is deferred outside the first installable slice. Flux Git credentials for this slice come from the `flux2-sync` SSH deploy-key generation path.
 

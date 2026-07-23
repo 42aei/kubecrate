@@ -127,6 +127,8 @@ Concrete cluster directories explicitly enable and configure those services unde
 
 `clusters/<cluster>/entrypoint` is the intended first GitOps reconciliation root or table of contents for that concrete cluster.
 
+The reusable public Vanilla composition is rooted at `compositions/vanilla/entrypoint/`. Concrete reference consumers such as `clusters/kind-dev-misc-local/entrypoint/` include that public composition rather than keeping a separate shadow set of platform-service and application-service bindings. Cluster-local directories still own only concrete bootstrap, Flux self-management, and future cluster-specific overrides that are not part of the reusable Vanilla contract.
+
 Temporary cluster-local platform service implementations are forbidden unless an approved change explicitly allows them with a removal plan.
 
 This follows the general shape of Flux's recommended monorepo pattern where each cluster state is defined in a dedicated cluster directory that references shared infrastructure or app definitions. In Kubecrate terms, those reusable definitions are `platform services` and `application services`, not generic infrastructure or apps, unless the Flux pattern itself is being cited.

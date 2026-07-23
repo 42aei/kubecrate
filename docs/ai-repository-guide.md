@@ -20,6 +20,7 @@ Existing concrete runtime paths include:
 
 - `clusters/kind-dev-misc-local/entrypoint/` — the first GitOps reconciliation root for the kind-first local path.
 - `clusters/kind-dev-misc-local/platform-services/flux/` — the concrete cluster binding for Flux on `kind-dev-misc-local`.
+- `compositions/vanilla/entrypoint/` — the reusable public Vanilla composition consumed by the kind-first local reference path and future external consumers.
 - `platform-services/flux/base/` — the reusable Flux platform service base.
 
 Do not infer new runtime directories from these examples. New runtime manifests, scripts, config, or directories require an approved OpenSpec change that explicitly authorizes them.
@@ -63,6 +64,7 @@ Validation depends on the kind of change.
 For changes touching existing Kubernetes manifests, Helm values, Kustomize overlays, or runtime-adjacent docs, run the relevant static rendering command. For the current kind-first local path entrypoint:
 
 - `kustomize build clusters/kind-dev-misc-local/entrypoint`
+- `kustomize build compositions/vanilla/entrypoint`
 
 Static rendering, schema checks, and build validation are necessary but not sufficient whenever bootstrap installation or GitOps-managed operation applies or reconciles Kubernetes resources.
 

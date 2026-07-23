@@ -11,9 +11,9 @@ from celpy.adapter import json_to_cel
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGMAP = ROOT / "application-services/cratecheck/base/configmap.yaml"
 RBAC = ROOT / "application-services/cratecheck/base/clusterrole.yaml"
-POLICY = ROOT / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke-policy/require-ns-label-policy.yaml"
-FIXTURE = ROOT / "clusters/kind-dev-misc-local/platform-services/kyverno/smoke/smoke-allowed-namespace.yaml"
-ENTRYPOINT = ROOT / "clusters/kind-dev-misc-local/entrypoint"
+POLICY = ROOT / "compositions/vanilla/platform-services/kyverno/smoke-policy/require-ns-label-policy.yaml"
+FIXTURE = ROOT / "compositions/vanilla/platform-services/kyverno/smoke/smoke-allowed-namespace.yaml"
+ENTRYPOINT = ROOT / "compositions/vanilla/entrypoint"
 MANIFEST_VALIDATOR = ROOT / "scripts/validate-kubernetes-manifests.py"
 RUNNER = ROOT / "scripts/direct-kind-flux-e2e.sh"
 
@@ -30,9 +30,9 @@ PRESERVED_IDS = {
 }
 KYVERNO_KUSTOMIZE_ROOTS = {
     "platform-services/kyverno/base",
-    "clusters/kind-dev-misc-local/platform-services/kyverno",
-    "clusters/kind-dev-misc-local/platform-services/kyverno/smoke-policy",
-    "clusters/kind-dev-misc-local/platform-services/kyverno/smoke",
+    "compositions/vanilla/platform-services/kyverno",
+    "compositions/vanilla/platform-services/kyverno/smoke-policy",
+    "compositions/vanilla/platform-services/kyverno/smoke",
 }
 DENIAL_MESSAGE = "Namespace requires kubecrate.io/validated=true"
 

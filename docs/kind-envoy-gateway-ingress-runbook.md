@@ -2,6 +2,8 @@
 
 This guide validates the Envoy Gateway HTTP ingress slice for `kind-dev-misc-local`.
 
+The kind-first local path consumes Envoy Gateway through the reusable Vanilla composition at `compositions/vanilla/entrypoint/`; it no longer owns a separate kind-local Envoy Gateway service binding.
+
 ## Local access model
 
 The repository-owned kind config maps host port `10080` to node port `30080` on the control-plane node. Envoy Gateway creates a managed Envoy proxy Service for the smoke Gateway. The `EnvoyProxy` resource configures the Service as `NodePort` so ingress traffic reaches the cluster through this mapping.
