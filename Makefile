@@ -20,7 +20,7 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate validate-cratecheck validate-flux-sync-values
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate validate-cratecheck validate-flux-sync-values validate-vanilla-composition
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -105,10 +105,13 @@ kind-dev-misc-local-evidence:
 
 PYTHON ?= python3
 
-validate: validate-cratecheck validate-flux-sync-values
+validate: validate-cratecheck validate-flux-sync-values validate-vanilla-composition
 
 validate-cratecheck:
 > $(PYTHON) tests/validate-cratecheck.py
 
 validate-flux-sync-values:
 > $(PYTHON) tests/validate-flux-sync-values.py --helm-render
+
+validate-vanilla-composition:
+> $(PYTHON) tests/validate-vanilla-composition.py

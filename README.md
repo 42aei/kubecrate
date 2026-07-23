@@ -48,6 +48,7 @@ It carries the project model, vocabulary, roadmap, and backlog alongside the fir
 - `docs/README.md` for the docs map
 - `docs/architecture.md` for the operating model
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
+- `docs/vanilla-composition.md` for the reusable public Vanilla composition and the kind-first local reference consumer
 - `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
@@ -56,4 +57,4 @@ It carries the project model, vocabulary, roadmap, and backlog alongside the fir
 
 Kubecrate is early.
 
-The current focus is validating and reviewing the first installable slice on the kind-first local path without losing the broader cluster-provider agnostic direction.
+The current focus is validating and reviewing the reusable Vanilla composition through the kind-first local path without losing the broader cluster-provider agnostic direction.

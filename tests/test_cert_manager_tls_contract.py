@@ -11,10 +11,10 @@ from celpy.adapter import json_to_cel
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGMAP = ROOT / "application-services/cratecheck/base/configmap.yaml"
 RBAC = ROOT / "application-services/cratecheck/base/clusterrole.yaml"
-GATEWAY = ROOT / "clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke/smoke-gateway.yaml"
-ROUTE = ROOT / "clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke/smoke-httproute.yaml"
-REFERENCE_GRANT = ROOT / "clusters/kind-dev-misc-local/platform-services/envoy-gateway/smoke/smoke-referencegrant.yaml"
-CERTIFICATES = ROOT / "clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer/local-ca-issuer.yaml"
+GATEWAY = ROOT / "compositions/vanilla/platform-services/envoy-gateway/smoke/smoke-gateway.yaml"
+ROUTE = ROOT / "compositions/vanilla/platform-services/envoy-gateway/smoke/smoke-httproute.yaml"
+REFERENCE_GRANT = ROOT / "compositions/vanilla/platform-services/envoy-gateway/smoke/smoke-referencegrant.yaml"
+CERTIFICATES = ROOT / "compositions/vanilla/platform-services/cert-manager/local-issuer/local-ca-issuer.yaml"
 MANIFEST_VALIDATOR = ROOT / "scripts/validate-kubernetes-manifests.py"
 
 CERT_MANAGER_IDS = {
@@ -27,8 +27,8 @@ CERT_MANAGER_IDS = {
 }
 CERT_MANAGER_KUSTOMIZE_ROOTS = {
     "platform-services/cert-manager/base",
-    "clusters/kind-dev-misc-local/platform-services/cert-manager",
-    "clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer",
+    "compositions/vanilla/platform-services/cert-manager",
+    "compositions/vanilla/platform-services/cert-manager/local-issuer",
 }
 
 

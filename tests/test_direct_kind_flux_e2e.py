@@ -217,6 +217,72 @@ def test_runner_is_executable_and_syntax_valid() -> None:
     assert subprocess.run(["bash", "-n", str(RUNNER)]).returncode == 0
 
 
+def test_runner_renders_configured_envoy_host_ports_into_kind_config(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "kind").mkdir(parents=True)
+    shutil.copy2(ROOT / "kind" / "config.yaml", repo / "kind" / "config.yaml")
+    init_repo(repo, "port-render")
+    run_tmp = tmp_path / "run-tmp"
+    run_tmp.mkdir()
+    helper_source = RUNNER.read_text().split("# ── Preflight", 1)[0]
+    script = helper_source + f'''\n
+TMPDIR={str(run_tmp)!r}
+ENVOY_HTTP_HOST_PORT=12080
+ENVOY_HTTPS_HOST_PORT=12443
+validate_host_port KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT "${{ENVOY_HTTP_HOST_PORT}}"
+validate_host_port KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT "${{ENVOY_HTTPS_HOST_PORT}}"
+test "${{ENVOY_HTTP_HOST_PORT}}" != "${{ENVOY_HTTPS_HOST_PORT}}"
+render_kind_config
+printf '%s\n' "${{KIND_CONFIG_RENDERED}}"
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=repo, text=True,
+        capture_output=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    rendered = Path(result.stdout.strip()).read_text()
+    assert "containerPort: 30080" in rendered
+    assert "hostPort: 12080" in rendered
+    assert "containerPort: 30443" in rendered
+    assert "hostPort: 12443" in rendered
+    assert "hostPort: 10080" not in rendered
+    assert "hostPort: 10443" not in rendered
+
+
+def test_runner_rejects_invalid_or_duplicate_envoy_host_ports() -> None:
+    text = RUNNER.read_text()
+    assert 'ENVOY_STATUS_URL="http://127.0.0.1:${ENVOY_HTTP_HOST_PORT}/status.json"' in text
+    assert 'ENVOY_TLS_STATUS_URL="https://cratecheck.local:${ENVOY_HTTPS_HOST_PORT}/status.json"' in text
+    assert 'kind create cluster --name "${CLUSTER}" --config "${KIND_CONFIG_RENDERED}"' in text
+    assert 'test "${ENVOY_HTTP_HOST_PORT}" != "${ENVOY_HTTPS_HOST_PORT}"' in text
+
+    helper_source = text.split("# ── Preflight", 1)[0]
+    script = helper_source + '''\n
+ENVOY_HTTP_HOST_PORT="$1"
+ENVOY_HTTPS_HOST_PORT="$2"
+validate_host_port KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT "${ENVOY_HTTP_HOST_PORT}"
+validate_host_port KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT "${ENVOY_HTTPS_HOST_PORT}"
+test "${ENVOY_HTTP_HOST_PORT}" != "${ENVOY_HTTPS_HOST_PORT}" || \
+  fail "Envoy HTTP and HTTPS host ports must differ"
+'''
+    cases = [
+        ("12080", "12443", True, ""),
+        ("not-a-port", "12443", False, "numeric TCP host port"),
+        ("0", "12443", False, "between 1 and 65535"),
+        ("12080", "12080", False, "must differ"),
+    ]
+    for http_port, https_port, valid, error in cases:
+        result = subprocess.run(
+            ["bash", "-c", script, "port-test", http_port, https_port],
+            cwd=ROOT, text=True, capture_output=True, timeout=10,
+        )
+        assert (result.returncode == 0) is valid, result.stderr
+        if error:
+            assert error in result.stderr
+
+
 @pytest.mark.parametrize(
     ("revision", "valid"),
     [
@@ -902,7 +968,8 @@ def test_cert_manager_scenario_uses_trusted_https_and_exact_red_restore() -> Non
     text = RUNNER.read_text()
     scenario = text[text.index("# ── cert-manager TLS Scenario"):text.index("# Kill port-forward")]
     assert '--cacert "${TMPDIR}/cratecheck-ca.crt"' in scenario
-    assert '--resolve cratecheck.local:10443:127.0.0.1' in scenario
+    assert '--resolve "cratecheck.local:${ENVOY_HTTPS_HOST_PORT}:127.0.0.1"' in scenario
+    assert 'cratecheck.local:10443:127.0.0.1' not in scenario
     assert "suspend kustomization cert-manager-local-issuer" in scenario
     assert "delete certificate cratecheck-tls" in scenario
     assert "delete secret cratecheck-tls" not in scenario

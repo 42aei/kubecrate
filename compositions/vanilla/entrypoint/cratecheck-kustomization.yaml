@@ -1,20 +1,20 @@
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: kyverno-smoke
+  name: cratecheck
   namespace: flux-system
   labels:
-    app.kubernetes.io/name: kyverno-smoke
+    app.kubernetes.io/name: cratecheck
     app.kubernetes.io/part-of: kubecrate
     kubecrate.io/workload-category: application-services
 spec:
   dependsOn:
-    - name: kyverno-smoke-policy
+    - name: external-secrets-operator-smoke
   interval: 1m0s
-  path: ./clusters/kind-dev-misc-local/platform-services/kyverno/smoke
+  path: ./compositions/vanilla/application-services/cratecheck
   prune: true
   sourceRef:
     kind: GitRepository
     name: flux-system-sync
   timeout: 5m0s
-  wait: false
+  wait: true

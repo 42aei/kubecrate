@@ -2,6 +2,8 @@
 
 This runbook describes the Kyverno vertical slice on the kind-first local path. Kyverno is a platform service reconciled through GitOps-managed operation in `core-kyverno`; the labeled namespace fixture is an application service consumer.
 
+The kind-first local path consumes Kyverno through the reusable Vanilla composition at `compositions/vanilla/entrypoint/`; it no longer owns a separate kind-local Kyverno service binding.
+
 ## Bounded contract
 
 The single `require-ns-label` ClusterPolicy enforces `kubecrate.io/validated: "true"` only for namespaces named `kyverno-smoke-*`. The narrow match keeps the proof isolated from existing platform services and application services. CrateCheck remains the single status surface and adds three checks:

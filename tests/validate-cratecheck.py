@@ -22,11 +22,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASE_DIR = REPO_ROOT / "application-services" / "cratecheck" / "base"
-CLUSTER_BINDING_DIR = (
-    REPO_ROOT / "clusters" / "kind-dev-misc-local" / "application-services" / "cratecheck"
+COMPOSITION_BINDING_DIR = (
+    REPO_ROOT / "compositions" / "vanilla" / "application-services" / "cratecheck"
 )
 ENTRYPOINT_DIR = REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
-CRATECHECK_KUSTOMIZATION_PATH = ENTRYPOINT_DIR / "cratecheck-kustomization.yaml"
+VANILLA_ENTRYPOINT_DIR = REPO_ROOT / "compositions" / "vanilla" / "entrypoint"
+CRATECHECK_KUSTOMIZATION_PATH = VANILLA_ENTRYPOINT_DIR / "cratecheck-kustomization.yaml"
 
 FAILURES: list[str] = []
 
@@ -305,7 +306,7 @@ def validate_cratecheck_reconciliation_order() -> bool:
         },
         "dependsOn": ["external-secrets-operator-smoke"],
         "interval": "1m0s",
-        "path": "./clusters/kind-dev-misc-local/application-services/cratecheck",
+        "path": "./compositions/vanilla/application-services/cratecheck",
         "prune": True,
         "sourceRef": {"kind": "GitRepository", "name": "flux-system-sync"},
         "timeout": "5m0s",
@@ -333,11 +334,12 @@ def validate_cratecheck_reconciliation_order() -> bool:
         f"got {actual_contract}",
     )
     all_ok &= check(
-        "entrypoint includes the CrateCheck Flux Kustomization",
-        "./cratecheck-kustomization.yaml" in entrypoint_resources,
+        "Vanilla entrypoint includes the CrateCheck Flux Kustomization",
+        "./cratecheck-kustomization.yaml" in entrypoint_resources
+        or "../../../compositions/vanilla/entrypoint" in entrypoint_resources,
     )
     all_ok &= check(
-        "entrypoint does not apply CrateCheck directly",
+        "Vanilla entrypoint does not apply CrateCheck directly",
         "../application-services/cratecheck" not in entrypoint_resources,
     )
     return all_ok
@@ -640,7 +642,7 @@ def main():
     if args.render:
         print("\n=== Kustomize build validation ===")
         base_ok = run_kustomize_build(BASE_DIR, "base")
-        binding_ok = run_kustomize_build(CLUSTER_BINDING_DIR, "cluster-binding")
+        binding_ok = run_kustomize_build(COMPOSITION_BINDING_DIR, "Vanilla composition binding")
         entrypoint_ok = run_kustomize_build(ENTRYPOINT_DIR, "entrypoint")
 
         print("\n=== kubeconform schema validation ===")

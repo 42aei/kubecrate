@@ -12,7 +12,7 @@ spec:
     - name: cert-manager
     - name: cratecheck
   interval: 1m0s
-  path: ./clusters/kind-dev-misc-local/platform-services/cert-manager/local-issuer
+  path: ./compositions/vanilla/platform-services/cert-manager/local-issuer
   prune: true
   sourceRef:
     kind: GitRepository

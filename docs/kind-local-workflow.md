@@ -53,6 +53,8 @@ Kubecrate intentionally treats the bootstrap-installed GitOps controller and sup
 
 After handoff, ongoing reconciliation moves into GitOps-managed operation.
 
+The current kind-first local path is a reference consumer of the reusable Vanilla composition. `clusters/kind-dev-misc-local/entrypoint/` keeps kind-local bootstrap and Flux self-management resources, then includes `compositions/vanilla/entrypoint/` so local validation exercises the same public composition path external consumers will use.
+
 From that point, platform services and application services are managed through GitOps according to the two-axis model.
 
 ## Inputs and outputs
