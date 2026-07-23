@@ -6,7 +6,17 @@ The kind-first local path consumes Envoy Gateway through the reusable Vanilla co
 
 ## Local access model
 
-The repository-owned kind config maps host port `10080` to node port `30080` on the control-plane node. Envoy Gateway creates a managed Envoy proxy Service for the smoke Gateway. The `EnvoyProxy` resource configures the Service as `NodePort` so ingress traffic reaches the cluster through this mapping.
+The repository-owned kind config maps host port `10080` to node port `30080` on the control-plane node and host port `10443` to node port `30443` for local TLS. Envoy Gateway creates a managed Envoy proxy Service for the smoke Gateway. The `EnvoyProxy` resource configures the Service as `NodePort` so ingress traffic reaches the cluster through these mappings.
+
+The ordinary kind-first local path keeps those documented defaults. Disposable automated QA can avoid collisions with retained demos or other kind clusters by selecting alternate host ports at runtime:
+
+```sh
+KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT=12080 \
+KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT=12443 \
+./scripts/direct-kind-flux-e2e.sh
+```
+
+The runner renders a private temporary kind config for cluster creation and uses the same selected ports for its `/status.json` HTTP and trusted HTTPS evidence. It does not change the committed `kind/config.yaml` defaults or the durable GitOps source.
 
 Existing kind clusters created before this mapping was added must be recreated before the host port works:
 
@@ -40,7 +50,7 @@ kubectl --context kind-kind-dev-misc-local -n cratecheck get deploy,svc,endpoint
 
 ## Validate CrateCheck status through Envoy Gateway ingress
 
-Access CrateCheck `/status.json` through the Envoy Gateway ingress path (host port 10080 → kind node → Envoy proxy → CrateCheck Service):
+Access CrateCheck `/status.json` through the Envoy Gateway ingress path (default host port 10080 → kind node → Envoy proxy → CrateCheck Service):
 
 ```sh
 curl -fsS http://127.0.0.1:10080/status.json | python3 -c '
@@ -162,5 +172,7 @@ Do not use this red-test step against shared or production-like clusters.
 ## Disposable-cluster QA
 
 Use `scripts/direct-kind-flux-e2e.sh` for automated live QA. It requires a dedicated remote QA branch and exact expected commit, creates and verifies a disposable kind context, renders that branch into the in-memory HTTPS Flux source before the initial apply, checks the reconciled artifact revision, and always cleans up its cluster. The committed Flux source remains `main`.
+
+When default host ports are already in use, set `KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT` and `KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT` to distinct available TCP ports. The runner rejects invalid or duplicate ports, injects them only into its temporary kind config, and reads Envoy `/status.json` from the exact configured host ports.
 
 The runner proves the baseline and final all-green JSON contract through host ingress. During its bounded red scenario it suspends the Envoy smoke Kustomization, changes only the HTTPRoute backend port to `9999`, and uses the direct CrateCheck port-forward to prove only `envoy-httproute-ready` turns red. It then restores port `8080`, resumes and reconciles Flux, and proves host ingress and all checks return green.

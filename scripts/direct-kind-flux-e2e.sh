@@ -29,10 +29,13 @@ PORT_FORWARD_PID=""
 RED_STATE=none
 CRATECHECK_PORT=18080
 CRATECHECK_STATUS_URL="http://127.0.0.1:${CRATECHECK_PORT}/status.json"
-ENVOY_STATUS_URL="http://127.0.0.1:10080/status.json"
-ENVOY_TLS_STATUS_URL="https://cratecheck.local:10443/status.json"
+ENVOY_HTTP_HOST_PORT="${KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT:-10080}"
+ENVOY_HTTPS_HOST_PORT="${KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT:-10443}"
+ENVOY_STATUS_URL="http://127.0.0.1:${ENVOY_HTTP_HOST_PORT}/status.json"
+ENVOY_TLS_STATUS_URL="https://cratecheck.local:${ENVOY_HTTPS_HOST_PORT}/status.json"
 RUN_TMP_ROOT="${KUBECRATE_E2E_TMP_ROOT:-${TMPDIR:-/tmp}}"
 TMPDIR=""
+KIND_CONFIG_RENDERED=""
 EVIDENCE_ROOT="${KUBECRATE_E2E_EVIDENCE_DIR:-${PWD}/.tmp/direct-kind-flux-e2e-failures}"
 CURRENT_PHASE=preflight
 CURRENT_ASSERTION="preflight completed"
@@ -219,6 +222,56 @@ validate_status_json() {
   python3 scripts/validate-cratecheck-status.py --phase "$1" "$2"
 }
 
+validate_host_port() {
+  local name="$1"
+  local value="$2"
+  [[ "${value}" =~ ^[0-9]+$ ]] || fail "${name} must be a numeric TCP host port"
+  test "${value}" -ge 1 && test "${value}" -le 65535 || \
+    fail "${name} must be between 1 and 65535"
+}
+
+render_kind_config() {
+  KIND_CONFIG_RENDERED="${TMPDIR}/kind-config.yaml"
+  KIND_CONFIG_RENDERED="${KIND_CONFIG_RENDERED}" \
+  ENVOY_HTTP_HOST_PORT="${ENVOY_HTTP_HOST_PORT}" \
+  ENVOY_HTTPS_HOST_PORT="${ENVOY_HTTPS_HOST_PORT}" \
+  python3 - <<'PY'
+import os
+from pathlib import Path
+
+source = Path("kind/config.yaml")
+target = Path(os.environ["KIND_CONFIG_RENDERED"])
+http_port = os.environ["ENVOY_HTTP_HOST_PORT"]
+https_port = os.environ["ENVOY_HTTPS_HOST_PORT"]
+
+lines = source.read_text(encoding="utf-8").splitlines()
+replacements = {"30080": http_port, "30443": https_port}
+seen = set()
+rendered = []
+pending_container_port = None
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("containerPort:") or stripped.startswith("- containerPort:"):
+        pending_container_port = stripped.split(":", 1)[1].strip()
+    if stripped.startswith("hostPort:") and pending_container_port in replacements:
+        indent = line[: len(line) - len(line.lstrip())]
+        rendered.append(f"{indent}hostPort: {replacements[pending_container_port]}")
+        seen.add(pending_container_port)
+        pending_container_port = None
+        continue
+    rendered.append(line)
+
+missing = sorted(set(replacements) - seen)
+if missing:
+    raise SystemExit(
+        "kind/config.yaml does not contain expected hostPort mappings for containerPort "
+        + ", ".join(missing)
+    )
+
+target.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+PY
+}
+
 assert_kyverno_denial_reason() {
   local normalized
   normalized="$(tr '\n\r\t' '   ' <<<"$1" | tr -s ' ')"
@@ -376,6 +429,10 @@ esac
 
 # Verify kind/config.yaml exists.
 test -f kind/config.yaml || fail "kind/config.yaml not found"
+validate_host_port KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT "${ENVOY_HTTP_HOST_PORT}"
+validate_host_port KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT "${ENVOY_HTTPS_HOST_PORT}"
+test "${ENVOY_HTTP_HOST_PORT}" != "${ENVOY_HTTPS_HOST_PORT}" || \
+  fail "Envoy HTTP and HTTPS host ports must differ"
 
 # ── Cluster ──────────────────────────────────────────────────────────────────
 
@@ -405,6 +462,7 @@ trap 'failure_rc=$?; test -n "${FAILURE_ASSERTION}" || FAILURE_ASSERTION="${CURR
 # Create a private temporary directory for the token Secret manifest.
 TMPDIR="$(mktemp -d "${RUN_TMP_ROOT%/}/kubecrate-direct-e2e.XXXXXX")"
 chmod 700 "${TMPDIR}"
+render_kind_config
 
 # Write the HTTPS credentials Secret manifest.
 cat >"${TMPDIR}/flux-https-secret.yaml" <<EOF
@@ -425,7 +483,7 @@ CLUSTER_CREATED=true
 # Create the kind cluster.
 CURRENT_PHASE=cluster-create
 CURRENT_ASSERTION="disposable kind cluster created and became Ready"
-kind create cluster --name "${CLUSTER}" --config kind/config.yaml
+kind create cluster --name "${CLUSTER}" --config "${KIND_CONFIG_RENDERED}"
 assert_context
 kubectl --context "${CONTEXT}" wait --for=condition=Ready node --all --timeout=180s
 
@@ -695,7 +753,7 @@ kubectl --context "${CONTEXT}" get secret cratecheck-tls -n cratecheck \
   -o jsonpath='{.data.ca\.crt}' | base64 -d >"${TMPDIR}/cratecheck-ca.crt"
 test -s "${TMPDIR}/cratecheck-ca.crt" || fail "cert-manager TLS CA certificate is empty"
 curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
-  --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
+  --resolve "cratecheck.local:${ENVOY_HTTPS_HOST_PORT}:127.0.0.1" "${ENVOY_TLS_STATUS_URL}" \
   >"${TMPDIR}/cert-manager-baseline-status.json"
 validate_status_json green "${TMPDIR}/cert-manager-baseline-status.json"
 
@@ -711,7 +769,7 @@ curl --fail --silent --show-error "${CRATECHECK_STATUS_URL}" \
   >"${TMPDIR}/cert-manager-red-status.json"
 validate_status_json cert-manager-red "${TMPDIR}/cert-manager-red-status.json"
 curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
-  --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" >/dev/null
+  --resolve "cratecheck.local:${ENVOY_HTTPS_HOST_PORT}:127.0.0.1" "${ENVOY_TLS_STATUS_URL}" >/dev/null
 
 CURRENT_PHASE=cert-manager-restore-green
 CURRENT_ASSERTION="cert-manager TLS issuance, HTTPS, and all checks returned to green"
@@ -733,7 +791,7 @@ kubectl --context "${CONTEXT}" get secret cratecheck-tls -n cratecheck \
 deadline=$((SECONDS + 60))
 while (( SECONDS < deadline )); do
   if curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
-      --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
+      --resolve "cratecheck.local:${ENVOY_HTTPS_HOST_PORT}:127.0.0.1" "${ENVOY_TLS_STATUS_URL}" \
       >"${TMPDIR}/cert-manager-restored-status.json" 2>/dev/null && \
      validate_status_json green "${TMPDIR}/cert-manager-restored-status.json" >/dev/null 2>&1; then
     break
@@ -741,7 +799,7 @@ while (( SECONDS < deadline )); do
   sleep 1
 done
 curl --fail --silent --show-error --cacert "${TMPDIR}/cratecheck-ca.crt" \
-  --resolve cratecheck.local:10443:127.0.0.1 "${ENVOY_TLS_STATUS_URL}" \
+  --resolve "cratecheck.local:${ENVOY_HTTPS_HOST_PORT}:127.0.0.1" "${ENVOY_TLS_STATUS_URL}" \
   >"${TMPDIR}/cert-manager-restored-status.json"
 validate_status_json green "${TMPDIR}/cert-manager-restored-status.json"
 RED_STATE=none

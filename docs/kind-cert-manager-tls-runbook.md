@@ -35,6 +35,19 @@ KUBECRATE_EXPECTED_COMMIT=<full-commit-sha> \
 ./scripts/direct-kind-flux-e2e.sh
 ```
 
+If another local cluster or retained demo already owns the default Envoy host ports, select distinct runtime-only ports for the disposable cluster:
+
+```sh
+KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT=12080 \
+KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT=12443 \
+KUBECRATE_PR_BRANCH=<exact-qa-branch> \
+KUBECRATE_PR_NUMBER=<pr-number> \
+KUBECRATE_EXPECTED_COMMIT=<full-commit-sha> \
+./scripts/direct-kind-flux-e2e.sh
+```
+
+The runner renders those selected ports into a private temporary kind config and uses the same HTTPS host port for trusted `/status.json` evidence. The committed kind-first local defaults remain `10080` and `10443`.
+
 To validate an already merged PR at exact current `main`, select the explicit
 identity mode. This also requires the referenced PR to be closed and merged with
 the expected commit as its merge commit, and makes Flux reconcile `main`:
@@ -53,6 +66,8 @@ curl --fail --cacert "$CA_FILE" \
   --resolve cratecheck.local:10443:127.0.0.1 \
   https://cratecheck.local:10443/status.json
 ```
+
+Replace `10443` with the selected `KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT` when validating a disposable QA run that used a non-default HTTPS host port.
 
 `/status.json` is authoritative. The runner requires every ESO, Envoy, cert-manager, and CrateCheck check to be green.
 
