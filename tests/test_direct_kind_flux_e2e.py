@@ -740,6 +740,37 @@ data:
     assert "create: false" in result.stdout
 
 
+def test_renderer_preserves_ssh_deploy_key_generation() -> None:
+    input_yaml = """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flux-sync-values
+  namespace: flux-system
+data:
+  values.yaml: |
+    secret:
+      create: true
+      generate:
+        sshKeyAlgorithm: ed25519
+    gitRepository:
+      spec:
+        url: ssh://git@github.com/42aei/kubecrate.git
+        secretRef: {name: stale-secret}
+        ref:
+          branch: main
+"""
+    result = subprocess.run(
+        ["python3", str(RENDERER), "--ssh-url",
+         "ssh://git@github.com/public-user/kubecrate.git", "--branch", "demo"],
+        input=input_yaml, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert "ssh://git@github.com/public-user/kubecrate.git" in result.stdout
+    assert "sshKeyAlgorithm: ed25519" in result.stdout
+    assert "create: true" in result.stdout
+    assert "secretRef" not in result.stdout
+    assert "branch: demo" in result.stdout
+
+
 def test_renderer_rejects_missing_or_multiple_configmaps() -> None:
     """Renderer fails on zero or multiple flux-sync-values ConfigMaps."""
     result = subprocess.run(

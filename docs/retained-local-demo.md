@@ -4,14 +4,14 @@
 
 Prerequisites: Linux or macOS, Docker, `git`, `kind`, `kubectl`, `kustomize`, `helm`, `flux`, `curl`, `python3`, `base64`, `timeout`, and `make`. Ports `10080` and `10443` must be free.
 
-From a clean branch whose `HEAD` is available from its remote:
+From a clean branch whose `HEAD` is available from its remote using your normal Git credentials:
 
 ```sh
 make local-check
 make local-up
 ```
 
-`local-up` creates or reuses the `kubecrate-local` kind cluster, reconciles the exact checked-out commit, waits for the stack to become green, and leaves the cluster running.
+`local-up` creates or reuses the `kubecrate-local` kind cluster, bootstraps Flux with the existing SSH deploy-key flow, reconciles the exact checked-out commit after deploy-key registration, waits for the stack to become green, and leaves the cluster running.
 
 ## Open the demo
 
@@ -72,26 +72,20 @@ make local-down
 
 ## Source and cluster overrides
 
-The workflow requires a clean checkout and an exact remote branch match before creating a cluster. By default the retained demo source must be readable without credentials. This is intended for future public upstreams or forks; current project QA may instead use the authenticated exact-PR runner.
+The workflow requires a clean checkout and an exact remote branch match before creating a cluster. By default this preflight uses your current Git credentials only to prove that the selected remote/ref advertises the exact checked-out commit; those credentials are not copied into the cluster.
 
-For an anonymously readable fork or source:
+Flux authenticates to the GitOps source through the existing `flux2-sync` SSH deploy-key flow. Bootstrap creates `Secret/flux-system-sync` with generated SSH identity material, prints the generated public key from `identity.pub`, and waits for GitOps readiness after you register that public key as a deploy key with the Git provider. The private key remains in-cluster.
+
+For a future anonymously readable public fork or source, explicitly opt into anonymous mode:
 
 ```sh
 KUBECRATE_LOCAL_SOURCE_URL=https://github.com/you/kubecrate.git \
 KUBECRATE_LOCAL_SOURCE_REF=my-branch \
+KUBECRATE_LOCAL_ANONYMOUS_SOURCE=1 \
 make local-check
 ```
 
-For a private source, opt into basic-auth credentials. Credentials come from `KUBECRATE_LOCAL_GIT_USERNAME`/`KUBECRATE_LOCAL_GIT_PASSWORD`, or from `git credential fill` when those are unset (for example a stored PAT or `gh auth git-credential`):
-
-```sh
-KUBECRATE_LOCAL_GIT_BASIC_AUTH=1 \
-KUBECRATE_LOCAL_GIT_USERNAME=you \
-KUBECRATE_LOCAL_GIT_PASSWORD=ghp_... \
-make local-up
-```
-
-With the override set, bootstrap creates a `flux-system-sync` basic-auth Secret and renders the Flux source with a matching `secretRef`. Credentials are not recorded in state or evidence.
+Anonymous mode renders Flux without a Git credential Secret. It is for future public sources only and is not the current private-repository default.
 
 Use `KUBECRATE_LOCAL_CLUSTER=kubecrate-local-<name>` with every lifecycle command to select another demo-owned cluster name. Multiple retained demos cannot run concurrently because the host ports are fixed.
 

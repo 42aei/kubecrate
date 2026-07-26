@@ -42,7 +42,7 @@ name=$(basename "$0"); printf '%s %s\\n' "$name" "$*" >>"$CALL_LOG"
 +;;
 +python3) exec {shutil.which('python3')} "$@";;
 +kind) if [[ "$*" == "get clusters" ]]; then test ! -f "$CLUSTER_STATE" || cat "$CLUSTER_NAME"; exit 0; fi; if [[ "$*" == *"create cluster"* ]]; then prev=""; for arg; do test "$prev" != --name || printf '%s\\n' "$arg" >"$CLUSTER_NAME"; prev="$arg"; done; touch "$CLUSTER_STATE"; exit {create_rc}; fi; if [[ "$*" == *"delete cluster"* ]]; then rm -f "$CLUSTER_STATE"; exit 0; fi;;
-kubectl) [[ -n "${{FAKE_CAPTURE_SECRET:-}}" ]] && printf 'Authorization: Bearer %s\n' "$FAKE_CAPTURE_SECRET"; [[ -n "${{FAKE_CAPTURE_SECRET:-}}" ]] && printf 'token=%s\n' "$FAKE_CAPTURE_SECRET" >&2; [[ -n "${{FAKE_HANG_MATCH:-}}" && "$*" == *"$FAKE_HANG_MATCH"* ]] && sleep 30; if [[ "$*" == "config current-context" ]]; then printf 'kind-%s' "$(cat "$CLUSTER_NAME")"; elif [[ "$*" == *"get gitrepository"* ]]; then printf '%s' "${{FAKE_REVISION-demo@sha1:{commit}}}"; elif [[ "$*" == *"get secret cratecheck-tls"* ]]; then printf 'ZmFrZS1jYQ=='; fi; exit "${{FAKE_KUBECTL_RC:-0}}";;
+kubectl) [[ -n "${{FAKE_CAPTURE_SECRET:-}}" ]] && printf 'Authorization: Bearer ***' "$FAKE_CAPTURE_SECRET"; [[ -n "${{FAKE_CAPTURE_SECRET:-}}" ]] && printf 'token=%s\n' "$FAKE_CAPTURE_SECRET" >&2; [[ "$*" == *"apply -f -"* ]] && cat >/dev/null; [[ -n "${{FAKE_HANG_MATCH:-}}" && "$*" == *"$FAKE_HANG_MATCH"* ]] && sleep 30; if [[ "$*" == "config current-context" ]]; then printf 'kind-%s' "$(cat "$CLUSTER_NAME")"; elif [[ "$*" == *"get secret flux-system-sync"* ]]; then printf 'ssh-ed25519 fake-deploy-key'; elif [[ "$*" == *"get gitrepository"* ]]; then printf '%s' "${{FAKE_REVISION-demo@sha1:{commit}}}"; elif [[ "$*" == *"get secret cratecheck-tls"* ]]; then printf 'ZmFrZS1jYQ=='; fi; exit "${{FAKE_KUBECTL_RC:-0}}";;
 helm) [[ "${{FAKE_HANG_MATCH:-}}" == helm ]] && sleep 30; [[ "${{FAKE_DELAY_MATCH:-}}" == helm ]] && sleep "${{FAKE_DELAY_SECONDS:-2}}"; exit "${{FAKE_HELM_RC:-31}}";;
 curl) [[ -n "${{FAKE_CAPTURE_SECRET:-}}" ]] && printf 'Authorization: Bearer %s\n' "$FAKE_CAPTURE_SECRET"; [[ -n "${{FAKE_CAPTURE_SECRET:-}}" ]] && printf 'password=%s\n' "$FAKE_CAPTURE_SECRET" >&2; [[ "${{FAKE_HANG_MATCH:-}}" == curl ]] && sleep 30; if [[ -v FAKE_STATUS_JSON ]]; then printf '%s' "$FAKE_STATUS_JSON"; else printf '{{}}'; fi; exit "${{FAKE_CURL_RC:-0}}";;
 base64) if [[ "$*" == *"-d"* ]]; then printf 'fake-ca'; fi; exit 0;;
@@ -61,14 +61,14 @@ def run(repo,bindir,log,cluster,command,state,**extra):
 def call_log(log):
     return log.read_text() if log.exists() else ""
 
-def test_check_derives_public_fork_url_and_exact_ref(tmp_path):
+def test_check_derives_authenticated_source_and_exact_ref_by_default(tmp_path):
     repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit)
     result=run(repo,bindir,log,cluster,"check",tmp_path/"state")
     assert result.returncode==0,result.stderr
     assert "source=https://github.com/public-user/kubecrate.git" in result.stdout and "ref=demo" in result.stdout and f"commit={commit}" in result.stdout
     assert "kind create cluster" not in log.read_text()
 
-@pytest.mark.parametrize(("case","error"),[("dirty","checkout is dirty"),("inaccessible","not anonymously accessible"),("mismatch","does not advertise checkout commit")])
+@pytest.mark.parametrize(("case","error"),[("dirty","checkout is dirty"),("inaccessible","not accessible with current Git credentials"),("mismatch","does not advertise checkout commit")])
 def test_source_failures_precede_cluster_creation(tmp_path,case,error):
     repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo)
     if case=="dirty":(repo/"kind/config.yaml").write_text("dirty\n")
@@ -141,52 +141,38 @@ def test_lifecycle_refuses_non_demo_cluster_identity_before_mutation(tmp_path,na
     calls=call_log(log)
     assert all(word not in calls for word in ("kind get clusters","kind create","kind delete","helm ","kubectl ","flux ","docker "))
 
-def test_private_mode_check_passes_and_uses_basic_auth_probe(tmp_path):
-    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit)
-    result=run(repo,bindir,log,cluster,"check",tmp_path/"state",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",KUBECRATE_LOCAL_GIT_USERNAME="u",KUBECRATE_LOCAL_GIT_PASSWORD="p")
-    assert result.returncode==0,result.stderr
-    assert "source=https://github.com/public-user/kubecrate.git" in result.stdout and f"commit={commit}" in result.stdout
-    assert "credential.helper=!f()" in next(line for line in call_log(log).splitlines() if "ls-remote" in line)
-    assert "credential.helper= -c" not in call_log(log)
-
-def test_private_mode_missing_credentials_fails_before_mutation(tmp_path):
-    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo)
-    bindir,log,cluster=install_dispatch(tmp_path,commit)
-    dispatch=bindir/"dispatch"; dispatch.write_text(dispatch.read_text().replace('git) if [[ "$*" == *"ls-remote"* ]]; then','git) if [[ "$*" == *"credential fill"* ]]; then exit 1; fi; if [[ "$*" == *"ls-remote"* ]]; then'))
-    empty_home=tmp_path/"empty-home"; empty_home.mkdir()
-    result=run(repo,bindir,log,cluster,"up",tmp_path/"state",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",HOME=str(empty_home))
-    assert result.returncode!=0
-    assert "phase=source-identity" in result.stderr
-    assert "private source requires basic-auth credentials" in result.stderr
-    assert "kind create cluster" not in call_log(log)
-
-def test_private_mode_exactness_mismatch_fails(tmp_path):
-    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo)
-    bindir,log,cluster=install_dispatch(tmp_path,commit,remote_commit="b"*40)
-    result=run(repo,bindir,log,cluster,"up",tmp_path/"state",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",KUBECRATE_LOCAL_GIT_USERNAME="u",KUBECRATE_LOCAL_GIT_PASSWORD="p")
-    assert result.returncode!=0
-    assert "does not advertise checkout commit" in result.stderr
-    assert "kind create cluster" not in call_log(log)
-
-def test_private_mode_up_creates_secret_and_renders_secretref(tmp_path):
+def test_up_uses_flux_generated_ssh_deploy_key_source(tmp_path):
     repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit); state=tmp_path/"state"
-    result=run(repo,bindir,log,cluster,"up",state,FAKE_HELM_RC="0",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",KUBECRATE_LOCAL_GIT_USERNAME="git-user",KUBECRATE_LOCAL_GIT_PASSWORD="git-pass")
-    assert result.returncode!=0
+    result=run(repo,bindir,log,cluster,"up",state,FAKE_HELM_RC="0",FAKE_FLUX_RC="31")
+    assert result.returncode==31
     calls=call_log(log)
-    assert "kubectl --context kind-kubecrate-local -n flux-system create secret generic flux-system-sync --from-literal=username=git-user --from-literal=password=git-pass --dry-run=client -o yaml" in calls
-    assert "kubectl --context kind-kubecrate-local apply -f -" in calls
+    assert "create secret generic flux-system-sync" not in calls
+    assert "--from-literal=password" not in calls
+    assert "kubectl --context kind-kubecrate-local get secret flux-system-sync -n flux-system -o jsonpath={.data.identity\.pub}" in calls
     render=next(line for line in calls.splitlines() if "render-direct-flux-source.py" in line and "helm-values" not in line)
+    assert "--ssh-url ssh://git@github.com/public-user/kubecrate.git --branch demo" in render
     assert "--anonymous" not in render
-    assert "kind delete cluster" not in calls
-    evidence="".join(p.read_text() for p in (state/"evidence/latest").iterdir())
-    assert "git-pass" not in evidence
+    assert "local-demo: register this deploy key" in result.stdout
+    assert "local-demo: after registration" in result.stdout
 
-def test_anonymous_remote_probe_ignores_all_git_config_and_credentials(tmp_path):
+def test_explicit_anonymous_mode_uses_scrubbed_public_probe_and_renderer(tmp_path):
+    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit); state=tmp_path/"state"
+    result=run(repo,bindir,log,cluster,"up",state,FAKE_HELM_RC="0",FAKE_FLUX_RC="31",KUBECRATE_LOCAL_ANONYMOUS_SOURCE="1")
+    assert result.returncode==31
+    calls=call_log(log)
+    ls_remote=next(line for line in calls.splitlines() if "ls-remote" in line)
+    assert "credential.helper= -c" in ls_remote
+    assert "get secret flux-system-sync" not in calls
+    render=next(line for line in calls.splitlines() if "render-direct-flux-source.py" in line and "helm-values" not in line)
+    assert "--https-url https://github.com/public-user/kubecrate.git --branch demo --anonymous" in render
+    assert "register this deploy key" not in result.stdout
+
+def test_anonymous_remote_probe_is_explicit_opt_in_and_ignores_all_git_config_and_credentials(tmp_path):
     repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit)
     hostile=tmp_path/"hostile"; hostile.mkdir(); marker=tmp_path/"credential-used"
     (hostile/".gitconfig").write_text('[url "https://attacker.invalid/"]\n insteadOf = https://github.com/\n[credential]\n helper = !touch '+str(marker)+'\n')
     (hostile/".netrc").write_text("machine github.com login attacker password stolen\n")
-    result=run(repo,bindir,log,cluster,"check",tmp_path/"state",HOME=str(hostile),GIT_CONFIG_GLOBAL=str(hostile/".gitconfig"),GIT_CONFIG_COUNT="1",GIT_CONFIG_KEY_0="url.https://attacker.invalid/.insteadOf",GIT_CONFIG_VALUE_0="https://github.com/",GIT_ASKPASS=str(hostile/"askpass"))
+    result=run(repo,bindir,log,cluster,"check",tmp_path/"state",HOME=str(hostile),GIT_CONFIG_GLOBAL=str(hostile/".gitconfig"),GIT_CONFIG_COUNT="1",GIT_CONFIG_KEY_0="url.https://attacker.invalid/.insteadOf",GIT_CONFIG_VALUE_0="https://github.com/",GIT_ASKPASS=str(hostile/"askpass"),KUBECRATE_LOCAL_ANONYMOUS_SOURCE="1")
     assert result.returncode == 0,result.stderr
     assert "https://github.com/public-user/kubecrate.git" in next(line for line in call_log(log).splitlines() if "ls-remote" in line)
     assert not marker.exists()
@@ -221,7 +207,7 @@ def test_every_error_stream_is_sanitized(tmp_path,sentinel,secret):
     assert secret not in result.stderr
     assert "local-demo: ERROR phase=source-identity" in result.stderr
     assert "local-demo: recovery=" in result.stderr
-    assert "message=selected source is not anonymously accessible" in result.stderr
+    assert "message=selected source is not accessible with current Git credentials" in result.stderr
 
 @pytest.mark.parametrize(("create_rc","helm_rc","phase","expected_rc"), [
     (23,31,"cluster-create",23),

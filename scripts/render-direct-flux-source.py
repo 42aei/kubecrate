@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replace the durable SSH source with an HTTPS source for local workflows."""
+"""Render the durable Flux source for local workflows."""
 
 import argparse
 import sys
@@ -39,7 +39,8 @@ def require_mapping(value: Any, path: str) -> dict[Any, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--https-url", required=True)
+    parser.add_argument("--https-url")
+    parser.add_argument("--ssh-url")
     parser.add_argument("--branch", required=True)
     parser.add_argument("--secret-name", default="flux-system-sync")
     parser.add_argument(
@@ -47,6 +48,10 @@ def main() -> int:
         help="render a public source without a Git credentials Secret",
     )
     args = parser.parse_args()
+    if bool(args.https_url) == bool(args.ssh_url):
+        parser.error("exactly one of --https-url or --ssh-url is required")
+    if args.anonymous and args.ssh_url:
+        parser.error("--anonymous is only valid with --https-url")
     try:
         documents = list(yaml.load_all(sys.stdin, Loader=UniqueKeyLoader))
         matches = 0
@@ -67,17 +72,23 @@ def main() -> int:
             except yaml.YAMLError as error:
                 raise ValueError(f"invalid ConfigMap/flux-sync-values values.yaml: {error}") from error
             root = require_mapping(values, "values root")
-            # Replace SSH with HTTPS, disable SSH key generation.
+            # HTTPS mode is used by the direct runner and optional anonymous
+            # public-source workflows. SSH mode preserves flux2-sync deploy-key
+            # generation for the retained local workflow.
             secret = require_mapping(root.get("secret"), "secret")
-            secret["create"] = False
-            secret.pop("generate", None)
             git_repo = require_mapping(root.get("gitRepository"), "gitRepository")
             spec = require_mapping(git_repo.get("spec"), "gitRepository.spec")
-            spec["url"] = args.https_url
-            if args.anonymous:
+            if args.ssh_url:
+                spec["url"] = args.ssh_url
                 spec.pop("secretRef", None)
             else:
-                spec["secretRef"] = {"name": args.secret_name}
+                secret["create"] = False
+                secret.pop("generate", None)
+                spec["url"] = args.https_url
+                if args.anonymous:
+                    spec.pop("secretRef", None)
+                else:
+                    spec["secretRef"] = {"name": args.secret_name}
             if spec.get("ref") is None:
                 spec["ref"] = {}
             ref = require_mapping(spec.get("ref"), "gitRepository.spec.ref")

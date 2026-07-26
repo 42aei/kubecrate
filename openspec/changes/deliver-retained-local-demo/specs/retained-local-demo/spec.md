@@ -9,27 +9,33 @@ Kubecrate SHALL provide one README-linked runbook for prerequisites, preflight, 
 - **AND** restart and recreate are documented
 - **AND** successful up retains the named cluster until explicit down
 
-#### Scenario: Current QA uses authenticated exact-PR access
+#### Scenario: Current private source uses deploy-key GitOps access
 - **WHEN** current QA validates a private repository candidate
-- **THEN** it MAY use the authenticated direct runner against the exact PR revision
-- **AND** anonymous access SHALL NOT be a current QA acceptance blocker
-- **AND** future public upstreams or forks remain expected to support the retained demo through anonymously readable sources or runtime source overrides
+- **THEN** anonymous access SHALL NOT be a current QA acceptance blocker
+- **AND** Flux source authentication SHALL use the existing SSH deploy-key contract for `Secret/flux-system-sync`
+- **AND** future public upstreams or forks MAY use an explicit anonymous source override
 
 ### Requirement: Preflight binds inputs to an exact reconcilable revision
-Before cluster creation, the retained workflow SHALL derive a URL and ref with runtime-only overrides, require a clean commit, and verify that the selected remote/ref advertises the exact commit. By default the retained Flux source has no credential Secret and its selected source SHALL be anonymously readable. Setting `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` SHALL opt into a credentialed path that sources basic-auth credentials, creates a Flux credential Secret, renders the source with a `secretRef`, and verifies the remote/ref with those credentials instead of anonymously.
+Before cluster creation, the retained workflow SHALL derive a URL and ref with runtime-only overrides, require a clean commit, and verify that the selected remote/ref advertises the exact commit. By default preflight SHALL use current operator Git credentials for this exactness proof and SHALL NOT copy those credentials into the cluster. The retained Flux source SHALL use `flux2-sync` SSH deploy-key generation by default. Setting `KUBECRATE_LOCAL_ANONYMOUS_SOURCE=1` SHALL explicitly opt into a public-source path that probes anonymously and renders Flux without a Git credential Secret.
 
 #### Scenario: Selected source is exact and accessible
 - **WHEN** clean checkout HEAD equals the SHA advertised for the selected URL and ref
-- **THEN** preflight records the URL, ref, and full commit without requiring `gh`, tokens, keys, Doppler, or organization settings
+- **THEN** preflight records the URL, ref, and full commit without requiring `gh`, Doppler, organization settings, or cluster-bound credentials
 
-#### Scenario: Private source via explicit basic-auth override
-- **WHEN** `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` is set and basic-auth credentials are available from `KUBECRATE_LOCAL_GIT_USERNAME`/`KUBECRATE_LOCAL_GIT_PASSWORD` or `git credential fill`
-- **THEN** preflight verifies the remote/ref advertises the exact commit using those credentials
-- **AND** bootstrap creates a `flux-system-sync` basic-auth Secret and renders the Flux source with a matching `secretRef`
-- **AND** credentials are not recorded in state or evidence
+#### Scenario: Flux source uses generated deploy key by default
+- **WHEN** the retained workflow bootstraps Flux for a private source
+- **THEN** bootstrap renders the selected repository and ref as an SSH Flux source
+- **AND** `flux2-sync` creates `Secret/flux-system-sync` with generated SSH identity material
+- **AND** the operator can retrieve the generated public key from `identity.pub` for deploy-key registration
+- **AND** no PAT, username/password, or operator Git credential is recorded in state, evidence, or a cluster Secret by the retained workflow
+
+#### Scenario: Anonymous public source is explicit opt-in
+- **WHEN** `KUBECRATE_LOCAL_ANONYMOUS_SOURCE=1` is set
+- **THEN** preflight verifies the remote/ref with a scrubbed anonymous probe
+- **AND** bootstrap renders the Flux source without a Git credential Secret
 
 #### Scenario: Exactness cannot be proven
-- **WHEN** the checkout is dirty, HEAD is invalid, the URL/ref is ambiguous, anonymous access fails without the override, credentialed access fails with the override, or the advertised SHA differs
+- **WHEN** the checkout is dirty, HEAD is invalid, the URL/ref is ambiguous, Git access fails, anonymous access fails with the explicit override, or the advertised SHA differs
 - **THEN** preflight exits non-zero with its phase and recovery command
 - **AND** kind cluster creation does not run
 - **AND** existing state and evidence remain byte-for-byte unchanged

@@ -24,9 +24,11 @@ Current QA may use authenticated access to the exact PR revision. Anonymous sour
 
 The workflow derives the selected URL from `origin`, normalizes supported GitHub SSH/HTTPS forms to HTTPS, and uses the current branch by default. Runtime overrides may select another URL or ref. Before kind runs, preflight requires a clean commit, one remotely advertised branch SHA, and an exact SHA match.
 
-By default the retained workflow renders Flux without a Git credential Secret, so that source must be anonymously readable. This supports future public upstreams and forks. It is not required for current QA, which may validate the exact PR through the authenticated direct runner.
+By default the retained workflow uses normal operator Git credentials only for the preflight proof that the selected remote/ref advertises the exact checked-out commit. Those credentials are not copied into the cluster.
 
-Setting `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` opts into a credentialed path for private sources. Preflight then sources basic-auth credentials (from `KUBECRATE_LOCAL_GIT_USERNAME`/`KUBECRATE_LOCAL_GIT_PASSWORD` or `git credential fill`), verifies the remote/ref with those credentials, and bootstrap creates a `flux-system-sync` basic-auth Secret and renders the source with a matching `secretRef`. Anonymous remains the default when the override is unset; SSH deploy-key access is out of scope.
+Flux authenticates to the GitOps source through the existing `flux2-sync` SSH deploy-key generation flow. Bootstrap renders the selected branch into the durable SSH source, waits for `Secret/flux-system-sync`, prints the generated public key from `identity.pub`, and then waits for GitOps readiness after the operator registers that public key as a deploy key with the Git provider. The generated private key remains in-cluster.
+
+Setting `KUBECRATE_LOCAL_ANONYMOUS_SOURCE=1` explicitly opts into a future public-source path. In that mode preflight uses a scrubbed anonymous probe and Flux is rendered without a Git credential Secret. Anonymous source access is not the current private-repository default.
 
 ### Retained lifecycle
 
@@ -42,6 +44,6 @@ Up and status use explicit context, bounded waits, exact Flux revision validatio
 
 ## Risks / Trade-offs
 
-- The retained source is anonymously readable by default; private sources require the explicit `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` override, and current private-repository QA may also use the authenticated exact-PR runner instead.
+- The retained workflow requires the operator to register the generated deploy key before Flux can reconcile private GitOps sources. This matches the existing Flux deploy-key contract and avoids copying PAT/basic-auth material into the cluster.
 - Fixed host ports `10080` and `10443` allow one retained demo at a time.
 - Retaining failures consumes local resources until explicit down or recreate.
