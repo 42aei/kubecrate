@@ -72,7 +72,7 @@ make local-down
 
 ## Source and cluster overrides
 
-The workflow requires a clean checkout and an exact remote branch match before creating a cluster. The retained demo source must currently be readable without credentials. This is intended for future public upstreams or forks; current project QA may instead use the authenticated exact-PR runner.
+The workflow requires a clean checkout and an exact remote branch match before creating a cluster. By default the retained demo source must be readable without credentials. This is intended for future public upstreams or forks; current project QA may instead use the authenticated exact-PR runner.
 
 For an anonymously readable fork or source:
 
@@ -81,6 +81,17 @@ KUBECRATE_LOCAL_SOURCE_URL=https://github.com/you/kubecrate.git \
 KUBECRATE_LOCAL_SOURCE_REF=my-branch \
 make local-check
 ```
+
+For a private source, opt into basic-auth credentials. Credentials come from `KUBECRATE_LOCAL_GIT_USERNAME`/`KUBECRATE_LOCAL_GIT_PASSWORD`, or from `git credential fill` when those are unset (for example a stored PAT or `gh auth git-credential`):
+
+```sh
+KUBECRATE_LOCAL_GIT_BASIC_AUTH=1 \
+KUBECRATE_LOCAL_GIT_USERNAME=you \
+KUBECRATE_LOCAL_GIT_PASSWORD=ghp_... \
+make local-up
+```
+
+With the override set, bootstrap creates a `flux-system-sync` basic-auth Secret and renders the Flux source with a matching `secretRef`. Credentials are not recorded in state or evidence.
 
 Use `KUBECRATE_LOCAL_CLUSTER=kubecrate-local-<name>` with every lifecycle command to select another demo-owned cluster name. Multiple retained demos cannot run concurrently because the host ports are fixed.
 

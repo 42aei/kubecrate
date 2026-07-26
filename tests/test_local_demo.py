@@ -141,6 +141,46 @@ def test_lifecycle_refuses_non_demo_cluster_identity_before_mutation(tmp_path,na
     calls=call_log(log)
     assert all(word not in calls for word in ("kind get clusters","kind create","kind delete","helm ","kubectl ","flux ","docker "))
 
+def test_private_mode_check_passes_and_uses_basic_auth_probe(tmp_path):
+    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit)
+    result=run(repo,bindir,log,cluster,"check",tmp_path/"state",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",KUBECRATE_LOCAL_GIT_USERNAME="u",KUBECRATE_LOCAL_GIT_PASSWORD="p")
+    assert result.returncode==0,result.stderr
+    assert "source=https://github.com/public-user/kubecrate.git" in result.stdout and f"commit={commit}" in result.stdout
+    assert "credential.helper=!f()" in next(line for line in call_log(log).splitlines() if "ls-remote" in line)
+    assert "credential.helper= -c" not in call_log(log)
+
+def test_private_mode_missing_credentials_fails_before_mutation(tmp_path):
+    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo)
+    bindir,log,cluster=install_dispatch(tmp_path,commit)
+    dispatch=bindir/"dispatch"; dispatch.write_text(dispatch.read_text().replace('git) if [[ "$*" == *"ls-remote"* ]]; then','git) if [[ "$*" == *"credential fill"* ]]; then exit 1; fi; if [[ "$*" == *"ls-remote"* ]]; then'))
+    empty_home=tmp_path/"empty-home"; empty_home.mkdir()
+    result=run(repo,bindir,log,cluster,"up",tmp_path/"state",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",HOME=str(empty_home))
+    assert result.returncode!=0
+    assert "phase=source-identity" in result.stderr
+    assert "private source requires basic-auth credentials" in result.stderr
+    assert "kind create cluster" not in call_log(log)
+
+def test_private_mode_exactness_mismatch_fails(tmp_path):
+    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo)
+    bindir,log,cluster=install_dispatch(tmp_path,commit,remote_commit="b"*40)
+    result=run(repo,bindir,log,cluster,"up",tmp_path/"state",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",KUBECRATE_LOCAL_GIT_USERNAME="u",KUBECRATE_LOCAL_GIT_PASSWORD="p")
+    assert result.returncode!=0
+    assert "does not advertise checkout commit" in result.stderr
+    assert "kind create cluster" not in call_log(log)
+
+def test_private_mode_up_creates_secret_and_renders_secretref(tmp_path):
+    repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit); state=tmp_path/"state"
+    result=run(repo,bindir,log,cluster,"up",state,FAKE_HELM_RC="0",KUBECRATE_LOCAL_GIT_BASIC_AUTH="1",KUBECRATE_LOCAL_GIT_USERNAME="git-user",KUBECRATE_LOCAL_GIT_PASSWORD="git-pass")
+    assert result.returncode!=0
+    calls=call_log(log)
+    assert "kubectl --context kind-kubecrate-local -n flux-system create secret generic flux-system-sync --from-literal=username=git-user --from-literal=password=git-pass --dry-run=client -o yaml" in calls
+    assert "kubectl --context kind-kubecrate-local apply -f -" in calls
+    render=next(line for line in calls.splitlines() if "render-direct-flux-source.py" in line and "helm-values" not in line)
+    assert "--anonymous" not in render
+    assert "kind delete cluster" not in calls
+    evidence="".join(p.read_text() for p in (state/"evidence/latest").iterdir())
+    assert "git-pass" not in evidence
+
 def test_anonymous_remote_probe_ignores_all_git_config_and_credentials(tmp_path):
     repo=tmp_path/"repo"; repo.mkdir(); commit=init_checkout(repo); bindir,log,cluster=install_dispatch(tmp_path,commit)
     hostile=tmp_path/"hostile"; hostile.mkdir(); marker=tmp_path/"credential-used"

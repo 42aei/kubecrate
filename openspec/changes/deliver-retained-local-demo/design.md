@@ -24,7 +24,9 @@ Current QA may use authenticated access to the exact PR revision. Anonymous sour
 
 The workflow derives the selected URL from `origin`, normalizes supported GitHub SSH/HTTPS forms to HTTPS, and uses the current branch by default. Runtime overrides may select another URL or ref. Before kind runs, preflight requires a clean commit, one remotely advertised branch SHA, and an exact SHA match.
 
-The retained workflow currently renders Flux without a Git credential Secret, so that source must be anonymously readable. This supports future public upstreams and forks. It is not required for current QA, which may validate the exact PR through the authenticated direct runner.
+By default the retained workflow renders Flux without a Git credential Secret, so that source must be anonymously readable. This supports future public upstreams and forks. It is not required for current QA, which may validate the exact PR through the authenticated direct runner.
+
+Setting `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` opts into a credentialed path for private sources. Preflight then sources basic-auth credentials (from `KUBECRATE_LOCAL_GIT_USERNAME`/`KUBECRATE_LOCAL_GIT_PASSWORD` or `git credential fill`), verifies the remote/ref with those credentials, and bootstrap creates a `flux-system-sync` basic-auth Secret and renders the source with a matching `secretRef`. Anonymous remains the default when the override is unset; SSH deploy-key access is out of scope.
 
 ### Retained lifecycle
 
@@ -40,6 +42,6 @@ Up and status use explicit context, bounded waits, exact Flux revision validatio
 
 ## Risks / Trade-offs
 
-- The retained source must currently be anonymously readable; current private-repository QA uses the authenticated exact-PR runner instead.
+- The retained source is anonymously readable by default; private sources require the explicit `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` override, and current private-repository QA may also use the authenticated exact-PR runner instead.
 - Fixed host ports `10080` and `10443` allow one retained demo at a time.
 - Retaining failures consumes local resources until explicit down or recreate.

@@ -16,14 +16,20 @@ Kubecrate SHALL provide one README-linked runbook for prerequisites, preflight, 
 - **AND** future public upstreams or forks remain expected to support the retained demo through anonymously readable sources or runtime source overrides
 
 ### Requirement: Preflight binds inputs to an exact reconcilable revision
-Before cluster creation, the retained workflow SHALL derive a URL and ref with runtime-only overrides, require a clean commit, and verify that the selected remote/ref advertises the exact commit. Because the retained Flux source has no credential Secret, its selected source SHALL be anonymously readable.
+Before cluster creation, the retained workflow SHALL derive a URL and ref with runtime-only overrides, require a clean commit, and verify that the selected remote/ref advertises the exact commit. By default the retained Flux source has no credential Secret and its selected source SHALL be anonymously readable. Setting `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` SHALL opt into a credentialed path that sources basic-auth credentials, creates a Flux credential Secret, renders the source with a `secretRef`, and verifies the remote/ref with those credentials instead of anonymously.
 
 #### Scenario: Selected source is exact and accessible
 - **WHEN** clean checkout HEAD equals the SHA advertised for the selected URL and ref
 - **THEN** preflight records the URL, ref, and full commit without requiring `gh`, tokens, keys, Doppler, or organization settings
 
+#### Scenario: Private source via explicit basic-auth override
+- **WHEN** `KUBECRATE_LOCAL_GIT_BASIC_AUTH=1` is set and basic-auth credentials are available from `KUBECRATE_LOCAL_GIT_USERNAME`/`KUBECRATE_LOCAL_GIT_PASSWORD` or `git credential fill`
+- **THEN** preflight verifies the remote/ref advertises the exact commit using those credentials
+- **AND** bootstrap creates a `flux-system-sync` basic-auth Secret and renders the Flux source with a matching `secretRef`
+- **AND** credentials are not recorded in state or evidence
+
 #### Scenario: Exactness cannot be proven
-- **WHEN** the checkout is dirty, HEAD is invalid, the URL/ref is ambiguous, anonymous access fails, or the advertised SHA differs
+- **WHEN** the checkout is dirty, HEAD is invalid, the URL/ref is ambiguous, anonymous access fails without the override, credentialed access fails with the override, or the advertised SHA differs
 - **THEN** preflight exits non-zero with its phase and recovery command
 - **AND** kind cluster creation does not run
 - **AND** existing state and evidence remain byte-for-byte unchanged
