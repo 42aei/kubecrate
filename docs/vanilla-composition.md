@@ -2,7 +2,7 @@
 
 The Vanilla composition is Kubecrate's reusable public consumption path for GitOps-managed operation.
 
-It separates the stable upstream Kubecrate contract from the concrete `kind-dev-misc-local` reference consumer. External/private consumers should consume the same Vanilla entrypoint path rather than copying the kind-first local path.
+It separates the stable upstream Kubecrate contract from the concrete `kind-dev-misc-local` reference consumer. External/private consumers should consume the same Vanilla entrypoint path rather than copying the kind-first local path. New private consumer repositories should normally start from `42aei/kubecrate-consumer-template` and pin Kubecrate to an exact SemVer release tag.
 
 ## Contract
 

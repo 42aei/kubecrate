@@ -53,6 +53,7 @@ See the [`retained local demo runbook`](docs/retained-local-demo.md) to start, i
 - `docs/architecture.md` for the operating model
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
 - `docs/vanilla-composition.md` for the reusable public Vanilla composition and the kind-first local reference consumer
+- `docs/consumer-repositories.md` for private consumer repositories, exact-version upgrades, and the `42aei/kubecrate-consumer-template` relationship
 - `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
 - `docs/retained-local-demo.md` for the runnable retained local demo
 - `docs/roadmap.md` for the near-term direction
