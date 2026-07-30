@@ -10,8 +10,9 @@ That remains intentional. The docs carry the project model, language, and contra
 - `platform-and-application-service-model.md` defines the working model for platform services and application services, including ownership, scope boundaries, and practical classification rules.
 - `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
 - `gitops-component-management.md` defines the management-unit contract, the minimal initial set of GitOps-managed platform services, the source-structure contract, and the packaging posture.
-- `vanilla-composition.md` defines the reusable public Vanilla composition, the kind-first local reference consumer, and migration notes from the old kind-local service entrypoint.
+- `vanilla-composition.md` defines the reusable Vanilla composition, the kind-first local reference consumer, and migration notes from the old kind-local service entrypoint.
 - `kind-local-workflow.md` defines the local reference workflow for the kind-first local path.
+- `retained-local-demo.md` defines the runnable retained local demo workflow.
 - `ai-repository-guide.md` maps source-of-truth documents, backlog-to-OpenSpec readiness, and validation expectations for AI-assisted work.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
@@ -27,9 +28,10 @@ If you are new to the project, start with:
 5. `gitops-component-management.md`
 6. `vanilla-composition.md`
 7. `kind-local-workflow.md`
-8. `ai-repository-guide.md`
-9. `roadmap.md`
-10. the backlog items for near-term slices
+8. `retained-local-demo.md`
+9. `ai-repository-guide.md`
+10. `roadmap.md`
+11. the backlog items for near-term slices
 
 ## Current boundaries
 
