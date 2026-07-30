@@ -43,18 +43,13 @@ This repository is still early, but it now includes the first installable slice 
 
 It carries the project model, vocabulary, roadmap, and backlog alongside the first runtime files for bootstrap installation and GitOps-managed operation.
 
-## Run the retained local demo
-
-See the [`retained local demo runbook`](docs/retained-local-demo.md) to start, inspect, recover, and stop the kind-first local stack.
-
 ## Documents
 
 - `docs/README.md` for the docs map
 - `docs/architecture.md` for the operating model
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
-- `docs/vanilla-composition.md` for the reusable public Vanilla composition and the kind-first local reference consumer
-- `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
-- `docs/retained-local-demo.md` for the runnable retained local demo
+- `docs/vanilla-composition.md` for the reusable public Vanilla composition and private consumer boundary
+- `docs/kind-local-workflow.md` for the kind-first local path model
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
 

@@ -111,8 +111,5 @@ jobs:
       - name: Render Kustomize roots and validate output
         run: python scripts/validate-kubernetes-manifests.py --check kustomize
 
-      - name: Validate Flux sync credential generation values
-        run: python tests/validate-flux-sync-values.py --helm-render
-
       - name: Validate CrateCheck config and ESO expressions
         run: python tests/validate-cratecheck.py

@@ -25,7 +25,6 @@ BASE_DIR = REPO_ROOT / "application-services" / "cratecheck" / "base"
 COMPOSITION_BINDING_DIR = (
     REPO_ROOT / "compositions" / "vanilla" / "application-services" / "cratecheck"
 )
-ENTRYPOINT_DIR = REPO_ROOT / "clusters" / "kind-dev-misc-local" / "entrypoint"
 VANILLA_ENTRYPOINT_DIR = REPO_ROOT / "compositions" / "vanilla" / "entrypoint"
 CRATECHECK_KUSTOMIZATION_PATH = VANILLA_ENTRYPOINT_DIR / "cratecheck-kustomization.yaml"
 
@@ -282,7 +281,7 @@ def validate_cratecheck_reconciliation_order() -> bool:
     try:
         with open(CRATECHECK_KUSTOMIZATION_PATH) as fh:
             resource = yaml.safe_load(fh)
-        with open(ENTRYPOINT_DIR / "kustomization.yaml") as fh:
+        with open(VANILLA_ENTRYPOINT_DIR / "kustomization.yaml") as fh:
             entrypoint = yaml.safe_load(fh)
     except Exception as exc:
         return check("CrateCheck Flux ordering manifests are parseable", False, str(exc))
@@ -304,7 +303,7 @@ def validate_cratecheck_reconciliation_order() -> bool:
             "app.kubernetes.io/part-of": "kubecrate",
             "kubecrate.io/workload-category": "application-services",
         },
-        "dependsOn": ["external-secrets-operator-smoke"],
+        "dependsOn": ["external-secrets-operator"],
         "interval": "1m0s",
         "path": "./compositions/vanilla/application-services/cratecheck",
         "prune": True,
@@ -361,7 +360,7 @@ def run_kustomize_build(path: Path, label: str) -> bool:
 def run_kubeconform(label: str) -> bool:
     """Run kubeconform against the entrypoint build output."""
     kustomize = subprocess.run(
-        ["kustomize", "build", str(ENTRYPOINT_DIR)],
+        ["kustomize", "build", str(VANILLA_ENTRYPOINT_DIR)],
         capture_output=True, text=True, cwd=REPO_ROOT,
     )
     if kustomize.returncode != 0:
@@ -643,10 +642,10 @@ def main():
         print("\n=== Kustomize build validation ===")
         base_ok = run_kustomize_build(BASE_DIR, "base")
         binding_ok = run_kustomize_build(COMPOSITION_BINDING_DIR, "Vanilla composition binding")
-        entrypoint_ok = run_kustomize_build(ENTRYPOINT_DIR, "entrypoint")
+        entrypoint_ok = run_kustomize_build(VANILLA_ENTRYPOINT_DIR, "Vanilla entrypoint")
 
         print("\n=== kubeconform schema validation ===")
-        kubeconform_ok = run_kubeconform("entrypoint")
+        kubeconform_ok = run_kubeconform("Vanilla entrypoint")
 
     if FAILURES:
         print(f"\n{len(FAILURES)} FAILURE(S):")

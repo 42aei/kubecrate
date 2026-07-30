@@ -11,9 +11,6 @@ from celpy.adapter import json_to_cel
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGMAP = ROOT / "application-services/cratecheck/base/configmap.yaml"
 RBAC = ROOT / "application-services/cratecheck/base/clusterrole.yaml"
-GATEWAY = ROOT / "compositions/vanilla/platform-services/envoy-gateway/smoke/smoke-gateway.yaml"
-ROUTE = ROOT / "compositions/vanilla/platform-services/envoy-gateway/smoke/smoke-httproute.yaml"
-REFERENCE_GRANT = ROOT / "compositions/vanilla/platform-services/envoy-gateway/smoke/smoke-referencegrant.yaml"
 CERTIFICATES = ROOT / "compositions/vanilla/platform-services/cert-manager/local-issuer/local-ca-issuer.yaml"
 MANIFEST_VALIDATOR = ROOT / "scripts/validate-kubernetes-manifests.py"
 
@@ -47,7 +44,8 @@ def evaluate(expression: str, resource: dict) -> bool:
 def test_cert_manager_checks_preserve_existing_contract_and_evaluate_ready_state() -> None:
     configured = checks()
     assert CERT_MANAGER_IDS <= configured.keys()
-    assert {"eso-helmrelease-ready", "envoy-httproute-ready"} <= configured.keys()
+    assert {"eso-helmrelease-ready", "envoy-helmrelease-ready"} <= configured.keys()
+    assert "envoy-httproute-ready" in configured
     ready = {"status": {"conditions": [{"type": "Ready", "status": "True"}]}}
     not_ready = {"status": {"conditions": [{"type": "Ready", "status": "False"}]}}
     for check_id in CERT_MANAGER_IDS - {"cert-manager-tls-secret-exists"}:
@@ -75,22 +73,9 @@ def test_cert_manager_roots_are_in_authoritative_manifest_validation() -> None:
     assert CERT_MANAGER_KUSTOMIZE_ROOTS <= set(validator["KUSTOMIZE_ROOTS"])
 
 
-def test_issued_certificate_is_bound_to_envoy_https() -> None:
+def test_issued_certificate_preserves_cratecheck_tls_contract() -> None:
     certificates = list(yaml.safe_load_all(CERTIFICATES.read_text()))
     tls_certificate = next(item for item in certificates if item["kind"] == "Certificate" and item["metadata"]["name"] == "cratecheck-tls")
     assert tls_certificate["metadata"]["namespace"] == "cratecheck"
     assert tls_certificate["spec"]["dnsNames"] == ["cratecheck.local"]
     assert tls_certificate["spec"]["secretName"] == "cratecheck-tls"
-
-    gateway = yaml.safe_load(GATEWAY.read_text())
-    https = next(listener for listener in gateway["spec"]["listeners"] if listener["name"] == "https")
-    assert https["protocol"] == "HTTPS" and https["port"] == 443
-    assert https["tls"]["certificateRefs"] == [{
-        "group": "", "kind": "Secret", "name": "cratecheck-tls", "namespace": "cratecheck"
-    }]
-
-    route = yaml.safe_load(ROUTE.read_text())
-    assert {parent["sectionName"] for parent in route["spec"]["parentRefs"]} == {"http", "https"}
-    grant = yaml.safe_load(REFERENCE_GRANT.read_text())
-    assert grant["metadata"]["namespace"] == "cratecheck"
-    assert grant["spec"]["to"] == [{"group": "", "kind": "Secret", "name": "cratecheck-tls"}]

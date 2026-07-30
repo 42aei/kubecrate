@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused semantic checks for additive Kyverno policy composition."""
+"""Focused semantic checks for Kubecrate's Kyverno base contract."""
 
 import runpy
 from pathlib import Path
@@ -11,30 +11,23 @@ from celpy.adapter import json_to_cel
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGMAP = ROOT / "application-services/cratecheck/base/configmap.yaml"
 RBAC = ROOT / "application-services/cratecheck/base/clusterrole.yaml"
-POLICY = ROOT / "compositions/vanilla/platform-services/kyverno/smoke-policy/require-ns-label-policy.yaml"
-FIXTURE = ROOT / "compositions/vanilla/platform-services/kyverno/smoke/smoke-allowed-namespace.yaml"
 ENTRYPOINT = ROOT / "compositions/vanilla/entrypoint"
 MANIFEST_VALIDATOR = ROOT / "scripts/validate-kubernetes-manifests.py"
-RUNNER = ROOT / "scripts/direct-kind-flux-e2e.sh"
 
-KYVERNO_IDS = {
-    "kyverno-helmrelease-ready",
-    "kyverno-clusterpolicy-ready",
-    "kyverno-smoke-namespace-exists",
-}
 PRESERVED_IDS = {
     "cratecheck-deployment-ready",
     "eso-helmrelease-ready",
-    "envoy-httproute-ready",
     "cert-manager-tls-certificate-ready",
+    "kyverno-helmrelease-ready",
+}
+REMOVED_KIND_SMOKE_IDS = {
+    "kyverno-clusterpolicy-ready",
+    "kyverno-smoke-namespace-exists",
 }
 KYVERNO_KUSTOMIZE_ROOTS = {
     "platform-services/kyverno/base",
     "compositions/vanilla/platform-services/kyverno",
-    "compositions/vanilla/platform-services/kyverno/smoke-policy",
-    "compositions/vanilla/platform-services/kyverno/smoke",
 }
-DENIAL_MESSAGE = "Namespace requires kubecrate.io/validated=true"
 
 
 def configured_checks() -> dict[str, dict]:
@@ -49,28 +42,17 @@ def evaluate(expression: str, resource: dict) -> bool:
     return bool(program.evaluate({"object": json_to_cel(resource)}))
 
 
-def test_kyverno_checks_are_additive_and_behavioral() -> None:
+def test_kyverno_base_check_is_additive_and_behavioral() -> None:
     checks = configured_checks()
-    assert KYVERNO_IDS | PRESERVED_IDS <= checks.keys()
+    assert PRESERVED_IDS <= checks.keys()
+    assert REMOVED_KIND_SMOKE_IDS <= checks.keys()
 
     ready = {"status": {"conditions": [{"type": "Ready", "status": "True"}]}}
     not_ready = {"status": {"conditions": [{"type": "Ready", "status": "False"}]}}
-    for check_id in {"kyverno-helmrelease-ready", "kyverno-clusterpolicy-ready"}:
-        expression = checks[check_id]["expression"]
-        assert evaluate(expression, ready)
-        assert not evaluate(expression, not_ready)
-        assert not evaluate(expression, {})
-
-    namespace_expression = checks["kyverno-smoke-namespace-exists"]["expression"]
-    assert evaluate(namespace_expression, {
-        "metadata": {
-            "name": "kyverno-smoke-allowed",
-            "labels": {"kubecrate.io/validated": "true"},
-        }
-    })
-    assert not evaluate(namespace_expression, {
-        "metadata": {"name": "kyverno-smoke-allowed", "labels": {}}
-    })
+    expression = checks["kyverno-helmrelease-ready"]["expression"]
+    assert evaluate(expression, ready)
+    assert not evaluate(expression, not_ready)
+    assert not evaluate(expression, {})
 
 
 def test_kyverno_rbac_is_read_only_and_exact() -> None:
@@ -85,39 +67,17 @@ def test_kyverno_rbac_is_read_only_and_exact() -> None:
     }]
 
 
-def test_policy_is_narrow_and_fixture_is_a_real_allowed_consumer() -> None:
-    policy = yaml.safe_load(POLICY.read_text())
-    assert policy["spec"]["validationFailureAction"] == "Enforce"
-    assert len(policy["spec"]["rules"]) == 1
-    rule = policy["spec"]["rules"][0]
-    assert rule["match"]["any"] == [{
-        "resources": {"kinds": ["Namespace"], "names": ["kyverno-smoke-*"]}
-    }]
-    assert rule["validate"]["message"] == DENIAL_MESSAGE
-    assert f'KYVERNO_DENIAL_REASON="{DENIAL_MESSAGE}"' in RUNNER.read_text()
-    assert rule["validate"]["pattern"]["metadata"]["labels"] == {
-        "kubecrate.io/validated": "true"
-    }
-
-    fixture = yaml.safe_load(FIXTURE.read_text())
-    assert fixture["kind"] == "Namespace"
-    assert fixture["metadata"]["name"] == "kyverno-smoke-allowed"
-    assert fixture["metadata"]["labels"]["kubecrate.io/validated"] == "true"
-    assert fixture["metadata"]["labels"]["kubecrate.io/workload-category"] == "application-services"
-
-
-def test_entrypoint_orders_controller_policy_and_consumer_on_current_source() -> None:
+def test_entrypoint_contains_controller_without_kind_smoke_fixtures() -> None:
     controller = yaml.safe_load((ENTRYPOINT / "kyverno-kustomization.yaml").read_text())
-    policy = yaml.safe_load((ENTRYPOINT / "kyverno-smoke-policy-kustomization.yaml").read_text())
-    consumer = yaml.safe_load((ENTRYPOINT / "kyverno-smoke-kustomization.yaml").read_text())
-    for resource in (controller, policy, consumer):
-        assert resource["spec"]["sourceRef"] == {
-            "kind": "GitRepository", "name": "flux-system-sync"
-        }
-    assert policy["spec"]["dependsOn"] == [{"name": "kyverno"}]
-    assert consumer["spec"]["dependsOn"] == [{"name": "kyverno-smoke-policy"}]
+    assert controller["spec"]["sourceRef"] == {
+        "kind": "GitRepository", "name": "flux-system-sync"
+    }
+    assert not (ENTRYPOINT / "kyverno-smoke-policy-kustomization.yaml").exists()
+    assert not (ENTRYPOINT / "kyverno-smoke-kustomization.yaml").exists()
+    assert not (ROOT / "compositions/vanilla/platform-services/kyverno/smoke-policy").exists()
+    assert not (ROOT / "compositions/vanilla/platform-services/kyverno/smoke").exists()
 
 
-def test_all_kyverno_roots_are_authoritatively_validated() -> None:
+def test_all_kyverno_base_roots_are_authoritatively_validated() -> None:
     validator = runpy.run_path(str(MANIFEST_VALIDATOR))
     assert KYVERNO_KUSTOMIZE_ROOTS <= set(validator["KUSTOMIZE_ROOTS"])

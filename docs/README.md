@@ -2,7 +2,7 @@
 
 This repository started with docs before implementation.
 
-That remains intentional. The docs carry the project model, language, and contracts, and the repository now also includes the first installable slice for the kind-first local path.
+That remains intentional. The docs carry the project model, language, and contracts, and the repository now also includes the reusable upstream Vanilla composition consumed by the kind-first local path.
 
 ## Documents in this folder
 
@@ -10,8 +10,8 @@ That remains intentional. The docs carry the project model, language, and contra
 - `platform-and-application-service-model.md` defines the working model for platform services and application services, including ownership, scope boundaries, and practical classification rules.
 - `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
 - `gitops-component-management.md` defines the management-unit contract, the minimal initial set of GitOps-managed platform services, the source-structure contract, and the packaging posture.
-- `vanilla-composition.md` defines the reusable public Vanilla composition, the kind-first local reference consumer, and migration notes from the old kind-local service entrypoint.
-- `kind-local-workflow.md` defines the local reference workflow for the kind-first local path.
+- `vanilla-composition.md` defines the reusable public Vanilla composition, the private consumer boundary, and migration notes from the old kind-local service entrypoint.
+- `kind-local-workflow.md` defines the kind-first local path model.
 - `ai-repository-guide.md` maps source-of-truth documents, backlog-to-OpenSpec readiness, and validation expectations for AI-assisted work.
 - `roadmap.md` shows the near-term order of work.
 - `backlog/` holds lightweight raw captures that can later become OpenSpec proposals.
@@ -35,4 +35,4 @@ If you are new to the project, start with:
 
 This docs set still defines the architecture and contract boundary for Kubecrate.
 
-Read it alongside the first runtime files for the first installable slice on the kind-first local path and the reusable Vanilla composition consumed by that reference path.
+Read it alongside the upstream runtime files under `compositions/`, `platform-services/`, and `application-services/`, plus the separate kind-first local consumer repository.

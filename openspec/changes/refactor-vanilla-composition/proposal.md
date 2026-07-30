@@ -9,13 +9,13 @@ The kind-first local path remains the reference validation path, but it should p
 - Add `compositions/vanilla/entrypoint/` as the reusable public Vanilla composition entrypoint.
 - Move current non-Flux platform-service and CrateCheck composition bindings from the concrete kind cluster tree into `compositions/vanilla/`.
 - Keep reusable bases under `platform-services/<service>/base/` and `application-services/cratecheck/base/`.
-- Make `clusters/kind-dev-misc-local/entrypoint/` a reference consumer wrapper that keeps kind-local bootstrap/Flux self-management resources and includes the Vanilla entrypoint.
+- Move the concrete kind-first reference consumer wrapper into `42aei/kubecrate-kind-example`, where it keeps kind-local bootstrap/Flux self-management resources and references the Vanilla entrypoint from an exact Kubecrate release tag.
 - Add semantic validation for the Vanilla public contract, source paths, workload-category labels, kind reference-consumer wrapper, and absence of temporary QA refs in the composition.
 - Update docs and runbooks with migration guidance from the old kind-local service binding paths.
 
 ## Non-goals
 
-- Creating a private consumer repository or template repository.
+- Creating a full private consumer template repository.
 - Publishing a release or tag.
 - Moving CrateCheck into platform services.
 - Creating a custom Kubecrate CLI.
@@ -26,6 +26,5 @@ The kind-first local path remains the reference validation path, but it should p
 - `python3 tests/validate-vanilla-composition.py`
 - `python3 scripts/validate-kubernetes-manifests.py`
 - `python3 tests/validate-cratecheck.py --render`
-- `python3 tests/validate-flux-sync-values.py --helm-render`
 - `python3 -m pytest -q`
 - Independent review and safeguarded disposable kind+Flux QA of the exact candidate.

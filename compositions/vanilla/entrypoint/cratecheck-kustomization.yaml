@@ -9,7 +9,7 @@ metadata:
     kubecrate.io/workload-category: application-services
 spec:
   dependsOn:
-    - name: external-secrets-operator-smoke
+    - name: external-secrets-operator
   interval: 1m0s
   path: ./compositions/vanilla/application-services/cratecheck
   prune: true

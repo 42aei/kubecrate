@@ -1,7 +1,0 @@
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ./kubecrate-system-namespace.yaml
-  - ./kubecrate-reconciliation-marker.yaml
-  - ../platform-services/flux
-  - ../../../compositions/vanilla/entrypoint

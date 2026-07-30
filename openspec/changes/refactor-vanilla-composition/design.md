@@ -19,13 +19,13 @@ This keeps base resources reusable while giving Kubecrate one coherent upstream 
 
 ### kind-dev-misc-local is a reference consumer, not the product contract
 
-`clusters/kind-dev-misc-local/entrypoint/` remains the concrete kind-first local path. It owns only local bootstrap/handoff concerns such as the namespace marker and Flux self-management binding, then includes `../../../compositions/vanilla/entrypoint`.
+The concrete kind-first local path lives in `42aei/kubecrate-kind-example`. It owns local bootstrap/handoff concerns such as the namespace marker and Flux self-management binding, then references this repository's `compositions/vanilla/entrypoint/` from an exact Kubecrate release tag.
 
 This preserves existing local validation while proving the same Vanilla path future external consumers will use.
 
 ### Flux remains the current concrete bootstrap exception
 
-Flux self-management remains cluster-local under `clusters/kind-dev-misc-local/platform-services/flux/` because it is tied to bootstrap installation and the concrete repository source binding for the reference path. The refactor does not make Flux release mechanics or private-consumer bootstrap generic yet; that is the next versioning/release card.
+Flux self-management remains consumer-local because it is tied to bootstrap installation and the concrete repository source binding for the reference path. The refactor does not make Flux release mechanics generic beyond the kind example yet.
 
 ### CrateCheck remains application services scope
 
@@ -33,7 +33,7 @@ CrateCheck is Kubecrate-owned, but it validates platform capabilities by consumi
 
 ### Old kind-local service paths are not public API
 
-The old paths under `clusters/kind-dev-misc-local/platform-services/<service>/` and `clusters/kind-dev-misc-local/application-services/cratecheck/` are removed for the services included in Vanilla. Keeping them would create a shadow composition and allow the reference path to drift from the public contract.
+The old Kubecrate-owned paths under `clusters/kind-dev-misc-local/platform-services/<service>/` and `clusters/kind-dev-misc-local/application-services/cratecheck/` are removed for the services included in Vanilla. Keeping them would create a shadow composition and allow the reference path to drift from the public contract.
 
 ## Risks and mitigations
 

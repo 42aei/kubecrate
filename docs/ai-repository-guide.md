@@ -14,14 +14,14 @@ This guide helps AI agents and contributors find the right source of truth befor
 | kind-first local path workflow | `docs/kind-local-workflow.md` | Changes that describe local setup, kind validation, or the local reference path. |
 | Lightweight backlog capture and readiness rules | `docs/backlog/README.md` and `docs/backlog/*.md` | Creating, updating, starting, completing, or evaluating backlog items. |
 | Proposed, active, or completed scoped changes | `openspec/changes/<change-name>/` | Expanding ready backlog work into a scoped proposal, design, task list, or spec delta. |
-| Current concrete runtime layout | Existing runtime files under `clusters/` and `platform-services/` | Any runtime-adjacent documentation or implementation work. Inspect the actual files before assuming paths. |
+| Current upstream runtime layout | Existing runtime files under `compositions/`, `platform-services/`, and `application-services/` | Any runtime-adjacent documentation or implementation work. Inspect the actual files before assuming paths. |
 
-Existing concrete runtime paths include:
+Existing upstream runtime paths include:
 
-- `clusters/kind-dev-misc-local/entrypoint/` — the first GitOps reconciliation root for the kind-first local path.
-- `clusters/kind-dev-misc-local/platform-services/flux/` — the concrete cluster binding for Flux on `kind-dev-misc-local`.
-- `compositions/vanilla/entrypoint/` — the reusable public Vanilla composition consumed by the kind-first local reference path and future external consumers.
+- `compositions/vanilla/entrypoint/` — the reusable public Vanilla composition consumed by external/private consumers.
 - `platform-services/flux/base/` — the reusable Flux platform service base.
+
+The kind-first local reference consumer lives outside this upstream repository in `42aei/kubecrate-kind-example`.
 
 Do not infer new runtime directories from these examples. New runtime manifests, scripts, config, or directories require an approved OpenSpec change that explicitly authorizes them.
 
@@ -61,9 +61,8 @@ Validation depends on the kind of change.
 
 ### Static manifest rendering
 
-For changes touching existing Kubernetes manifests, Helm values, Kustomize overlays, or runtime-adjacent docs, run the relevant static rendering command. For the current kind-first local path entrypoint:
+For changes touching existing Kubernetes manifests, Helm values, Kustomize overlays, or runtime-adjacent docs, run the relevant static rendering command. For the upstream Vanilla composition:
 
-- `kustomize build clusters/kind-dev-misc-local/entrypoint`
 - `kustomize build compositions/vanilla/entrypoint`
 
 Static rendering, schema checks, and build validation are necessary but not sufficient whenever bootstrap installation or GitOps-managed operation applies or reconciles Kubernetes resources.

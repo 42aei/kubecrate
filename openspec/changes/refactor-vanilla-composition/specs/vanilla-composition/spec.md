@@ -15,20 +15,20 @@ Kubecrate SHALL provide a reusable, cluster-independent Vanilla composition as t
 - **AND** their `sourceRef` uses `GitRepository/flux-system-sync`
 - **AND** workload-category labels preserve `platform-services` for platform service units and `application-services` for CrateCheck
 
-### Requirement: kind-first local path consumes Vanilla as reference consumer
-The `kind-dev-misc-local` cluster SHALL consume the same Vanilla entrypoint that external consumers will use, while retaining only kind-local bootstrap and Flux self-management resources in its concrete cluster tree.
+### Requirement: kind-first local path consumes Vanilla from a reference consumer repository
+The `kind-dev-misc-local` cluster SHALL consume the same Vanilla entrypoint that external consumers will use, while retaining kind-local bootstrap, Flux self-management resources, and consumer-owned extensions in the concrete consumer repository.
 
-#### Scenario: kind entrypoint wraps Vanilla
-- **WHEN** `clusters/kind-dev-misc-local/entrypoint/kustomization.yaml` is inspected
-- **THEN** it includes `../../../compositions/vanilla/entrypoint`
-- **AND** it retains the kind-local namespace marker, reconciliation marker, and Flux self-management binding
-- **AND** it does not include a separate shadow copy of Vanilla child service `Kustomization` resources
+#### Scenario: kind entrypoint lives outside upstream Kubecrate
+- **WHEN** the upstream Kubecrate repository is inspected
+- **THEN** it does not contain an active `clusters/kind-dev-misc-local/` runtime tree
+- **AND** the reference consumer lives in `42aei/kubecrate-kind-example`
+- **AND** the reference consumer references `compositions/vanilla/entrypoint/` from an exact Kubecrate release tag
 
 #### Scenario: old kind-local service bindings are removed
 - **WHEN** the runtime tree is inspected
 - **THEN** included Vanilla services do not keep active bindings under `clusters/kind-dev-misc-local/platform-services/<service>/`
 - **AND** CrateCheck does not keep an active binding under `clusters/kind-dev-misc-local/application-services/cratecheck/`
-- **AND** Flux self-management may remain under `clusters/kind-dev-misc-local/platform-services/flux/` as the current concrete bootstrap exception
+- **AND** Flux self-management may remain in the reference consumer repository as the current concrete bootstrap exception
 
 ### Requirement: Reusable bases and workload taxonomy are preserved
 Kubecrate SHALL keep reusable service bases in the existing workload-category roots and SHALL preserve the two-axis model across the refactor.
@@ -53,7 +53,6 @@ Kubecrate SHALL validate the public composition, source paths, ownership boundar
 #### Scenario: Static render validation includes Vanilla and reference consumer roots
 - **WHEN** `python3 scripts/validate-kubernetes-manifests.py` runs
 - **THEN** it renders and schema-validates the Vanilla composition roots
-- **AND** it renders and schema-validates `clusters/kind-dev-misc-local/entrypoint/` as the reference consumer wrapper
 
 ### Requirement: Documentation explains migration from the old kind-local entrypoint
 Kubecrate SHALL document the Vanilla composition and explain how it replaces the old kind-local service-binding entrypoint as the stable public consumption path.
@@ -61,5 +60,5 @@ Kubecrate SHALL document the Vanilla composition and explain how it replaces the
 #### Scenario: docs describe consumer path
 - **WHEN** docs are inspected
 - **THEN** `docs/vanilla-composition.md` identifies `compositions/vanilla/entrypoint/` as the public consumption path
-- **AND** it explains that `kind-dev-misc-local` is a reference consumer of Vanilla
+- **AND** it explains that `kind-dev-misc-local` is a reference consumer of Vanilla in a separate consumer repository
 - **AND** it lists the old kind-local service paths as replaced implementation details, not public API
