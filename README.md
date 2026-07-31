@@ -43,9 +43,12 @@ This repository is still early, but it now includes the first installable slice 
 
 It carries the project model, vocabulary, roadmap, and backlog alongside the first runtime files for bootstrap installation and GitOps-managed operation.
 
-## Run the retained local demo
+## Validate a substrate update
 
-See the [`retained local demo runbook`](docs/retained-local-demo.md) to start, inspect, recover, and stop the kind-first local stack.
+The consumer-side smoke suite for the Vanilla composition lives in
+[42aei/kubecrate-kind-smoke](https://github.com/42aei/kubecrate-kind-smoke). Run it against a
+pinned kubecrate commit, locally or through its invokable kind CI workflow, to prove the
+platform services with a green -> controlled red -> restored green CrateCheck contract.
 
 ## Documents
 
@@ -54,7 +57,6 @@ See the [`retained local demo runbook`](docs/retained-local-demo.md) to start, i
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
 - `docs/vanilla-composition.md` for the reusable public Vanilla composition and the kind-first local reference consumer
 - `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
-- `docs/retained-local-demo.md` for the runnable retained local demo
 - `docs/roadmap.md` for the near-term direction
 - `docs/backlog/` for lightweight raw captures
 

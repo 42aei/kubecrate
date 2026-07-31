@@ -20,28 +20,7 @@ FLUX_CHART_VERSION := 2.18.4
 MARKER_NAMESPACE := kubecrate-system
 MARKER_NAME := kubecrate-reconciliation-marker
 
-.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke local-check local-down local-evidence local-recreate local-restart local-status local-up validate validate-cratecheck validate-flux-sync-values validate-vanilla-composition
-
-local-check:
-> ./scripts/local-demo.sh check
-
-local-up:
-> ./scripts/local-demo.sh up
-
-local-status:
-> ./scripts/local-demo.sh status
-
-local-evidence:
-> ./scripts/local-demo.sh evidence
-
-local-restart:
-> ./scripts/local-demo.sh restart
-
-local-recreate:
-> ./scripts/local-demo.sh recreate
-
-local-down:
-> ./scripts/local-demo.sh down
+.PHONY: kind-dev-misc-local-await-gitops kind-dev-misc-local-bootstrap kind-dev-misc-local-check-prereqs kind-dev-misc-local-create kind-dev-misc-local-delete kind-dev-misc-local-evidence kind-dev-misc-local-recreate kind-unique-create kind-unique-current kind-unique-delete kind-unique-smoke validate validate-flux-sync-values validate-vanilla-composition
 
 kind-dev-misc-local-check-prereqs:
 > for cmd in kind kubectl kustomize helm flux docker make python3; do command -v "$${cmd}" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$${cmd}" >&2; exit 1; }; done
@@ -113,7 +92,7 @@ kind-dev-misc-local-await-gitops:
 > flux --context "$(KIND_CONTEXT)" reconcile kustomization "$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready gitrepositories.source.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
 > kubectl --context "$(KIND_CONTEXT)" wait --for=condition=Ready kustomizations.kustomize.toolkit.fluxcd.io/"$(FLUX_SYNC_HELMRELEASE_NAME)" -n "$(FLUX_NAMESPACE)" --timeout=180s
-> for kustomization in external-secrets-operator external-secrets-operator-smoke cratecheck; do kubectl --context "$(KIND_CONTEXT)" get kustomizations.kustomize.toolkit.fluxcd.io/"$${kustomization}" -n "$(FLUX_NAMESPACE)" >/dev/null || { printf 'missing expected child Flux Kustomization: %s\n' "$${kustomization}" >&2; exit 1; }; done
+> for kustomization in external-secrets-operator envoy-gateway cert-manager kyverno; do kubectl --context "$(KIND_CONTEXT)" get kustomizations.kustomize.toolkit.fluxcd.io/"$${kustomization}" -n "$(FLUX_NAMESPACE)" >/dev/null || { printf 'missing expected child Flux Kustomization: %s\n' "$${kustomization}" >&2; exit 1; }; done
 > kubectl --context "$(KIND_CONTEXT)" get configmap "$(MARKER_NAME)" -n "$(MARKER_NAMESPACE)" -o jsonpath='{.data.version}' && printf '\n'
 
 kind-dev-misc-local-evidence:
@@ -126,10 +105,7 @@ kind-dev-misc-local-evidence:
 
 PYTHON ?= python3
 
-validate: validate-cratecheck validate-flux-sync-values validate-vanilla-composition
-
-validate-cratecheck:
-> $(PYTHON) tests/validate-cratecheck.py
+validate: validate-flux-sync-values validate-vanilla-composition
 
 validate-flux-sync-values:
 > $(PYTHON) tests/validate-flux-sync-values.py --helm-render

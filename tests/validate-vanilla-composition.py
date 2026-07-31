@@ -15,27 +15,17 @@ FLUX_VALUES_SYNC = ROOT / "clusters" / "kind-dev-misc-local" / "platform-service
 
 EXPECTED_CHILD_PATHS = {
     "external-secrets-operator": "./compositions/vanilla/platform-services/external-secrets-operator",
-    "external-secrets-operator-smoke": "./compositions/vanilla/platform-services/external-secrets-operator/smoke",
-    "cratecheck": "./compositions/vanilla/application-services/cratecheck",
     "envoy-gateway": "./compositions/vanilla/platform-services/envoy-gateway",
-    "envoy-gateway-smoke": "./compositions/vanilla/platform-services/envoy-gateway/smoke",
     "cert-manager": "./compositions/vanilla/platform-services/cert-manager",
-    "cert-manager-local-issuer": "./compositions/vanilla/platform-services/cert-manager/local-issuer",
     "kyverno": "./compositions/vanilla/platform-services/kyverno",
-    "kyverno-smoke-policy": "./compositions/vanilla/platform-services/kyverno/smoke-policy",
-    "kyverno-smoke": "./compositions/vanilla/platform-services/kyverno/smoke",
 }
 PLATFORM_SERVICES = {
     "external-secrets-operator",
-    "external-secrets-operator-smoke",
     "envoy-gateway",
-    "envoy-gateway-smoke",
     "cert-manager",
-    "cert-manager-local-issuer",
     "kyverno",
-    "kyverno-smoke-policy",
 }
-APPLICATION_SERVICES = {"cratecheck", "kyverno-smoke"}
+APPLICATION_SERVICES: set[str] = set()
 FORBIDDEN_SOURCE_REFS = {"main", "master", "v1", "latest"}
 
 
@@ -79,7 +69,7 @@ def assert_kind_reference_consumes_vanilla() -> None:
         assert f"./{name}-kustomization.yaml" not in resources
         assert not (KIND_ENTRYPOINT / f"{name}-kustomization.yaml").exists()
 
-    assert not (ROOT / "clusters/kind-dev-misc-local/application-services/cratecheck").exists()
+    assert not (ROOT / "clusters/kind-dev-misc-local/application-services").exists()
     for service in ("external-secrets-operator", "envoy-gateway", "cert-manager", "kyverno"):
         assert not (ROOT / "clusters/kind-dev-misc-local/platform-services" / service).exists()
 
@@ -90,8 +80,12 @@ def assert_reusable_and_binding_boundaries() -> None:
         assert composition_root.exists(), service
         binding = (composition_root / "kustomization.yaml").read_text(encoding="utf-8")
         assert f"../../../../platform-services/{service}/base" in binding
-    cratecheck = (VANILLA / "application-services" / "cratecheck" / "kustomization.yaml").read_text(encoding="utf-8")
-    assert "../../../../application-services/cratecheck/base" in cratecheck
+    # Smoke fixtures and CrateCheck moved to the consumer-side suite in
+    # 42aei/kubecrate-kind-smoke; the Vanilla composition must not re-grow them.
+    assert not (ROOT / "application-services").exists()
+    assert not (VANILLA / "application-services").exists()
+    for path in VANILLA.rglob("*.yaml"):
+        assert "smoke" not in path.relative_to(VANILLA).parts, path
 
 
 def assert_no_temporary_or_moving_refs() -> None:

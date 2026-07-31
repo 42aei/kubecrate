@@ -1,86 +1,47 @@
 # kind cert-manager TLS runbook
 
-This runbook validates the cert-manager vertical slice on the kind-first local path. cert-manager runs as a GitOps-managed platform service in `core-cert-manager`; CrateCheck remains the generic application service validation surface.
+cert-manager runs as a GitOps-managed platform service in `core-cert-manager`, reconciled
+through the reusable Vanilla composition at `compositions/vanilla/entrypoint/`. The kind-first
+local path no longer owns a separate kind-local cert-manager service binding.
 
-The kind-first local path consumes cert-manager through the reusable Vanilla composition at `compositions/vanilla/entrypoint/`; it no longer owns a separate kind-local cert-manager service binding.
+The cert-manager vertical-slice proof — the local issuer chain, the `cratecheck-tls`
+Certificate, the Envoy smoke HTTPS path, and the CrateCheck status surface that evaluates them —
+is consumer-side validation. It lives in the smoke suite at
+[42aei/kubecrate-kind-smoke](https://github.com/42aei/kubecrate-kind-smoke):
 
-## Scope
+- `platform-services/cert-manager/local-issuer/` holds the issuer chain:
+  `ClusterIssuer/kubecrate-local-selfsigned` issues `Certificate/cratecheck-local-ca` in
+  `core-cert-manager`, `ClusterIssuer/kubecrate-local-ca` uses that CA Secret, and
+  `Certificate/cratecheck-tls` issues `Secret/cratecheck-tls` in `cratecheck` for
+  `cratecheck.local`, which the Envoy smoke Gateway terminates.
+- `scripts/kind-smoke-e2e.sh` and the invokable `kind-smoke` workflow prove the chain end to
+  end on a disposable kind cluster against a pinned kubecrate commit, including the
+  controlled-red `cert-manager` phase through CrateCheck `/status.json`.
 
-The local-only issuer chain is:
-
-1. `ClusterIssuer/kubecrate-local-selfsigned` issues `Certificate/cratecheck-local-ca` in `core-cert-manager`.
-2. `ClusterIssuer/kubecrate-local-ca` uses that CA Secret.
-3. `Certificate/cratecheck-tls` issues `Secret/cratecheck-tls` in `cratecheck` for `cratecheck.local`.
-4. Envoy Gateway terminates HTTPS with that Secret and routes to CrateCheck.
-
-This does not add public ACME, DNS-01, production issuer policy, external PKI, or browser acceptance.
+This repository intentionally does not carry public ACME, DNS-01, production issuer policy,
+external PKI, or browser acceptance fixtures.
 
 ## Static validation
 
 ```sh
-kustomize build clusters/kind-dev-misc-local/entrypoint >/tmp/kubecrate-entrypoint.yaml
 python3 scripts/validate-kubernetes-manifests.py
-python3 -m pytest -q tests/test_cert_manager_tls_contract.py tests/test_validate_cratecheck_status.py
-openspec validate introduce-cert-manager-certificate-management --type change --strict --json --no-interactive
+python3 tests/validate-vanilla-composition.py
 ```
 
-## Disposable-cluster validation
+## Runtime validation
 
-Use the direct runner against the exact pushed QA branch and commit. It refuses a remote mismatch, creates its own disposable kind cluster, proves the active context, and deletes the exact cluster on exit.
+Validate a kubecrate substrate change against the smoke suite, locally or via its
+`workflow_dispatch` kind CI:
 
 ```sh
-KUBECRATE_PR_BRANCH=<exact-qa-branch> \
-KUBECRATE_PR_NUMBER=<pr-number> \
-KUBECRATE_EXPECTED_COMMIT=<full-commit-sha> \
-./scripts/direct-kind-flux-e2e.sh
+git clone https://github.com/42aei/kubecrate-kind-smoke.git
+cd kubecrate-kind-smoke
+KUBECRATE_REF=<full-kubecrate-commit-sha> ./scripts/kind-smoke-e2e.sh
 ```
 
-If another local cluster or retained demo already owns the default Envoy host ports, select distinct runtime-only ports for the disposable cluster:
-
-```sh
-KUBECRATE_E2E_ENVOY_HTTP_HOST_PORT=12080 \
-KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT=12443 \
-KUBECRATE_PR_BRANCH=<exact-qa-branch> \
-KUBECRATE_PR_NUMBER=<pr-number> \
-KUBECRATE_EXPECTED_COMMIT=<full-commit-sha> \
-./scripts/direct-kind-flux-e2e.sh
-```
-
-The runner renders those selected ports into a private temporary kind config and uses the same HTTPS host port for trusted `/status.json` evidence. The committed kind-first local defaults remain `10080` and `10443`.
-
-To validate an already merged PR at exact current `main`, select the explicit
-identity mode. This also requires the referenced PR to be closed and merged with
-the expected commit as its merge commit, and makes Flux reconcile `main`:
-
-```sh
-KUBECRATE_E2E_IDENTITY_MODE=current-main \
-KUBECRATE_PR_NUMBER=<merged-pr-number> \
-KUBECRATE_EXPECTED_COMMIT=<full-main-commit-sha> \
-./scripts/direct-kind-flux-e2e.sh
-```
-
-The cert-manager phase waits for both Flux Kustomizations, extracts only `ca.crt` into a private temporary directory, and verifies HTTPS with hostname and CA validation:
-
-```sh
-curl --fail --cacert "$CA_FILE" \
-  --resolve cratecheck.local:10443:127.0.0.1 \
-  https://cratecheck.local:10443/status.json
-```
-
-Replace `10443` with the selected `KUBECRATE_E2E_ENVOY_HTTPS_HOST_PORT` when validating a disposable QA run that used a non-default HTTPS host port.
-
-`/status.json` is authoritative. The runner requires every ESO, Envoy, cert-manager, and CrateCheck check to be green.
-
-## Controlled red and restore
-
-Only run mutations on the runner-created disposable cluster. The bounded scenario:
-
-1. suspends `Kustomization/cert-manager-local-issuer`;
-2. deletes `Certificate/cratecheck-tls` while retaining its issued Secret so Envoy and trusted HTTPS remain healthy;
-3. immediately reads CrateCheck through its direct port-forward;
-4. requires exactly `cert-manager-tls-certificate-ready` to be red while the TLS Secret, Envoy, trusted HTTPS, and every unrelated check stay green;
-5. resumes and reconciles the Kustomization;
-6. waits for certificate readiness;
-7. re-reads the restored CA and proves trusted HTTPS plus all-green JSON.
-
-The EXIT trap resumes/reconciles a suspended issuer Kustomization before deleting the exact disposable cluster. Runtime key and certificate material is never committed or printed.
+The smoke flow renders a private disposable cluster, reconciles the pinned kubecrate Vanilla
+entrypoint plus the smoke fixtures, and requires every cert-manager CrateCheck check
+(`cert-manager-helmrelease-ready`, `cert-manager-selfsigned-issuer-ready`,
+`cert-manager-ca-certificate-ready`, `cert-manager-ca-issuer-ready`,
+`cert-manager-tls-certificate-ready`, `cert-manager-tls-secret-exists`) to be green before and
+after its controlled-red scenario. See the smoke repository README for the full contract.

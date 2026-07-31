@@ -51,16 +51,10 @@ def validate_repository_contract() -> None:
     rendered = render_entrypoint()
     rendered_configmap_values(rendered)
     expected_names = {
-        "cratecheck",
         "external-secrets-operator",
-        "external-secrets-operator-smoke",
         "envoy-gateway",
-        "envoy-gateway-smoke",
         "cert-manager",
-        "cert-manager-local-issuer",
         "kyverno",
-        "kyverno-smoke-policy",
-        "kyverno-smoke",
     }
     children = {
         document.get("metadata", {}).get("name"): document

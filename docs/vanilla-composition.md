@@ -10,27 +10,32 @@ The public entrypoint is:
 
 - `compositions/vanilla/entrypoint/`
 
-That entrypoint contains Flux `Kustomization` objects for the currently included platform services and application services:
+That entrypoint contains Flux `Kustomization` objects for the included platform services:
 
-- External-Secrets Operator platform service and its smoke consumer resources
-- Envoy Gateway platform service and its smoke Gateway API resources
-- cert-manager platform service and its local issuer smoke resources
-- Kyverno platform service and its smoke policy/resources
-- CrateCheck application service
+- External-Secrets Operator platform service
+- Envoy Gateway platform service
+- cert-manager platform service
+- Kyverno platform service
 
-CrateCheck remains an application service because it consumes platform services to validate operator-visible outcomes. It is not moved into `platform-services` just because Kubecrate owns it.
+The Vanilla composition is platform services only. The kind-local smoke fixtures and the
+CrateCheck status application moved out of this repository into the consumer-side smoke suite at
+[42aei/kubecrate-kind-smoke](https://github.com/42aei/kubecrate-kind-smoke). That repository
+reconciles its own Flux `Kustomization` objects on top of a pinned kubecrate Vanilla entrypoint
+and keeps the green -> controlled red -> restored green `/status.json` proof.
+
+Consumers validate kubecrate substrate updates by running the smoke suite against a pinned
+kubecrate commit, locally or through its invokable kind CI workflow. See the smoke repository
+README for the consumption contract.
 
 ## Reusable definitions and composition bindings
 
 Reusable service definitions remain under the workload-category roots:
 
 - `platform-services/<service>/base/`
-- `application-services/<service>/base/`
 
 The Vanilla composition binds those reusable definitions under:
 
 - `compositions/vanilla/platform-services/<service>/`
-- `compositions/vanilla/application-services/<service>/`
 
 The composition is intentionally cluster-independent. It does not carry concrete cluster identity, local kind setup, release mechanics, or private consumer application services.
 
@@ -56,6 +61,10 @@ Those paths are replaced by the Vanilla composition for reusable upstream conten
 
 Consumers should not treat the old kind-local service paths as a public API. Use `compositions/vanilla/entrypoint/` as the stable upstream path.
 
+The smoke consumer resources, the cert-manager local issuer chain, and the CrateCheck
+application service later moved to `42aei/kubecrate-kind-smoke` for the same reason: they are
+consumer-side validation fixtures, not part of the upstream distribution.
+
 ## Validation
 
 Run the static validation suite before review:
@@ -63,8 +72,10 @@ Run the static validation suite before review:
 ```sh
 python3 tests/validate-vanilla-composition.py
 python3 scripts/validate-kubernetes-manifests.py
-python3 tests/validate-cratecheck.py --render
 python3 tests/validate-flux-sync-values.py --helm-render
 ```
 
-Final delivery still requires an independent review and safeguarded disposable kind+Flux QA of the exact candidate. Static rendering does not replace the CrateCheck JSON green -> controlled red -> restored green proof.
+Final delivery still requires an independent review and safeguarded disposable kind+Flux QA of
+the exact candidate. The runtime consumption proof for a kubecrate substrate update is owned by
+the smoke suite in `42aei/kubecrate-kind-smoke` (CrateCheck JSON green -> controlled red ->
+restored green against a pinned kubecrate commit).
