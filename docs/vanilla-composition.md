@@ -39,6 +39,8 @@ The Vanilla composition binds those reusable definitions under:
 
 The composition is intentionally cluster-independent. It does not carry concrete cluster identity, local kind setup, release mechanics, or private consumer application services.
 
+The `kubecrate-system` namespace is not part of the Vanilla composition; it exists only in the `kind-dev-misc-local` cluster binding. Consumers that want it create it themselves — the smoke suite in [kubecrate-kind-smoke](https://github.com/42aei/kubecrate-kind-smoke) does so for its own fixtures.
+
 ## kind reference consumer
 
 The kind-first local path remains the first concrete reference consumer:
