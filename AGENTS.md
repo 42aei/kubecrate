@@ -92,4 +92,3 @@ For this upstream distribution:
 - focus on repository docs and reusable distribution artifacts
 - use `docs/ai-repository-guide.md` as the concise source-of-truth map and validation checklist for AI-assisted repository work
 - do not add unrelated or empty technical skeleton directories
-- do not edit `.opencode` files in this pass
