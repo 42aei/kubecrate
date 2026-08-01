@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Validate Kubernetes YAML and Kustomize render output for kubecrate.
 
-This script intentionally does not run OpenSpec validation. It focuses on
-repository YAML shape, Kustomize renderability, and Kubernetes manifest schema
-validation suitable for CI and local pre-PR checks.
+This script focuses on repository YAML shape, Kustomize renderability, and
+Kubernetes manifest schema validation suitable for CI and pre-PR checks.
 """
 
 from __future__ import annotations
@@ -27,19 +26,7 @@ KUSTOMIZE_ROOTS = (
     "platform-services/envoy-gateway/base",
     "platform-services/cert-manager/base",
     "platform-services/kyverno/base",
-    "clusters/kind-dev-misc-local/platform-services/flux",
-    "compositions/vanilla/platform-services/external-secrets-operator",
-    "compositions/vanilla/platform-services/external-secrets-operator/smoke",
-    "compositions/vanilla/platform-services/envoy-gateway",
-    "compositions/vanilla/platform-services/envoy-gateway/smoke",
-    "compositions/vanilla/platform-services/cert-manager",
-    "compositions/vanilla/platform-services/cert-manager/local-issuer",
-    "compositions/vanilla/platform-services/kyverno",
-    "compositions/vanilla/platform-services/kyverno/smoke-policy",
-    "compositions/vanilla/platform-services/kyverno/smoke",
-    "compositions/vanilla/application-services/cratecheck",
-    "compositions/vanilla/entrypoint",
-    "clusters/kind-dev-misc-local/entrypoint",
+    "application-services/cratecheck/base",
 )
 
 
@@ -181,7 +168,7 @@ def main() -> None:
         "--check",
         choices=("all", "yaml", "source-manifests", "kustomize"),
         default="all",
-        help="Run one validation group. Use 'all' for the full local/CI suite.",
+        help="Run one validation group. Use 'all' for the full CI suite.",
     )
     args = parser.parse_args()
 

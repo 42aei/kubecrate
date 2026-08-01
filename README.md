@@ -8,7 +8,7 @@ Kubecrate is a minimal cloud-native platform in a box.
 
 The target experience is simple: point at a cluster and install.
 
-The long-term goal is cluster-provider agnostic operation. The first path is a kind-first local path so early slices stay small and testable.
+Kubecrate is designed for cluster-provider agnostic operation.
 
 Kubecrate is for people who need a practical platform starting point without a large platform team. That includes newer platform engineers, homelab users, and small teams that want a clear baseline instead of a highly configurable framework.
 
@@ -39,27 +39,17 @@ In practice, some platform services need bootstrap installation before GitOps ex
 
 ## Current repository scope
 
-This repository is still early, but it now includes the first installable slice for the kind-first local path.
-
-It carries the project model, vocabulary, roadmap, and backlog alongside the first runtime files for bootstrap installation and GitOps-managed operation.
-
-## Run the retained local demo
-
-See the [`retained local demo runbook`](docs/retained-local-demo.md) to start, inspect, recover, and stop the kind-first local stack.
+This repository contains reusable platform-service and application-service definitions for bootstrap installation and GitOps-managed operation.
 
 ## Documents
 
 - `docs/README.md` for the docs map
 - `docs/architecture.md` for the operating model
 - `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
-- `docs/vanilla-composition.md` for the reusable public Vanilla composition and the kind-first local reference consumer
-- `docs/kind-local-workflow.md` for the local reference workflow on the kind-first local path
-- `docs/retained-local-demo.md` for the runnable retained local demo
 - `docs/roadmap.md` for the near-term direction
-- `docs/backlog/` for lightweight raw captures
 
 ## Status
 
 Kubecrate is early.
 
-The current focus is validating and reviewing the reusable Vanilla composition through the kind-first local path without losing the broader cluster-provider agnostic direction.
+The current focus is maintaining a small, reusable upstream distribution.

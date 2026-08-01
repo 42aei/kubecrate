@@ -80,7 +80,6 @@ External-Secrets Operator is a platform service. It provides secret-sync infrast
 ## Relationship to other documents
 
 - `architecture.md` defines the two-axis model and design posture.
-- `kind-local-workflow.md` defines the local reference workflow.
 - `roadmap.md` shows the near-term order of work.
 
 This document is a reference for later proposals that need a shared understanding of what platform services and application services mean in practice.
