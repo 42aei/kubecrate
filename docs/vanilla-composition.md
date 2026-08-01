@@ -8,15 +8,12 @@ The public entrypoint is:
 
 - `compositions/vanilla/entrypoint/`
 
-That entrypoint contains Flux `Kustomization` objects for the currently included platform services and application services:
+That entrypoint contains Flux `Kustomization` objects for the currently included platform services:
 
-- External-Secrets Operator platform service and its smoke consumer resources
-- Envoy Gateway platform service and its smoke Gateway API resources
-- cert-manager platform service and its local issuer smoke resources
-- Kyverno platform service and its smoke policy/resources
-- CrateCheck application service
-
-CrateCheck remains an application service because it consumes platform services to validate operator-visible outcomes. It is not moved into `platform-services` just because Kubecrate owns it.
+- External-Secrets Operator
+- Envoy Gateway
+- cert-manager
+- Kyverno
 
 ## Reusable definitions and composition bindings
 
