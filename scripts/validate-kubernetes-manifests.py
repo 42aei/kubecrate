@@ -26,7 +26,6 @@ KUSTOMIZE_ROOTS = (
     "platform-services/envoy-gateway/base",
     "platform-services/cert-manager/base",
     "platform-services/kyverno/base",
-    "application-services/cratecheck/base",
 )
 
 
