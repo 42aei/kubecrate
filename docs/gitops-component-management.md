@@ -25,7 +25,7 @@ Independent targeting does not mean a management unit has no dependencies. Depen
 
 #### Environment-specific configuration
 
-A management unit accepts cluster-specific configuration (values, overlays, or equivalent binding data) without changing the shared definition of the service. The same service definition can target a local kind cluster with one set of binding data and a production cluster with another.
+A management unit accepts cluster-specific configuration (values, overlays, or equivalent binding data) without changing the shared definition of the service. The same service definition can target multiple conforming clusters with different binding data.
 
 Shared defaults live with the service definition. Cluster binding records only real cluster-specific overrides or references, avoiding noisy defaults repeated in every cluster.
 
@@ -83,11 +83,11 @@ The deferred ESO path should standardize how operator-supplied trust material en
 
 #### Local ESO provider direction
 
-When the local ESO path is introduced, it needs a provider that can read operator-supplied or bootstrap-created local trust material and project narrower Secrets from it.
+When ESO is introduced, it needs a provider that can read operator-supplied or bootstrap-created trust material and project narrower Secrets from it.
 
-The **Fake provider** can still be used as a simple ESO smoke or demo path, but it does not validate a real local trust-material flow by itself.
+The **Fake provider** can be used as a simple ESO contract test, but it does not validate a real trust-material flow by itself.
 
-The kind-first local path should therefore use the **ESO Kubernetes provider**, or an equivalent local provider with the same capability, when that deferred secret-management path is implemented.
+The implementation should therefore use the **ESO Kubernetes provider**, or an equivalent provider with the same capability, when that deferred secret-management path is implemented.
 
 Real providers (AWS Secrets Manager, GCP Secret Manager, Vault, or others) can be introduced later as provider-specific needs arise, without changing the management-unit contract or the source structure.
 
@@ -127,9 +127,7 @@ Concrete cluster directories explicitly enable and configure those services unde
 
 `clusters/<cluster>/entrypoint` is the intended first GitOps reconciliation root or table of contents for that concrete cluster.
 
-The reusable public Vanilla composition is rooted at `compositions/vanilla/entrypoint/`. Concrete reference consumers such as `clusters/kind-dev-misc-local/entrypoint/` include that public composition rather than keeping a separate shadow set of platform-service and application-service bindings. Cluster-local directories still own only concrete bootstrap, Flux self-management, and future cluster-specific overrides that are not part of the reusable Vanilla contract.
-
-Temporary cluster-local platform service implementations are forbidden unless an approved change explicitly allows them with a removal plan.
+Temporary cluster-local platform service implementations are forbidden unless a scoped change explicitly allows them with a removal plan.
 
 This follows the general shape of Flux's recommended monorepo pattern where each cluster state is defined in a dedicated cluster directory that references shared infrastructure or app definitions. In Kubecrate terms, those reusable definitions are `platform services` and `application services`, not generic infrastructure or apps, unless the Flux pattern itself is being cited.
 
@@ -143,9 +141,7 @@ The first concrete cluster directory convention is `<provider>-<environment>-<wo
 
 Examples include `gcp-prod-web-eu1`, `gcp-prod-web-us1`, `gcp-prod-storage-eu1`, `gcp-staging-web-eu1`, `gcp-staging-storage-eu1`, and `aws-prod-web-eu1`.
 
-The same shape also applies to the kind-first local path as `kind-dev-misc-local`.
-
-This is a pragmatic first convention for concrete cluster directories, not an immutable taxonomy. It gives the first runtime layout a clear naming shape without introducing shared profile layers too early.
+This is a pragmatic convention for concrete cluster directories, not an immutable taxonomy.
 
 ### Cluster binding separation
 

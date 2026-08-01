@@ -59,7 +59,7 @@ The operator or calling tool provides three conceptual input categories:
 2. **GitOps source information**: a reference to a Git repository that the GitOps controller will reconcile, including any access credentials required.
 3. **Secret trust material**: any credentials or trust material required by bootstrap-critical services are supplied by the operator for now.
 
-These inputs are tool-neutral. The contract does not require a kind-specific, Terraform-specific, Ansible-specific, or bespoke Kubecrate interface.
+These inputs are tool-neutral. The contract does not require a provider-specific or bespoke Kubecrate interface.
 
 ### Bootstrap trust material
 
@@ -101,7 +101,7 @@ The first bootstrap path installs Flux controllers with the Flux Helm chart, the
 
 Flux uses a self-managing handoff model. Bootstrap installation is a loader or reference to the ongoing Flux desired state, not a second independent source of truth.
 
-The first runtime files live in this repository and use reusable `platform services` definitions plus the public Vanilla composition consumed by concrete cluster entrypoints. The kind-first local reference entrypoint keeps its bootstrap and Flux self-management binding, then includes `compositions/vanilla/entrypoint/` so it exercises the same GitOps-managed operation contract external consumers will use.
+The first runtime files live in this repository and use reusable `platform services` definitions plus concrete cluster binding rooted at a concrete cluster entrypoint. When a real platform service is introduced, its reusable base lives at `platform-services/<service>/base/` and its concrete cluster binding lives at `clusters/<cluster>/platform-services/<service>/` immediately.
 
 External-Secrets Operator is deferred outside the first installable slice. Flux Git credentials for this slice come from the `flux2-sync` SSH deploy-key generation path.
 
@@ -109,7 +109,7 @@ The `flux2-sync` chart release `flux-system-sync` creates `Secret/flux-system-sy
 
 Future secret projection work, including External-Secrets Operator, remains deferred platform services scope with its own acceptance criteria.
 
-Repository-owned kind setup plumbing can be part of the local validation harness for the kind-first local path, but it remains outside the bootstrap installation boundary.
+Cluster creation and provider-specific setup remain outside the bootstrap installation boundary.
 
 ## Non-goals
 

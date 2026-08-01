@@ -4,7 +4,7 @@
 
 Kubecrate is a minimal cloud-native platform in a box.
 
-The target experience is point at a cluster and install. Over time, that should work with any conforming Kubernetes cluster. The first path is narrower on purpose: a kind-first local path for reference use.
+The target experience is point at a cluster and install, using any conforming Kubernetes cluster.
 
 ## Design posture
 
@@ -30,7 +30,7 @@ They are often upstream or open source components such as ingress, certificate m
 
 When a platform service needs a dedicated Kubernetes namespace, Kubecrate uses the `core-<service-name>` naming rule. For External-Secrets Operator, the namespace is `core-external-secrets-operator`.
 
-When a backing secret store is involved, the trust material for that store is operator-supplied for now. In the kind-first local path, the operator loads that material by hand during setup.
+When a backing secret store is involved, the trust material for that store is operator-supplied.
 
 ### Application services
 
@@ -79,6 +79,6 @@ Repository layout decisions should preserve the same two-axis model.
 
 Planning artifacts live under `docs/` until an installable slice requires runtime files. Runtime directories should be introduced only by proposals that need concrete files, not as empty skeleton structure.
 
-Real platform services use `platform-services/<service>/base/` for the reusable service definition and `clusters/<cluster>/platform-services/<service>/` for the concrete cluster binding as soon as they exist. Temporary cluster-local platform service implementations are forbidden unless an approved change explicitly allows them with a removal plan.
+Real platform services use `platform-services/<service>/base/` for the reusable service definition. Cluster-specific bindings belong in the consuming distribution. Temporary cluster-local platform service implementations are forbidden unless a scoped change explicitly allows them with a removal plan.
 
-Environment-specific structure beyond concrete cluster directories is deferred until a change needs more than the kind-first local path.
+Environment-specific structure is deferred until a scoped change requires it.
