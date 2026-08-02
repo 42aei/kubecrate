@@ -6,50 +6,67 @@
 
 Kubecrate is a minimal cloud-native platform in a box.
 
-The target experience is simple: point at a cluster and install.
+Kubecrate is an upstream distribution for GitOps-managed Kubernetes platform services. A separate consumer repository must provide the cluster-specific Flux source, binding, and private application services before Kubecrate can be installed into a cluster. The target experience is point at a cluster and install, using any conforming Kubernetes cluster.
 
-Kubecrate is designed for cluster-provider agnostic operation.
+## Project model
 
-Kubecrate is for people who need a practical platform starting point without a large platform team. That includes newer platform engineers, homelab users, and small teams that want a clear baseline instead of a highly configurable framework.
+Kubecrate separates lifecycle phase from workload category.
 
-## Project posture
+Lifecycle phases:
 
-Kubecrate is opinionated on purpose.
+1. **bootstrap installation**: establish the components required to start GitOps-managed operation;
+2. **GitOps-managed operation**: reconcile Kubecrate resources from Git.
 
-- minimal over comprehensive
-- opinionated over configurable
-- open source first
-- GitOps by default
-- production-inspired, not production-ready
+Workload categories:
 
-## Core model
+1. **platform services**: shared capabilities that make the platform usable;
+2. **application services**: workloads that run on the platform.
 
-Kubecrate has two axes:
+Bootstrap is a lifecycle or management mode, not a third workload category.
 
-1. lifecycle phase: bootstrap installation or GitOps-managed operation
-2. workload category: platform services or application services
+Kubecrate is opinionated by design:
 
-Platform services are shared capabilities that make the platform usable.
+- minimal over comprehensive;
+- opinionated over configurable;
+- open source first;
+- GitOps by default;
+- production-inspired, not production-ready.
 
-Application services are the workloads that run on it.
+## Repository structure
 
-Bootstrap is not a third workload category. It is a lifecycle or management mode.
+The repository contains reusable platform-service definitions and the Vanilla composition that combines them for GitOps-managed operation.
 
-In practice, some platform services need bootstrap installation before GitOps exists. After that, they should move into GitOps-managed operation.
+```text
+platform-services/                         reusable platform-service bases
+compositions/vanilla/                      reusable Kubecrate Vanilla composition
+docs/                                      architecture, workflows, and runbooks
+scripts/                                   validation helpers
+requirements-dev.txt                       development dependencies
+```
 
-## Current repository scope
+## Vanilla composition
 
-This repository contains reusable platform-service and application-service definitions for bootstrap installation and GitOps-managed operation.
+`compositions/vanilla/entrypoint/` is the reusable composition path. It contains Flux resources for the included platform services:
 
-## Documents
+- External-Secrets Operator,
+- Envoy Gateway,
+- cert-manager,
+- Kyverno.
 
-- `docs/README.md` for the docs map
-- `docs/architecture.md` for the operating model
-- `docs/bootstrap-installation-contract.md` for the bootstrap installation contract and GitOps handoff
-- `docs/roadmap.md` for the near-term direction
+Reusable service definitions are under `platform-services/<service>/base/`. The composition-specific bindings under `compositions/vanilla/platform-services/<service>/` reference those bases and add the values and Flux wiring selected for Vanilla, such as Helm values ConfigMaps and service-specific health checks.
 
-## Status
+See [`docs/vanilla-composition.md`](docs/vanilla-composition.md) for the composition contract.
 
-Kubecrate is early.
+## Documentation
 
-The current focus is maintaining a small, reusable upstream distribution.
+- [`docs/README.md`](docs/README.md) — documentation map;
+- [`docs/architecture.md`](docs/architecture.md) — operating model and repository structure;
+- [`docs/bootstrap-installation-contract.md`](docs/bootstrap-installation-contract.md) — bootstrap installation and GitOps handoff;
+- [`docs/gitops-component-management.md`](docs/gitops-component-management.md) — management units and platform-service boundaries;
+- [`docs/platform-and-application-service-model.md`](docs/platform-and-application-service-model.md) — workload categories and ownership;
+- [`docs/vanilla-composition.md`](docs/vanilla-composition.md) — reusable Vanilla composition;
+- [`docs/roadmap.md`](docs/roadmap.md) — project direction.
+
+## License
+
+Kubecrate is licensed under the MIT License. See [`LICENSE`](LICENSE).
