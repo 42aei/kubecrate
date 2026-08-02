@@ -6,7 +6,7 @@
 
 Kubecrate is a minimal cloud-native platform in a box.
 
-The target experience is point at a cluster and install, using any conforming Kubernetes cluster. Kubecrate is designed for cluster-provider agnostic operation.
+Kubecrate is an upstream distribution for GitOps-managed Kubernetes platform services. A separate consumer repository must provide the cluster-specific Flux source, binding, and private application services before Kubecrate can be installed into a cluster. The target experience is point at a cluster and install, using any conforming Kubernetes cluster.
 
 ## Project model
 
@@ -48,12 +48,12 @@ requirements-dev.txt                       development dependencies
 
 `compositions/vanilla/entrypoint/` is the reusable composition path. It contains Flux resources for the included platform services:
 
-- External-Secrets Operator;
-- Envoy Gateway;
-- cert-manager;
+- External-Secrets Operator,
+- Envoy Gateway,
+- cert-manager,
 - Kyverno.
 
-Reusable service definitions are under `platform-services/<service>/base/`, with composition-specific bindings under `compositions/vanilla/platform-services/<service>/`.
+Reusable service definitions are under `platform-services/<service>/base/`. The composition-specific bindings under `compositions/vanilla/platform-services/<service>/` reference those bases and add the values and Flux wiring selected for Vanilla, such as Helm values ConfigMaps and service-specific health checks.
 
 See [`docs/vanilla-composition.md`](docs/vanilla-composition.md) for the composition contract.
 
