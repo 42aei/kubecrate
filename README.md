@@ -64,6 +64,7 @@ See [`docs/vanilla-composition.md`](docs/vanilla-composition.md) for the composi
 - [`docs/bootstrap-installation-contract.md`](docs/bootstrap-installation-contract.md) — bootstrap installation and GitOps handoff;
 - [`docs/gitops-component-management.md`](docs/gitops-component-management.md) — management units and platform-service boundaries;
 - [`docs/platform-and-application-service-model.md`](docs/platform-and-application-service-model.md) — workload categories and ownership;
+- [`docs/consumer-repositories.md`](docs/consumer-repositories.md) — consumer repositories, bootstrap handoff, and exact Kubecrate release consumption;
 - [`docs/vanilla-composition.md`](docs/vanilla-composition.md) — reusable Vanilla composition;
 - [`docs/roadmap.md`](docs/roadmap.md) — project direction.
 
