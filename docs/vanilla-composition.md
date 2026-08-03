@@ -22,12 +22,18 @@ Reusable service definitions remain under the workload-category roots:
 - `platform-services/<service>/base/`
 - `application-services/<service>/base/`
 
-The Vanilla composition binds those reusable definitions under:
+The Vanilla entrypoint reconciles the selected platform-service bases directly:
 
-- `compositions/vanilla/platform-services/<service>/`
-- `compositions/vanilla/application-services/<service>/`
+- `platform-services/external-secrets-operator/base/`
+- `platform-services/envoy-gateway/base/`
+- `platform-services/cert-manager/base/`
+- `platform-services/kyverno/base/`
 
 The composition is intentionally cluster-independent. It does not carry concrete cluster identity, release mechanics, or private consumer application services.
+
+## Compatibility note
+
+`compositions/vanilla/entrypoint/` remains the stable consumer path. Direct references to the former per-service composition binding paths under `compositions/vanilla/platform-services/<service>/` must move to the corresponding service base under `platform-services/<service>/base/`. Consumers that only reconcile `compositions/vanilla/entrypoint/` do not need to change their Kubecrate path.
 
 Use `compositions/vanilla/entrypoint/` as the stable upstream path.
 

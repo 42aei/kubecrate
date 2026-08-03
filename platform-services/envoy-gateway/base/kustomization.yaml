@@ -4,3 +4,10 @@ resources:
   - ./namespace.yaml
   - ./helm-repository.yaml
   - ./helm-release.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: envoy-gateway-values
+    namespace: core-envoy-gateway
+    files:
+      - values.yaml=./helm-values.yaml

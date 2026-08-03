@@ -4,3 +4,10 @@ resources:
   - ./namespace.yaml
   - ./helm-repository.yaml
   - ./helm-release.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: cert-manager-values
+    namespace: core-cert-manager
+    files:
+      - values.yaml=./helm-values.yaml

@@ -4,3 +4,10 @@ resources:
   - ./namespace.yaml
   - ./helm-repository.yaml
   - ./helm-release.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: external-secrets-operator-values
+    namespace: core-external-secrets-operator
+    files:
+      - values.yaml=./helm-values.yaml

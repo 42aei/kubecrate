@@ -9,7 +9,7 @@ metadata:
     kubecrate.io/workload-category: platform-services
 spec:
   interval: 1m0s
-  path: ./compositions/vanilla/platform-services/envoy-gateway
+  path: ./platform-services/envoy-gateway/base
   prune: true
   sourceRef:
     kind: GitRepository

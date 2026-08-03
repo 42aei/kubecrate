@@ -9,7 +9,7 @@ metadata:
     kubecrate.io/workload-category: platform-services
 spec:
   interval: 1m0s
-  path: ./compositions/vanilla/platform-services/cert-manager
+  path: ./platform-services/cert-manager/base
   prune: true
   sourceRef:
     kind: GitRepository
