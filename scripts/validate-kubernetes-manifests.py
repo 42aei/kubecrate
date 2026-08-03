@@ -23,9 +23,11 @@ KUBERNETES_API_PATTERN = re.compile(r"^(?:[a-z0-9.-]+/)?v[0-9](?:[a-z0-9]+)?$")
 SKIP_DIRS = {".git", ".worktrees", ".venv", "node_modules"}
 KUSTOMIZE_ROOTS = (
     "platform-services/flux/base",
+    "platform-services/external-secrets-operator/base",
     "platform-services/envoy-gateway/base",
     "platform-services/cert-manager/base",
     "platform-services/kyverno/base",
+    "compositions/vanilla/entrypoint",
 )
 
 

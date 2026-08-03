@@ -56,7 +56,7 @@ An upgrade is an explicit consumer change:
 3. The consumer validates the resulting composition before merge.
 4. Rollback restores the previous exact tag.
 
-Pre-1.0 releases may contain breaking changes; release notes must identify required consumer-owned changes.
+Pre-1.0 releases may contain breaking changes; release notes must identify required consumer-owned changes. Consumers should normally reconcile `compositions/vanilla/entrypoint/`; direct references to lower-level Kubecrate paths are more likely to need migration between pre-1.0 releases. See [`releases/v0.4.0.md`](releases/v0.4.0.md) for the first breaking path-simplification note.
 
 ## Template relationship
 

@@ -10,6 +10,7 @@ The docs carry the project model, language, and contracts for the reusable distr
 - `bootstrap-installation-contract.md` defines what `point at a cluster and install` means, including bootstrap installation boundaries, GitOps-managed operation handoff, and how platform services and application services fit after handoff.
 - `gitops-component-management.md` defines the management-unit contract, the minimal initial set of GitOps-managed platform services, the source-structure contract, and the packaging posture.
 - `vanilla-composition.md` defines the reusable Vanilla composition and its source structure.
+- `releases/` contains published release notes and compatibility guidance.
 - `ai-repository-guide.md` maps source-of-truth documents and validation expectations for AI-assisted work.
 - `roadmap.md` shows the project direction.
 

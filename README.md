@@ -53,7 +53,7 @@ requirements-dev.txt                       development dependencies
 - cert-manager,
 - Kyverno.
 
-Reusable service definitions are under `platform-services/<service>/base/`. The composition-specific bindings under `compositions/vanilla/platform-services/<service>/` reference those bases and add the values and Flux wiring selected for Vanilla, such as Helm values ConfigMaps and service-specific health checks.
+Reusable service definitions are under `platform-services/<service>/base/`. The Vanilla entrypoint reconciles those service bases directly, and each service base carries its selected Helm values alongside its manifests.
 
 See [`docs/vanilla-composition.md`](docs/vanilla-composition.md) for the composition contract.
 
