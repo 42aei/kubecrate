@@ -29,6 +29,8 @@ KUSTOMIZE_ROOTS = (
     "platform-services/kyverno/base",
     "compositions/vanilla/entrypoint",
 )
+VANILLA_ENTRYPOINT = pathlib.Path("compositions/vanilla/entrypoint")
+VANILLA_FLUX_SOURCE_NAME = "flux-system-sync"
 
 
 def run(cmd: list[str], *, cwd: pathlib.Path | None = None, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -162,12 +164,46 @@ def validate_kustomize_roots() -> None:
             os.unlink(rendered_path)
 
 
+def validate_vanilla_source_contract() -> None:
+    print("\n== Vanilla Flux source contract ==")
+    failed = False
+    checked = 0
+    for path in sorted((REPO_ROOT / VANILLA_ENTRYPOINT).glob("*-kustomization.yaml")):
+        rel = path.relative_to(REPO_ROOT)
+        for doc in parse_yaml_documents(path):
+            if not isinstance(doc, dict):
+                continue
+            if doc.get("apiVersion") != "kustomize.toolkit.fluxcd.io/v1" or doc.get("kind") != "Kustomization":
+                continue
+            checked += 1
+            source_ref = doc.get("spec", {}).get("sourceRef")
+            if not isinstance(source_ref, dict):
+                failed = True
+                print(f"FAIL {rel}: missing spec.sourceRef")
+                continue
+            kind = source_ref.get("kind")
+            name = source_ref.get("name")
+            if kind != "GitRepository" or name != VANILLA_FLUX_SOURCE_NAME:
+                failed = True
+                print(
+                    f"FAIL {rel}: expected spec.sourceRef kind GitRepository "
+                    f"name {VANILLA_FLUX_SOURCE_NAME}, got kind {kind!r} name {name!r}"
+                )
+                continue
+            print(f"ok {rel}: sourceRef.name {VANILLA_FLUX_SOURCE_NAME}")
+    if checked == 0:
+        raise SystemExit(f"No Flux Kustomizations found under {VANILLA_ENTRYPOINT}")
+    if failed:
+        raise SystemExit("Vanilla Flux source contract validation failed")
+    print(f"Checked {checked} Vanilla Flux Kustomization sourceRefs")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-tool-check", action="store_true")
     parser.add_argument(
         "--check",
-        choices=("all", "yaml", "source-manifests", "kustomize"),
+        choices=("all", "yaml", "source-manifests", "kustomize", "vanilla-source-contract"),
         default="all",
         help="Run one validation group. Use 'all' for the full CI suite.",
     )
@@ -185,6 +221,8 @@ def main() -> None:
         validate_source_manifests()
     if args.check in {"all", "kustomize"}:
         validate_kustomize_roots()
+    if args.check in {"all", "vanilla-source-contract"}:
+        validate_vanilla_source_contract()
 
 
 if __name__ == "__main__":

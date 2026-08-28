@@ -15,6 +15,8 @@ That entrypoint contains Flux `Kustomization` objects for the currently included
 - cert-manager
 - Kyverno
 
+Each nested Flux `Kustomization` uses `sourceRef.kind: GitRepository` and `sourceRef.name: flux-system-sync`. Consumers should use a single `GitRepository/flux-system-sync`, pinned to an exact Kubecrate release tag, for the top-level Vanilla reconciliation and for these nested reconciliations.
+
 ## Reusable definitions and composition bindings
 
 Reusable service definitions remain under the workload-category roots:

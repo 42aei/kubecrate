@@ -21,12 +21,14 @@ Kubecrate does not own a consumer's cluster identity, private Git root, credenti
 A consumer repository owns:
 
 - `clusters/<cluster>/entrypoint/` as the Flux reconciliation root;
-- a Git source for `https://github.com/42aei/kubecrate.git`;
+- a Git source named `flux-system-sync` for `https://github.com/42aei/kubecrate.git`;
 - an exact immutable Kubecrate release tag;
 - a Kustomization that reconciles `./compositions/vanilla/entrypoint` from that source; and
 - consumer-owned platform or application services that depend on the Vanilla reconciliation.
 
 Consumer repositories should reference Kubecrate rather than copy its implementation into a long-lived fork. Cluster-specific configuration and secrets remain in the consumer repository or the canonical secret system that owns them.
+
+The Vanilla entrypoint's nested Flux `Kustomization` objects use `sourceRef.name: flux-system-sync`. A consumer should use the same `GitRepository/flux-system-sync`, pinned to the selected Kubecrate release tag, for its top-level Vanilla reconciliation. Do not add a separate Kubecrate source such as `GitRepository/kubecrate-upstream` for Vanilla.
 
 ## Bootstrap and GitOps handoff
 
@@ -65,7 +67,7 @@ Pre-1.0 releases may contain breaking changes; release notes must identify requi
 Template-owned plumbing should remain small:
 
 - one example cluster root;
-- one Kubecrate source;
+- one Kubecrate source named `flux-system-sync`;
 - one Vanilla reconciliation;
 - one consumer-services reconciliation path; and
 - validation and instructions for adapting the example.
