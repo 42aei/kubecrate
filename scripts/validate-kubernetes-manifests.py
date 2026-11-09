@@ -27,6 +27,7 @@ KUSTOMIZE_ROOTS = (
     "platform-services/envoy-gateway/base",
     "platform-services/cert-manager/base",
     "platform-services/kyverno/base",
+    "platform-services/netbird-operator/base",
     "compositions/vanilla/entrypoint",
 )
 VANILLA_ENTRYPOINT = pathlib.Path("compositions/vanilla/entrypoint")

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: core-netbird-operator
+  labels:
+    app.kubernetes.io/name: netbird-operator
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services

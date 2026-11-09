@@ -28,6 +28,8 @@ A consumer repository owns:
 
 Consumer repositories should reference Kubecrate rather than copy its implementation into a long-lived fork. Cluster-specific configuration and secrets remain in the consumer repository or the canonical secret system that owns them.
 
+A consumer may also reconcile an optional platform-service base directly, for example `./platform-services/netbird-operator/base`, from the same `GitRepository/flux-system-sync`. Optional bases are not part of Vanilla; the consumer supplies their cluster-specific binding data. See [`netbird-operator.md`](netbird-operator.md).
+
 The Vanilla entrypoint's nested Flux `Kustomization` objects use `sourceRef.name: flux-system-sync`. A consumer should use the same `GitRepository/flux-system-sync`, pinned to the selected Kubecrate release tag, for its top-level Vanilla reconciliation. Do not add a separate Kubecrate source such as `GitRepository/kubecrate-upstream` for Vanilla.
 
 ## Bootstrap and GitOps handoff
