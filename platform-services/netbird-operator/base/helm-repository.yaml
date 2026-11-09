@@ -1,0 +1,13 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: netbird-operator
+  namespace: core-netbird-operator
+  labels:
+    app.kubernetes.io/name: netbird-operator
+    app.kubernetes.io/part-of: kubecrate
+    kubecrate.io/workload-category: platform-services
+spec:
+  interval: 30m0s
+  type: oci
+  url: oci://ghcr.io/netbirdio/helm-charts

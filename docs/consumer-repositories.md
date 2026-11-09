@@ -28,6 +28,8 @@ A consumer repository owns:
 
 Consumer repositories should reference Kubecrate rather than copy its implementation into a long-lived fork. Cluster-specific configuration and secrets remain in the consumer repository or the canonical secret system that owns them.
 
+A consumer may also reconcile an optional platform-service base directly, for example `./platform-services/netbird-operator/base`, from the same `GitRepository/flux-system-sync`. Optional bases are not part of Vanilla; the consumer supplies their cluster-specific binding data. See [`netbird-operator.md`](netbird-operator.md).
+
 The Vanilla entrypoint's nested Flux `Kustomization` objects use `sourceRef.name: flux-system-sync`. A consumer should use the same `GitRepository/flux-system-sync`, pinned to the selected Kubecrate release tag, for its top-level Vanilla reconciliation. Do not add a separate Kubecrate source such as `GitRepository/kubecrate-upstream` for Vanilla.
 
 ## Bootstrap and GitOps handoff
@@ -58,7 +60,7 @@ An upgrade is an explicit consumer change:
 3. The consumer validates the resulting composition before merge.
 4. Rollback restores the previous exact tag.
 
-Pre-1.0 releases may contain breaking changes; release notes must identify required consumer-owned changes. Consumers should normally reconcile `compositions/vanilla/entrypoint/`; direct references to lower-level Kubecrate paths are more likely to need migration between pre-1.0 releases. See [`releases/v0.4.0.md`](releases/v0.4.0.md) for the first breaking path-simplification note.
+Pre-1.0 releases may contain breaking changes; release notes must identify required consumer-owned changes. Consumers should normally reconcile `compositions/vanilla/entrypoint/`, plus any optional platform-service base they opt in to directly (see above); other direct references to lower-level Kubecrate paths are more likely to need migration between pre-1.0 releases. See [`releases/v0.4.0.md`](releases/v0.4.0.md) for the first breaking path-simplification note.
 
 ## Template relationship
 

@@ -1,0 +1,25 @@
+gatewayAPI:
+  enabled: true
+webhook:
+  enableCertManager: true
+  # The chart default mutates pods in all namespaces with failurePolicy: Fail.
+  # Sidecar injection is not used, so fail open and watch only this namespace.
+  failurePolicy: Ignore
+  namespaceSelectors:
+    - key: kubernetes.io/metadata.name
+      operator: In
+      values:
+        - core-netbird-operator
+clusterSecretsPermissions:
+  # Does not narrow the RBAC: with netbirdAPI.keyFromSecret set, chart 0.9.0
+  # still grants cluster-wide Secret access (see docs/netbird-operator.md).
+  allowAllSecrets: false
+netbirdAPI:
+  keyFromSecret:
+    name: netbird-mgmt-api-key
+    key: NB_API_KEY
+cluster:
+  dns: svc.cluster.local
+  # Placeholder: every consumer must override this through the HelmRelease's
+  # spec.values (see docs/netbird-operator.md).
+  name: override-me

@@ -57,6 +57,12 @@ Reusable service definitions are under `platform-services/<service>/base/`. The 
 
 See [`docs/vanilla-composition.md`](docs/vanilla-composition.md) for the composition contract.
 
+## Optional platform services
+
+Optional platform services are not part of Vanilla. A consumer repository reconciles their base directly from its pinned Kubecrate tag:
+
+- NetBird operator, `platform-services/netbird-operator/base/` — see [`docs/netbird-operator.md`](docs/netbird-operator.md).
+
 ## Documentation
 
 - [`docs/README.md`](docs/README.md) — documentation map;
@@ -66,6 +72,7 @@ See [`docs/vanilla-composition.md`](docs/vanilla-composition.md) for the composi
 - [`docs/platform-and-application-service-model.md`](docs/platform-and-application-service-model.md) — workload categories and ownership;
 - [`docs/consumer-repositories.md`](docs/consumer-repositories.md) — consumer repositories, bootstrap handoff, and exact Kubecrate release consumption;
 - [`docs/vanilla-composition.md`](docs/vanilla-composition.md) — reusable Vanilla composition;
+- [`docs/netbird-operator.md`](docs/netbird-operator.md) — optional NetBird operator platform service;
 - [`docs/roadmap.md`](docs/roadmap.md) — project direction.
 
 ## License
