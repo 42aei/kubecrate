@@ -41,7 +41,13 @@ The base relies on two things Vanilla provides, and a consumer that reconciles i
 
 ## Secret arrival order
 
-The operator pod needs Secret `netbird-mgmt-api-key` before it becomes Ready. On a fresh cluster the Secret may arrive after the install starts. The `HelmRelease` retries a failed install up to 3 times (`install.remediation.retries: 3`) instead of staying failed until a manual step. Deliver the Secret early, or expect the first install attempt to wait for it.
+The operator pod needs Secret `netbird-mgmt-api-key` before it becomes Ready. On a fresh cluster the Secret may arrive after the install starts. The `HelmRelease` retries a failed install up to 3 times (`install.remediation.retries: 3`), about 20 minutes with the 5-minute `timeout`. Once the retries are used up, Flux keeps the release failed. A Secret that arrives later than that needs a reset of the failure count:
+
+```sh
+flux reconcile helmrelease netbird-operator -n core-netbird-operator --reset
+```
+
+Deliver the Secret early, so the first install attempt does not have to wait for it.
 
 ## Webhook scope
 
