@@ -19,7 +19,7 @@ spec:
         kind: HelmRepository
         name: envoy-gateway
         namespace: core-envoy-gateway
-      version: v1.4.2
+      version: v1.5.9
   install:
     createNamespace: false
     crds: CreateReplace
