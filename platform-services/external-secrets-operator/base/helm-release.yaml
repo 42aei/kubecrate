@@ -19,7 +19,7 @@ spec:
         kind: HelmRepository
         name: external-secrets
         namespace: core-external-secrets-operator
-      version: 2.7.0
+      version: 2.15.0
   install:
     createNamespace: false
     crds: CreateReplace
